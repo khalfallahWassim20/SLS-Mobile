@@ -89,3 +89,11 @@ export function calculateClientBalance(openingBalance: number, sales: { total: n
   }
   return safe(balance);
 }
+
+/** Règlement global non imputé à une facture ; pas de trop-perçu à la saisie. */
+export function balanceAfterSettlement(balance: number, payment: number): number {
+  integer(balance, 'Solde', Number.MIN_SAFE_INTEGER);
+  integer(payment, 'Règlement', 1);
+  if (balance <= 0 || payment > balance) throw new RangeError('Le règlement doit être positif et ne pas dépasser la dette du client');
+  return balance - payment;
+}

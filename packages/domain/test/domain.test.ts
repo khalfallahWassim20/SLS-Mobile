@@ -59,3 +59,12 @@ test('solde client cumule dette initiale, ventes et crédits sans compter le rem
   assert.equal(calculateClientBalance(0, [{ total: 150000, paid: 150000 }]), 0);
   assert.throws(() => calculateClientBalance(0, [{ total: -1, paid: 0 }]));
 });
+
+test('règlement global de dette, sans trop-perçu ni double comptage', async () => {
+  const { balanceAfterSettlement } = await import('../src/index.js');
+  assert.equal(balanceAfterSettlement(100000, 25000), 75000);
+  assert.equal(balanceAfterSettlement(100000, 100000), 0);
+  assert.throws(() => balanceAfterSettlement(100000, 0));
+  assert.throws(() => balanceAfterSettlement(100000, 100001));
+  assert.throws(() => balanceAfterSettlement(-1000, 1));
+});

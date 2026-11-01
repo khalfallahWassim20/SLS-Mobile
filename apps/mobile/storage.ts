@@ -15,6 +15,8 @@ async function db() {
     ); CREATE TABLE IF NOT EXISTS sale_revisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL, created_at TEXT NOT NULL,
       previous_payload TEXT NOT NULL, new_payload TEXT NOT NULL, refund INTEGER NOT NULL
+    ); CREATE TABLE IF NOT EXISTS settlements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, client_id TEXT NOT NULL, payload TEXT NOT NULL
     );`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
@@ -44,4 +46,21 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
     await tx.runAsync('UPDATE sales SET payload = ? WHERE id = ?', json, previous.id);
     await tx.runAsync('INSERT INTO sale_revisions (sale_id, created_at, previous_payload, new_payload, refund) VALUES (?, ?, ?, ?, ?)', previous.id, new Date().toISOString(), JSON.stringify(previous), JSON.stringify(updated), refund);
   });
+}
+
+export type Settlement = { id: number; createdAt: string; clientId: string; clientName: string; amount: number; mode: string; chequeNumber: string; chequeBank: string; chequeDue: string };
+export async function getSettlements(): Promise<Settlement[]> {
+  const rows = await (await db()).getAllAsync<{id: number; payload: string}>('SELECT id, payload FROM settlements ORDER BY id DESC');
+  return rows.map(r => ({ ...JSON.parse(r.payload), id: r.id }));
+}
+export async function saveSettlement(settlement: Omit<Settlement, 'id'>): Promise<void> {
+  await (await db()).runAsync('INSERT INTO settlements (created_at, client_id, payload) VALUES (?, ?, ?)', settlement.createdAt, settlement.clientId, JSON.stringify(settlement));
+}
+// La première version sauvegardée de chaque vente conserve le paiement initial,
+// y compris après remboursement. Pour une vente non modifiée, le payload actuel suffit.
+export async function getOriginalSales(): Promise<SavedSale[]> {
+  const rows = await (await db()).getAllAsync<{id: number; payload: string}>(`SELECT s.id, COALESCE(
+    (SELECT r.previous_payload FROM sale_revisions r WHERE r.sale_id = s.id ORDER BY r.id ASC LIMIT 1), s.payload
+  ) AS payload FROM sales s`);
+  return rows.map(r => ({ ...JSON.parse(r.payload), id: r.id }));
 }

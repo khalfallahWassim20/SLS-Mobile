@@ -29,3 +29,9 @@ Ce document résume les échanges. Il ne remplace pas une validation fiscale com
 - La ligne « ancien » de la facture exemple représente-t-elle une dette antérieure ? Définir la présentation et éviter de facturer une dette une seconde fois.
 - Liste des secteurs et champs articles ; formats d'import réels ; modèles Android ; modalités de chèque ; définition du bénéfice et conservation historique du coût ; liste et droits des administrateurs.
 - Définir authentification hors ligne, révocation, chiffrement local et stockage sécurisé ; confirmer capacités PDF et partage sur appareils réels.
+
+## Exemples de fichiers transmis
+
+Les exemples sont séparés par des points-virgules et utilisent la virgule décimale ; ne pas copier de données personnelles ni prix d'achat dans le mobile. L'exemple clients comprend secteur, nom, prénom, adresse, société, MF et téléphone, avec lignes vides à ignorer. L'exemple articles comprend code-barres (parfois vide), désignation, prix d'achat TTC, prix de vente TTC et quantité par carton. Prévoir import côté serveur uniquement, aperçu et validation avant écriture, code interne indépendant du code-barres, contrôle des doublons, montants en millimes et protection du prix d'achat.
+
+À clarifier avant de convertir ou importer : taux de TVA par article et règles d'arrondi pour convertir TTC en HT ; prix par unité ou carton ; traitement des codes-barres absents ; champs code client, solde initial, plafond et catégorie absents des exemples. Ne pas déduire une TVA ni un prix HT sans validation.
