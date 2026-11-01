@@ -15,3 +15,7 @@ Inscrire le hash dans `ADMIN_PASSWORD_HASH` sans guillemets ; remplacer le mot d
 Prototype local uniquement : pas de TLS, mécanisme de révocation, audit, gestion de comptes ni sauvegarde de production. Ne pas exposer sur Internet ni utiliser de vraies données. Les migrations, les accès et la sécurité restent à vérifier sur une instance PostgreSQL réelle avant production.
 
 Après mise à jour, relancer `npm run migrate` pour créer les tables supplémentaires sans supprimer les données existantes. Le journal d'administration est écrit dans la même transaction que la création ou modification d'un client ou article ; il n'est pas encore un système d'audit complet de production.
+
+## Test mobile sur réseau local
+
+Le point de lecture `/api/mobile/reference` est désactivé si `MOBILE_DEMO_TOKEN` est absent ou inférieur à 32 caractères. Il utilise un jeton dédié, jamais celui de l'administrateur et ne renvoie pas le prix d'achat. Pour un test local uniquement, définir un jeton aléatoire et `API_HOST=0.0.0.0` dans `.env`, puis redémarrer l'API. L'API devient alors accessible sur le réseau : utiliser uniquement un réseau privé fiable et des données fictives. HTTP ne chiffre ni le jeton ni les données ; ne pas exposer publiquement. Après le test, supprimer ces deux variables et redémarrer l'API. Cette solution provisoire ne remplace pas HTTPS, les comptes commerciaux, les contrôles par appareil ou le chiffrement local.

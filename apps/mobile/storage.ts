@@ -64,3 +64,16 @@ export async function getOriginalSales(): Promise<SavedSale[]> {
   ) AS payload FROM sales s`);
   return rows.map(r => ({ ...JSON.parse(r.payload), id: r.id }));
 }
+
+// Un seul instantané complet : une panne avant le commit conserve l'ancien.
+export async function saveReference(payload: string): Promise<void> {
+  const database = await db();
+  await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
+  await database.runAsync('INSERT INTO reference_snapshot (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload', payload);
+}
+export async function getReference(): Promise<string | null> {
+  const database = await db();
+  await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
+  const row = await database.getFirstAsync<{ payload: string }>('SELECT payload FROM reference_snapshot WHERE id=1');
+  return row?.payload ?? null;
+}

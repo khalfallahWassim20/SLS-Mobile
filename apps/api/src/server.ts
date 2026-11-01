@@ -4,7 +4,7 @@ import { rateLimit } from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z, ZodError } from 'zod';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { pool } from './db.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
@@ -22,6 +22,23 @@ const auth: RequestHandler = (req, res, next) => {
   try { const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1]; if (!token) throw new Error(); const claims = jwt.verify(token, secret, { algorithms: ['HS256'] }); if (typeof claims !== 'object' || claims.role !== 'admin' || claims.sub !== username) throw new Error(); next(); }
   catch { res.status(401).json({ error: 'Session invalide ou expirée.' }); }
 };
+// Mode de démonstration explicitement activé avec un jeton distinct de l'admin.
+// Ne jamais exposer ni utiliser avec de vraies données sans HTTPS et comptes commerciaux.
+app.get('/api/mobile/reference', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false }), async (req, res) => {
+  const expected = process.env.MOBILE_DEMO_TOKEN;
+  const supplied = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
+  const a = Buffer.from(expected ?? ''), b = Buffer.from(supplied);
+  if (!expected || expected.length < 32 || a.length !== b.length || !timingSafeEqual(a, b)) { res.status(401).json({ error: 'Accès mobile refusé.' }); return; }
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    const clients = await db.query(`SELECT id,name,sector FROM clients WHERE active AND deleted_at IS NULL ORDER BY name`);
+    // Projection explicite : pas de prix d'achat ni d'autres champs confidentiels.
+    const articles = await db.query(`SELECT id,code,barcode,name,sale_ttc::text AS "saleTtc",vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton" FROM articles WHERE active AND deleted_at IS NULL ORDER BY name`);
+    await db.query('COMMIT');
+    res.set('Cache-Control','no-store').json({ version: 1, clients: clients.rows, articles: articles.rows });
+  } catch (error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
+});
 app.use('/api', auth);
 const text = (max: number) => z.string().trim().max(max);
 const clientSchema = z.object({ name: text(200).min(1), sector: text(100), address: text(300), taxId: text(100), phone: text(50), openingBalance: z.number().int().safe(), creditLimit: z.number().int().safe().min(0), active: z.boolean() }).strict();
@@ -65,4 +82,4 @@ app.put('/api/clients/:id', async (req, res) => { const id = uuid.parse(req.para
 app.post('/api/articles', async (req, res) => { const a = articleSchema.parse(req.body), id = randomUUID(); const r = await changeWithAudit('articles','création',id,`INSERT INTO articles(id,code,name,barcode,purchase_ttc,sale_ttc,vat_rate,units_per_carton,active) VALUES($1,'ART-' || lpad(nextval('article_code_seq')::text, 6, '0'),$2,$3,$4,$5,$6,$7,$8) RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); res.status(201).json(r); });
 app.put('/api/articles/:id', async (req, res) => { const id = uuid.parse(req.params.id), a = articleSchema.parse(req.body); const r = await changeWithAudit('articles','modification',id,`UPDATE articles SET name=$2,barcode=$3,purchase_ttc=$4,sale_ttc=$5,vat_rate=$6,units_per_carton=$7,active=$8,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); if (!r) { res.status(404).json({error:'Article introuvable.'}); return; } res.json(r); });
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
-app.listen(Number(process.env.PORT || 3001), '127.0.0.1', () => console.log('API de développement prête sur le port ' + (process.env.PORT || 3001)));
+app.listen(Number(process.env.PORT || 3001), process.env.API_HOST || '127.0.0.1', () => console.log('API de développement prête sur le port ' + (process.env.PORT || 3001)));
