@@ -31,3 +31,14 @@ test('plafond atteint et autorisation administrateur', () => {
   assert.equal(isSaleBlocked(2000, 2000, false), true);
   assert.equal(isSaleBlocked(2001, 2000, true), false);
 });
+
+test('saisie exacte des paiements et limites', async () => {
+  const { parseDinars, calculatePayment } = await import('../src/index.js');
+  assert.equal(parseDinars(' 12,005 '), 12005);
+  assert.equal(parseDinars('0.1'), 100);
+  assert.throws(() => parseDinars('1,0001'));
+  assert.throws(() => parseDinars('-1'));
+  assert.throws(() => parseDinars('1e3'));
+  assert.deepEqual(calculatePayment(12005, 10000), { paid: 10000, remaining: 2005 });
+  assert.throws(() => calculatePayment(100, 101));
+});

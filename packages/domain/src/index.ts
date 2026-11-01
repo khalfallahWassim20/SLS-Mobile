@@ -55,3 +55,16 @@ export function isSaleBlocked(balance: number, creditLimit: number, adminOverrid
   integer(creditLimit, 'Plafond');
   return !adminOverride && balance >= creditLimit;
 }
+
+/** Saisie en dinars (virgule ou point), convertie sans flottants en millimes. */
+export function parseDinars(value: string): number {
+  const match = /^(\d+)(?:[.,](\d{1,3}))?$/.exec(value.trim());
+  if (!match) throw new RangeError('Saisissez un montant positif avec au maximum 3 décimales');
+  return safe(BigInt(match[1]) * 1000n + BigInt((match[2] ?? '').padEnd(3, '0')));
+}
+
+export function calculatePayment(total: number, paid: number): { paid: number; remaining: number } {
+  integer(total, 'Total'); integer(paid, 'Paiement');
+  if (paid > total) throw new RangeError('Le montant encaissé ne peut pas dépasser le total');
+  return { paid, remaining: total - paid };
+}

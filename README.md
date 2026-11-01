@@ -1,6 +1,6 @@
 # SLS Mobile
 
-Fondations d'une application de facturation pour commerciaux de distribution en Tunisie. **Projet en démarrage : prototype mobile avec données fictives uniquement. API, base de données et synchronisation ne sont pas encore implémentées. Ne pas utiliser pour des factures réelles.**
+Fondations d'une application de facturation pour commerciaux de distribution en Tunisie. **Projet en démarrage : prototype mobile avec données fictives uniquement. API et synchronisation ne sont pas encore implémentées ; le stockage local de démonstration n’est pas chiffré. Ne pas utiliser pour des factures réelles.**
 
 ## Organisation prévue
 
