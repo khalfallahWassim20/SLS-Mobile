@@ -20,6 +20,12 @@ try {
       entity_id uuid NOT NULL, entity_name text NOT NULL, changed_fields text[] NOT NULL DEFAULT '{}',
       created_at timestamptz NOT NULL DEFAULT now()
     );
-    CREATE INDEX IF NOT EXISTS audit_log_created_idx ON audit_log (created_at DESC);`);
+    CREATE INDEX IF NOT EXISTS audit_log_created_idx ON audit_log (created_at DESC);
+    CREATE TABLE IF NOT EXISTS demo_sale_events (
+      operation_id uuid PRIMARY KEY, sale_id uuid NOT NULL, version integer NOT NULL CHECK (version > 0),
+      client_id uuid NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(sale_id,version)
+    );
+    CREATE INDEX IF NOT EXISTS demo_sale_events_latest_idx ON demo_sale_events(sale_id,version DESC);`);
   console.log('Migration terminée.');
 } finally { await pool.end(); }

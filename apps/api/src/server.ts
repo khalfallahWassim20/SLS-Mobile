@@ -4,8 +4,9 @@ import { rateLimit } from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z, ZodError } from 'zod';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { pool } from './db.js';
+import { calculateInvoice } from '@sls/domain';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -39,6 +40,39 @@ app.get('/api/mobile/reference', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60
     res.set('Cache-Control','no-store').json({ version: 1, clients: clients.rows, articles: articles.rows });
   } catch (error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
 });
+// Protocole de démonstration : chaque version est immuable et idempotente.
+const demoSaleSchema = z.object({
+  createdAt: z.string().datetime(), clientId: z.string().uuid(), clientName: z.string().min(1).max(200),
+  syncSaleId: z.string().uuid(), syncVersion: z.number().int().min(1).max(1000000),
+  lines: z.array(z.object({ name:z.string().min(1).max(200),code:z.string().min(1).max(100),quantity:z.number().int().min(1).max(1000000),unitPrice:z.number().int().safe().min(0),discount:z.number().int().min(0).max(10000),vat:z.number().int().min(0).max(10000) }).strict()).min(1).max(200),
+  total:z.number().int().safe().min(0), paid:z.number().int().safe().min(0), remaining:z.number().int().safe().min(0),
+  paymentMode:z.enum(['Espèces','Chèque','Virement','Crédit']), chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100)
+}).strict();
+const demoEventSchema = z.object({ operationId:z.string().uuid(),saleId:z.string().uuid(),version:z.number().int().min(1).max(1000000),sale:demoSaleSchema,refund:z.number().int().safe().min(0) }).strict();
+app.post('/api/mobile/sales', rateLimit({windowMs: 15 * 60 * 1000, limit: 500, standardHeaders:'draft-8', legacyHeaders:false}), async (req, res) => {
+  const expected = process.env.MOBILE_DEMO_TOKEN, supplied = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
+  const a = Buffer.from(expected ?? ''), b = Buffer.from(supplied);
+  if (!expected || expected.length < 32 || a.length !== b.length || !timingSafeEqual(a,b)) { res.status(401).json({error:'Accès mobile refusé.'}); return; }
+  const event = demoEventSchema.parse(req.body);
+  if (event.saleId !== event.sale.syncSaleId || event.version !== event.sale.syncVersion) {res.status(400).json({error:'Identifiants de vente incohérents.'}); return;}
+  const totals = calculateInvoice(event.sale.lines.map(l => ({quantity:l.quantity,unitPrice:l.unitPrice,discountRate:l.discount,vatRate:l.vat})));
+  if (totals.total !== event.sale.total || event.sale.remaining !== Math.max(0, event.sale.total - event.sale.paid) || (event.version === 1 && (event.refund !== 0 || event.sale.paid > event.sale.total))) {res.status(400).json({error:'Totaux de vente incohérents.'}); return;}
+  const payload = JSON.stringify(event), hash = createHash('sha256').update(payload).digest('hex');
+  const db = await pool.connect();
+  try {
+    await db.query('BEGIN');
+    await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [event.saleId]);
+    const same = await db.query('SELECT payload_hash FROM demo_sale_events WHERE operation_id=$1', [event.operationId]);
+    if (same.rows.length) { await db.query('ROLLBACK'); if(same.rows[0].payload_hash !== hash) {res.status(409).json({error:'Opération déjà utilisée avec des données différentes.'});return;} res.json({status:'déjà reçue'}); return; }
+    const last = await db.query('SELECT version,payload FROM demo_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1', [event.saleId]);
+    if ((last.rows[0]?.version ?? 0) + 1 !== event.version) { await db.query('ROLLBACK'); res.status(409).json({error:'Version de vente manquante ou déjà utilisée.'}); return; }
+    if (last.rows.length) { const old = last.rows[0].payload.sale; if (old.clientId !== event.sale.clientId || old.createdAt !== event.sale.createdAt || event.sale.paid !== old.paid - event.refund || event.refund > Math.max(0, old.paid - event.sale.total)) { await db.query('ROLLBACK'); res.status(400).json({error:'Modification ou remboursement incohérent.'}); return; } }
+    const client = await db.query('SELECT id FROM clients WHERE id=$1', [event.sale.clientId]);
+    if (!client.rows.length) { await db.query('ROLLBACK'); res.status(400).json({error:'Client introuvable sur le serveur.'}); return; }
+    await db.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,$3,$4,$5::jsonb,$6)', [event.operationId,event.saleId,event.version,event.sale.clientId,payload,hash]);
+    await db.query('COMMIT'); res.status(201).json({status:'reçue'});
+  } catch(error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
+});
 app.use('/api', auth);
 const text = (max: number) => z.string().trim().max(max);
 const clientSchema = z.object({ name: text(200).min(1), sector: text(100), address: text(300), taxId: text(100), phone: text(50), openingBalance: z.number().int().safe(), creditLimit: z.number().int().safe().min(0), active: z.boolean() }).strict();
@@ -65,6 +99,10 @@ async function changeWithAudit(entity: 'clients' | 'articles', action: 'créatio
   } catch (error) { await db.query('ROLLBACK'); throw error; }
   finally { db.release(); }
 }
+app.get('/api/demo-sales', async (_req, res) => {
+ const r = await pool.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM demo_sale_events ORDER BY sale_id,version DESC`);
+ res.json(r.rows);
+});
 app.get('/api/overview', async (_req, res) => {
   const r = await pool.query(`SELECT
     (SELECT count(*) FROM clients WHERE deleted_at IS NULL) AS clients,

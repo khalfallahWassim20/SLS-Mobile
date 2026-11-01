@@ -1,7 +1,8 @@
 import * as SQLite from 'expo-sqlite';
+import { randomUUID } from 'expo-crypto';
 
 export type SavedSale = {
-  id: number; createdAt: string; clientId: string; clientName: string;
+  id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
   lines: { name: string; code: string; quantity: number; unitPrice: number; discount: number; vat: number }[];
   total: number; paid: number; remaining: number; paymentMode: string;
   chequeNumber: string; chequeBank: string; chequeDue: string;
@@ -17,6 +18,8 @@ async function db() {
       previous_payload TEXT NOT NULL, new_payload TEXT NOT NULL, refund INTEGER NOT NULL
     ); CREATE TABLE IF NOT EXISTS settlements (
       id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, client_id TEXT NOT NULL, payload TEXT NOT NULL
+    ); CREATE TABLE IF NOT EXISTS sales_outbox (
+      sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL UNIQUE, sale_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, last_error TEXT
     );`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
@@ -26,8 +29,17 @@ export async function getSales(): Promise<SavedSale[]> {
   const rows = await (await db()).getAllAsync<{ id: number; payload: string }>('SELECT id, payload FROM sales ORDER BY id DESC');
   return rows.map(row => ({ ...JSON.parse(row.payload), id: row.id } as SavedSale));
 }
-export async function saveSale(sale: Omit<SavedSale, 'id'>): Promise<void> {
-  await (await db()).runAsync('INSERT INTO sales (created_at, client_id, payload) VALUES (?, ?, ?)', sale.createdAt, sale.clientId, JSON.stringify(sale));
+export async function saveSale(sale: Omit<SavedSale, 'id'>, syncEligible = false): Promise<void> {
+  const database = await db();
+  await database.withExclusiveTransactionAsync(async tx => {
+    const snapshot = syncEligible ? { ...sale, syncSaleId: randomUUID(), syncVersion: 1 } : sale;
+    await tx.runAsync('INSERT INTO sales (created_at, client_id, payload) VALUES (?, ?, ?)', snapshot.createdAt, snapshot.clientId, JSON.stringify(snapshot));
+    if (snapshot.syncSaleId) {
+      const operationId = randomUUID();
+      const event = { operationId, saleId: snapshot.syncSaleId, version: 1, sale: snapshot, refund: 0 };
+      await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)', operationId, snapshot.syncSaleId, 1, JSON.stringify(event));
+    }
+  });
 }
 
 export type Revision = { id: number; createdAt: string; previous: SavedSale; current: SavedSale; refund: number };
@@ -41,10 +53,17 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
   await database.withExclusiveTransactionAsync(async tx => {
     const row = await tx.getFirstAsync<{payload: string}>('SELECT payload FROM sales WHERE id = ?', previous.id);
     if (!row || JSON.stringify({ ...JSON.parse(row.payload), id: previous.id }) !== JSON.stringify(previous)) throw new Error('La vente a changé. Veuillez rouvrir son détail.');
-    const { id: _id, ...payload } = updated;
+    const { id: _id, ...originalPayload } = updated;
+    const payload = previous.syncSaleId ? { ...originalPayload, syncVersion: (previous.syncVersion ?? 1) + 1 } : originalPayload;
     const json = JSON.stringify(payload);
     await tx.runAsync('UPDATE sales SET payload = ? WHERE id = ?', json, previous.id);
-    await tx.runAsync('INSERT INTO sale_revisions (sale_id, created_at, previous_payload, new_payload, refund) VALUES (?, ?, ?, ?, ?)', previous.id, new Date().toISOString(), JSON.stringify(previous), JSON.stringify(updated), refund);
+    const persisted = { ...payload, id: previous.id };
+    await tx.runAsync('INSERT INTO sale_revisions (sale_id, created_at, previous_payload, new_payload, refund) VALUES (?, ?, ?, ?, ?)', previous.id, new Date().toISOString(), JSON.stringify(previous), JSON.stringify(persisted), refund);
+    if (previous.syncSaleId) {
+      const operationId = randomUUID();
+      const event = { operationId, saleId: previous.syncSaleId, version: payload.syncVersion, sale: payload, refund };
+      await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)', operationId, previous.syncSaleId, payload.syncVersion!, JSON.stringify(event));
+    }
   });
 }
 
@@ -76,4 +95,15 @@ export async function getReference(): Promise<string | null> {
   await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
   const row = await database.getFirstAsync<{ payload: string }>('SELECT payload FROM reference_snapshot WHERE id=1');
   return row?.payload ?? null;
+}
+
+export type OutboxEntry = { sequence: number; operationId: string; saleId: string; version: number; payload: string; lastError: string | null };
+export async function getOutbox(): Promise<OutboxEntry[]> {
+ return (await db()).getAllAsync<OutboxEntry>('SELECT sequence, operation_id AS operationId, sale_id AS saleId, version, payload, last_error AS lastError FROM sales_outbox ORDER BY sequence');
+}
+export async function acknowledgeOutbox(operationId: string): Promise<void> {
+ await (await db()).runAsync('DELETE FROM sales_outbox WHERE operation_id = ?', operationId);
+}
+export async function failOutbox(operationId: string, error: string): Promise<void> {
+ await (await db()).runAsync('UPDATE sales_outbox SET last_error = ? WHERE operation_id = ?', error.slice(0, 300), operationId);
 }
