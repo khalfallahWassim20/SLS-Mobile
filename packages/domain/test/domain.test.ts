@@ -30,6 +30,7 @@ test('plafond atteint et autorisation administrateur', () => {
   assert.equal(isSaleBlocked(1999, 2000, false), false);
   assert.equal(isSaleBlocked(2000, 2000, false), true);
   assert.equal(isSaleBlocked(2001, 2000, true), false);
+  assert.equal(isSaleBlocked(100000, 0, false), false);
 });
 
 test('saisie exacte des paiements et limites', async () => {

@@ -8,9 +8,12 @@
   ],
   "scripts": {
     "test": "tsx --test packages/domain/test/*.test.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p apps/api/tsconfig.json",
     "check": "npm run typecheck && npm test",
-    "mobile": "npm run start --workspace @sls/mobile"
+    "mobile": "npm run start --workspace @sls/mobile",
+    "api": "npm run dev --workspace @sls/api",
+    "admin": "npm run dev --workspace @sls/admin",
+    "migrate": "npm run migrate --workspace @sls/api"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

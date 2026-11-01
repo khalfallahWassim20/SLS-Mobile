@@ -53,7 +53,7 @@ export function balanceAfterInvoiceChange(input: { balance: number; oldTotal: nu
 export function isSaleBlocked(balance: number, creditLimit: number, adminOverride: boolean): boolean {
   integer(balance, 'Solde', Number.MIN_SAFE_INTEGER);
   integer(creditLimit, 'Plafond');
-  return !adminOverride && balance >= creditLimit;
+  return !adminOverride && creditLimit > 0 && balance >= creditLimit;
 }
 
 /** Saisie en dinars (virgule ou point), convertie sans flottants en millimes. */
