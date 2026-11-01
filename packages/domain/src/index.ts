@@ -68,3 +68,13 @@ export function calculatePayment(total: number, paid: number): { paid: number; r
   if (paid > total) throw new RangeError('Le montant encaissé ne peut pas dépasser le total');
   return { paid, remaining: total - paid };
 }
+
+/** Révision d'une vente : un remboursement diminue les paiements nets conservés. */
+export function revisePayment(total: number, paid: number, disposition?: 'refund' | 'credit') {
+  integer(total, 'Total'); integer(paid, 'Paiement');
+  const excess = Math.max(0, paid - total);
+  if (excess && disposition !== 'refund' && disposition !== 'credit') throw new RangeError('Choisissez le remboursement ou le crédit client');
+  const refund = disposition === 'refund' ? excess : 0;
+  const netPaid = paid - refund;
+  return { paid: netPaid, refund, remaining: Math.max(0, total - netPaid), credit: Math.max(0, netPaid - total), balanceContribution: total - netPaid };
+}

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { calculateInvoice, calculatePayment, isSaleBlocked, parseDinars } from '@sls/domain';
-import { getSales, saveSale, SavedSale } from './storage';
+import { calculateInvoice, calculatePayment, isSaleBlocked, parseDinars, revisePayment } from '@sls/domain';
+import { getSales, saveSale, updateSale, getRevisions, SavedSale, Revision } from './storage';
 
 // Données de démonstration uniquement. Aucun prix ou client réel n'est enregistré.
 type Client = { id: string; name: string; sector: string; balance: number; limit: number };
@@ -31,13 +31,17 @@ function Row({ label, value, strong = false }: { label: string; value: string; s
   return <View style={styles.row}><Text style={[styles.rowLabel, strong && styles.strong]}>{label}</Text><Text style={[styles.rowValue, strong && styles.strong]}>{value}</Text></View>;
 }
 export default function App() {
-  const [screen, setScreen] = useState<'clients' | 'products' | 'cart' | 'summary' | 'payment' | 'history' | 'detail'>('clients');
+  const [screen, setScreen] = useState<'clients' | 'products' | 'cart' | 'summary' | 'payment' | 'history' | 'detail' | 'edit' | 'editConfirm'>('clients');
   const [client, setClient] = useState<Client | null>(null);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
   const [sales, setSales] = useState<SavedSale[]>([]);
   const [selectedSale, setSelectedSale] = useState<SavedSale | null>(null);
+  const [editLines, setEditLines] = useState<SavedSale['lines']>([]);
+  const [disposition, setDisposition] = useState<'refund' | 'credit' | null>(null);
+  const [revisions, setRevisions] = useState<Revision[]>([]);
+  const [revisionError, setRevisionError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [storageError, setStorageError] = useState(false);
   const [mode, setMode] = useState('Espèces');
@@ -49,9 +53,28 @@ export default function App() {
   const savingRef = useRef(false);
   const loadSales = async () => { try { setSales(await getSales()); setStorageError(false); } catch { setStorageError(true); } finally { setLoading(false); } };
   useEffect(() => { void loadSales(); }, []);
-  const balanceFor = (c: Client) => c.balance + sales.filter(s => s.clientId === c.id).reduce((sum, s) => sum + s.remaining, 0);
+  const balanceFor = (c: Client) => c.balance + sales.filter(s => s.clientId === c.id).reduce((sum, s) => sum + s.total - s.paid, 0);
 
   const totals = useMemo(() => cart.length ? calculateInvoice(cart.map(l => ({ quantity: l.quantity, unitPrice: l.product.price, discountRate: l.discount, vatRate: l.product.vat }))) : null, [cart]);
+  const editTotals = useMemo(() => editLines.length ? calculateInvoice(editLines.map(l => ({ quantity: l.quantity, unitPrice: l.unitPrice, discountRate: l.discount, vatRate: l.vat }))) : null, [editLines]);
+  const openSale = async (sale: SavedSale) => {
+    setSelectedSale(sale); setRevisions([]); setRevisionError(false); setScreen('detail');
+    try { setRevisions(await getRevisions(sale.id)); } catch { setRevisionError(true); }
+  };
+  const beginEdit = () => { if (!selectedSale) return; setEditLines(selectedSale.lines.map(l => ({ ...l }))); setDisposition(null); setScreen('edit'); };
+  const modifyLine = (index: number, change: Partial<SavedSale['lines'][number]>) => setEditLines(lines => lines.map((l, i) => i === index ? { ...l, ...change } : l));
+  const commitEdit = async () => {
+    if (!selectedSale || !editTotals || savingRef.current || storageError || loading) return;
+    try {
+      const result = revisePayment(editTotals.total, selectedSale.paid, disposition ?? undefined);
+      const updated: SavedSale = { ...selectedSale, lines: editLines.map(l => ({ ...l })), total: editTotals.total, paid: result.paid, remaining: result.remaining };
+      savingRef.current = true; setSaving(true);
+      await updateSale(selectedSale, updated, result.refund);
+      setScreen('history'); setSelectedSale(null); await loadSales();
+      Alert.alert('Modification enregistrée', result.refund ? `Retour d’argent enregistré : ${money(result.refund)}.` : 'Le solde local a été recalculé.');
+    } catch (error) { Alert.alert('Modification impossible', error instanceof Error ? error.message : 'Une erreur est survenue.'); }
+    finally { savingRef.current = false; setSaving(false); }
+  };
   const selectClient = (value: Client) => {
     if (isSaleBlocked(balanceFor(value), value.limit, false)) { Alert.alert('Vente bloquée', 'Ce client a atteint sa limite de crédit. Seul un administrateur peut autoriser la reprise des ventes.'); return; }
     setClient(value); setCart([]); setQuery(''); setScreen('products');
@@ -98,8 +121,12 @@ export default function App() {
       {mode !== 'Crédit' && <><Text style={styles.section}>MONTANT ENCAISSÉ (DT)</Text><TextInput accessibilityLabel="Montant encaissé en dinars" style={styles.search} value={paidInput} onChangeText={setPaidInput} keyboardType="decimal-pad" placeholder="0,000" /><Text style={styles.hint}>Maximum 3 décimales. Un paiement partiel est possible.</Text></>}
       {mode === 'Chèque' && <><Text style={styles.section}>INFORMATIONS DU CHÈQUE</Text><TextInput accessibilityLabel="Numéro du chèque" style={styles.search} value={chequeNumber} onChangeText={setChequeNumber} placeholder="Numéro du chèque" /><TextInput accessibilityLabel="Banque" style={[styles.search, styles.inputGap]} value={chequeBank} onChangeText={setChequeBank} placeholder="Banque" /><TextInput accessibilityLabel="Échéance du chèque" style={[styles.search, styles.inputGap]} value={chequeDue} onChangeText={setChequeDue} placeholder="Échéance (ex. 30/12/2026)" /></>}
       <Text style={styles.disclaimer}>Données fictives uniquement : les ventes sont stockées sur ce téléphone, sans chiffrement ni synchronisation.</Text><Button label={saving ? 'Enregistrement…' : 'Enregistrer la démo'} disabled={saving || loading || storageError} onPress={() => { void recordSale(); }} /><Button label="Retour au récapitulatif" secondary onPress={() => setScreen('summary')} /></>}
-    {screen === 'history' && <><Header title="Historique local" detail="Ventes fictives enregistrées sur ce téléphone." />{!sales.length && <Text style={styles.muted}>Aucune vente enregistrée.</Text>}{sales.map(s => <TouchableOpacity key={s.id} accessibilityRole="button" style={styles.card} onPress={() => { setSelectedSale(s); setScreen('detail'); }}><Text style={styles.cardTitle}>{s.clientName}</Text><Text style={styles.muted}>{new Date(s.createdAt).toLocaleString('fr-FR')} · Démo #{s.id}</Text><View style={styles.row}><Text style={styles.price}>{money(s.total)}</Text><Text style={styles.chevron}>›</Text></View></TouchableOpacity>)}<Button label="Retour aux clients" secondary onPress={() => setScreen('clients')} /></>}
-    {screen === 'detail' && selectedSale && <><Header title={`Vente démo #${selectedSale.id}`} detail={selectedSale.clientName} /><View style={styles.card}>{selectedSale.lines.map((l, i) => <View key={i}><Row label={`${l.quantity} × ${l.name}`} value={`${l.discount / 100} % remise`} /><Text style={styles.muted}>{l.code} · {money(l.unitPrice)} HT · TVA {l.vat / 100} %</Text></View>)}</View><View style={styles.totalCard}><Row label="Total TTC" value={money(selectedSale.total)} strong /><Row label="Encaissé" value={money(selectedSale.paid)} /><Row label="Reste à payer" value={money(selectedSale.remaining)} /><Row label="Mode" value={selectedSale.paymentMode} />{selectedSale.paymentMode === 'Chèque' && <><Row label="Numéro" value={selectedSale.chequeNumber} /><Row label="Banque" value={selectedSale.chequeBank} /><Row label="Échéance" value={selectedSale.chequeDue} /></>}</View><Text style={styles.disclaimer}>Démonstration locale : cette vente n’a pas été envoyée au serveur.</Text><Button label="Retour à l’historique" secondary onPress={() => setScreen('history')} /></>}
+    {screen === 'history' && <><Header title="Historique local" detail="Ventes fictives enregistrées sur ce téléphone." />{!sales.length && <Text style={styles.muted}>Aucune vente enregistrée.</Text>}{sales.map(s => <TouchableOpacity key={s.id} accessibilityRole="button" style={styles.card} onPress={() => { void openSale(s); }}><Text style={styles.cardTitle}>{s.clientName}</Text><Text style={styles.muted}>{new Date(s.createdAt).toLocaleString('fr-FR')} · Démo #{s.id}</Text><View style={styles.row}><Text style={styles.price}>{money(s.total)}</Text><Text style={styles.chevron}>›</Text></View></TouchableOpacity>)}<Button label="Retour aux clients" secondary onPress={() => setScreen('clients')} /></>}
+    {screen === 'detail' && selectedSale && <><Header title={`Vente démo #${selectedSale.id}`} detail={selectedSale.clientName} /><View style={styles.card}>{selectedSale.lines.map((l, i) => <View key={i}><Row label={`${l.quantity} × ${l.name}`} value={`${l.discount / 100} % remise`} /><Text style={styles.muted}>{l.code} · {money(l.unitPrice)} HT · TVA {l.vat / 100} %</Text></View>)}</View><View style={styles.totalCard}><Row label="Total TTC" value={money(selectedSale.total)} strong /><Row label="Encaissé" value={money(selectedSale.paid)} /><Row label="Reste à payer" value={money(Math.max(0, selectedSale.total - selectedSale.paid))} />{selectedSale.paid > selectedSale.total && <Row label="Crédit en faveur du client" value={money(selectedSale.paid - selectedSale.total)} />}<Row label="Mode" value={selectedSale.paymentMode} />{selectedSale.paymentMode === 'Chèque' && <><Row label="Numéro" value={selectedSale.chequeNumber} /><Row label="Banque" value={selectedSale.chequeBank} /><Row label="Échéance" value={selectedSale.chequeDue} /></>}</View><Text style={styles.disclaimer}>Démonstration locale : cette vente n’a pas été envoyée au serveur.</Text><Button label="Modifier la vente" onPress={beginEdit} disabled={loading || storageError} /><Text style={styles.section}>HISTORIQUE DES MODIFICATIONS</Text>{revisionError && <Text style={styles.warning}>Impossible de charger l’historique des modifications.</Text>}{!revisionError && !revisions.length && <Text style={styles.muted}>Aucune modification enregistrée.</Text>}{revisions.map(r => <View key={r.id} style={styles.card}><Text style={styles.cardTitle}>{new Date(r.createdAt).toLocaleString('fr-FR')}</Text><Row label="Ancien total" value={money(r.previous.total)} /><Row label="Nouveau total" value={money(r.current.total)} />{r.refund > 0 && <Row label="Remboursement" value={money(r.refund)} />}</View>)}<Button label="Retour à l’historique" secondary onPress={() => setScreen('history')} /></>}
+    {screen === 'edit' && selectedSale && <><Header title="Modifier la vente" detail={`Démo #${selectedSale.id} · ${selectedSale.clientName}`} /><Text style={styles.disclaimer}>Modifiez les quantités ou les remises. Le paiement déjà enregistré est conservé.</Text>{editLines.map((l, index) => <View key={`${l.code}-${index}`} style={styles.card}><Text style={styles.cardTitle}>{l.name}</Text><Text style={styles.muted}>{money(l.unitPrice)} HT / unité</Text><View style={styles.row}><View style={styles.quantity}><TouchableOpacity accessibilityLabel={`Réduire ${l.name}`} onPress={() => l.quantity > 1 ? modifyLine(index, {quantity: l.quantity - 1}) : setEditLines(lines => lines.filter((_, i) => i !== index))}><Text style={styles.quantityButton}>−</Text></TouchableOpacity><Text style={styles.quantityNumber}>{l.quantity}</Text><TouchableOpacity accessibilityLabel={`Augmenter ${l.name}`} onPress={() => modifyLine(index, {quantity: l.quantity + 1})}><Text style={styles.quantityButton}>+</Text></TouchableOpacity></View><TouchableOpacity onPress={() => setEditLines(lines => lines.filter((_, i) => i !== index))}><Text style={styles.remove}>Supprimer</Text></TouchableOpacity></View><Text style={styles.muted}>Remise : {l.discount / 100} %</Text><View style={styles.discountRow}>{[0, 5, 10, 20].map(percent => <TouchableOpacity key={percent} accessibilityRole="button" onPress={() => modifyLine(index, {discount: percent * 100})} style={[styles.chip, l.discount === percent * 100 && styles.chipActive]}><Text style={l.discount === percent * 100 ? styles.chipActiveText : styles.chipText}>{percent} %</Text></TouchableOpacity>)}</View></View>)}
+      <Text style={styles.section}>AJOUTER UN ARTICLE</Text>{products.map(p => <View key={p.id} style={styles.row}><Text style={styles.rowLabel}>{p.name}</Text><Button label="+ Ajouter" secondary onPress={() => setEditLines(lines => [...lines, { name: p.name, code: p.code, quantity: 1, unitPrice: p.price, discount: 0, vat: p.vat }])} /></View>)}
+      {editTotals && <View style={styles.totalCard}><Row label="Nouveau total TTC" value={money(editTotals.total)} strong /><Row label="Paiement conservé" value={money(selectedSale.paid)} /></View>}<Button label="Vérifier les modifications" disabled={!editTotals} onPress={() => { setDisposition(null); setScreen('editConfirm'); }} /><Button label="Annuler" secondary onPress={() => setScreen('detail')} /></>}
+    {screen === 'editConfirm' && selectedSale && editTotals && <><Header title="Confirmer la modification" detail={selectedSale.clientName} /><View style={styles.totalCard}><Row label="Ancien total" value={money(selectedSale.total)} /><Row label="Nouveau total" value={money(editTotals.total)} strong /><Row label="Paiement déjà enregistré" value={money(selectedSale.paid)} /></View>{selectedSale.paid > editTotals.total ? <><Text style={styles.warning}>Trop-perçu : {money(selectedSale.paid - editTotals.total)}. Choisissez une option :</Text><Button label="Retourner l’argent au client" secondary={disposition !== 'refund'} onPress={() => setDisposition('refund')} /><Button label="Garder en crédit client" secondary={disposition !== 'credit'} onPress={() => setDisposition('credit')} /><Text style={styles.hint}>Le remboursement est enregistré comme effectué lors de la validation.</Text></> : <Text style={styles.muted}>Nouveau reste à payer : {money(editTotals.total - selectedSale.paid)}</Text>}<Button label={saving ? 'Enregistrement…' : 'Enregistrer la modification'} disabled={saving || (selectedSale.paid > editTotals.total && !disposition)} onPress={() => { void commitEdit(); }} /><Button label="Retour à la modification" secondary onPress={() => setScreen('edit')} /></>}
     <Text style={styles.footer}>SLS MOBILE · VERSION DE DÉMONSTRATION</Text>
   </ScrollView></SafeAreaView>;
 }

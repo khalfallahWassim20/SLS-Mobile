@@ -42,3 +42,12 @@ test('saisie exacte des paiements et limites', async () => {
   assert.deepEqual(calculatePayment(12005, 10000), { paid: 10000, remaining: 2005 });
   assert.throws(() => calculatePayment(100, 101));
 });
+
+test('révision, remboursement et crédit restent cohérents lors de modifications successives', async () => {
+  const { revisePayment } = await import('../src/index.js');
+  assert.deepEqual(revisePayment(150000, 200000, 'credit'), { paid: 200000, refund: 0, remaining: 0, credit: 50000, balanceContribution: -50000 });
+  assert.deepEqual(revisePayment(150000, 200000, 'refund'), { paid: 150000, refund: 50000, remaining: 0, credit: 0, balanceContribution: 0 });
+  assert.deepEqual(revisePayment(250000, 200000), { paid: 200000, refund: 0, remaining: 50000, credit: 0, balanceContribution: 50000 });
+  assert.equal(revisePayment(100000, 150000, 'refund').refund, 50000);
+  assert.throws(() => revisePayment(100000, 150000));
+});
