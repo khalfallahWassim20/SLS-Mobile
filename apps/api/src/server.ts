@@ -32,7 +32,7 @@ app.get('/api/mobile/reference', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60
   const db = await pool.connect();
   try {
     await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    const clients = await db.query(`SELECT id,name,sector FROM clients WHERE active AND deleted_at IS NULL ORDER BY name`);
+    const clients = await db.query(`SELECT id,name,sector,opening_balance::text AS "openingBalance",credit_limit::text AS "creditLimit" FROM clients WHERE active AND deleted_at IS NULL ORDER BY name`);
     // Projection explicite : pas de prix d'achat ni d'autres champs confidentiels.
     const articles = await db.query(`SELECT id,code,barcode,name,sale_ttc::text AS "saleTtc",vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton" FROM articles WHERE active AND deleted_at IS NULL ORDER BY name`);
     await db.query('COMMIT');

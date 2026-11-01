@@ -11,3 +11,17 @@ test('rejette un instantané incomplet ou des montants invalides', () => {
  assert.throws(() => validateReference({version:1,clients:[]}));
  assert.throws(() => validateReference({version:1,clients:[],articles:[{id:'a',code:'1',barcode:'',name:'X',saleTtc:'-1',vatRate:1900,unitsPerCarton:1}]}));
 });
+
+test('convertit le prix unitaire TTC en HT au millime sans flottants', async () => {
+ const {unitPriceExcludingVat} = await import('../../../apps/mobile/reference.js');
+ assert.equal(unitPriceExcludingVat('33000', 1900), 27731);
+ assert.equal(unitPriceExcludingVat('70000', 1900), 58824);
+ assert.equal(unitPriceExcludingVat('1', 0), 1);
+ assert.throws(() => unitPriceExcludingVat('-1', 1900));
+});
+test('valide les soldes et préserve les anciens instantanés consultables', () => {
+ const base = {id:'c',name:'Client',sector:'Sud'};
+ assert.equal(validateReference({version:1,clients:[base],articles:[]}).clients[0].creditLimit, undefined);
+ assert.equal(validateReference({version:1,clients:[{...base,openingBalance:'-50000',creditLimit:'2000000'}],articles:[]}).clients[0].openingBalance, '-50000');
+ assert.throws(() => validateReference({version:1,clients:[{...base,openingBalance:'0',creditLimit:'-1'}],articles:[]}));
+});
