@@ -78,3 +78,14 @@ export function revisePayment(total: number, paid: number, disposition?: 'refund
   const netPaid = paid - refund;
   return { paid: netPaid, refund, remaining: Math.max(0, total - netPaid), credit: Math.max(0, netPaid - total), balanceContribution: total - netPaid };
 }
+
+/** Solde initial et contributions des ventes : dette positive, crédit négatif. */
+export function calculateClientBalance(openingBalance: number, sales: { total: number; paid: number }[]): number {
+  integer(openingBalance, 'Solde initial', Number.MIN_SAFE_INTEGER);
+  let balance = BigInt(openingBalance);
+  for (const sale of sales) {
+    integer(sale.total, 'Total'); integer(sale.paid, 'Paiement net');
+    balance += BigInt(sale.total) - BigInt(sale.paid);
+  }
+  return safe(balance);
+}

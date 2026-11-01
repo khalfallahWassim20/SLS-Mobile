@@ -51,3 +51,11 @@ test('révision, remboursement et crédit restent cohérents lors de modificatio
   assert.equal(revisePayment(100000, 150000, 'refund').refund, 50000);
   assert.throws(() => revisePayment(100000, 150000));
 });
+
+test('solde client cumule dette initiale, ventes et crédits sans compter le remboursement deux fois', async () => {
+  const { calculateClientBalance } = await import('../src/index.js');
+  assert.equal(calculateClientBalance(150000, [{ total: 150000, paid: 200000 }, { total: 300000, paid: 100000 }]), 300000);
+  assert.equal(calculateClientBalance(0, [{ total: 150000, paid: 200000 }]), -50000);
+  assert.equal(calculateClientBalance(0, [{ total: 150000, paid: 150000 }]), 0);
+  assert.throws(() => calculateClientBalance(0, [{ total: -1, paid: 0 }]));
+});

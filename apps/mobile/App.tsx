@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { calculateInvoice, calculatePayment, isSaleBlocked, parseDinars, revisePayment } from '@sls/domain';
+import { calculateInvoice, calculatePayment, calculateClientBalance, isSaleBlocked, parseDinars, revisePayment } from '@sls/domain';
 import { getSales, saveSale, updateSale, getRevisions, SavedSale, Revision } from './storage';
 
 // Données de démonstration uniquement. Aucun prix ou client réel n'est enregistré.
@@ -31,7 +31,7 @@ function Row({ label, value, strong = false }: { label: string; value: string; s
   return <View style={styles.row}><Text style={[styles.rowLabel, strong && styles.strong]}>{label}</Text><Text style={[styles.rowValue, strong && styles.strong]}>{value}</Text></View>;
 }
 export default function App() {
-  const [screen, setScreen] = useState<'clients' | 'products' | 'cart' | 'summary' | 'payment' | 'history' | 'detail' | 'edit' | 'editConfirm'>('clients');
+  const [screen, setScreen] = useState<'clients' | 'products' | 'cart' | 'summary' | 'payment' | 'history' | 'detail' | 'edit' | 'editConfirm' | 'clientBalance'>('clients');
   const [client, setClient] = useState<Client | null>(null);
   const [cart, setCart] = useState<CartLine[]>([]);
   const [query, setQuery] = useState('');
@@ -42,6 +42,10 @@ export default function App() {
   const [disposition, setDisposition] = useState<'refund' | 'credit' | null>(null);
   const [revisions, setRevisions] = useState<Revision[]>([]);
   const [revisionError, setRevisionError] = useState(false);
+  const [balanceClient, setBalanceClient] = useState<Client | null>(null);
+  const [clientRevisions, setClientRevisions] = useState<Revision[]>([]);
+  const [clientRevisionsLoading, setClientRevisionsLoading] = useState(false);
+  const [clientRevisionsError, setClientRevisionsError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [storageError, setStorageError] = useState(false);
   const [mode, setMode] = useState('Espèces');
@@ -53,7 +57,14 @@ export default function App() {
   const savingRef = useRef(false);
   const loadSales = async () => { try { setSales(await getSales()); setStorageError(false); } catch { setStorageError(true); } finally { setLoading(false); } };
   useEffect(() => { void loadSales(); }, []);
-  const balanceFor = (c: Client) => c.balance + sales.filter(s => s.clientId === c.id).reduce((sum, s) => sum + s.total - s.paid, 0);
+  const balanceFor = (c: Client) => calculateClientBalance(c.balance, sales.filter(s => s.clientId === c.id));
+  const openClientBalance = async (c: Client) => {
+    setBalanceClient(c); setClientRevisions([]); setClientRevisionsError(false); setClientRevisionsLoading(true); setScreen('clientBalance');
+    try {
+      const histories = await Promise.all(sales.filter(s => s.clientId === c.id).map(s => getRevisions(s.id)));
+      setClientRevisions(histories.flat().sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id - a.id));
+    } catch { setClientRevisionsError(true); } finally { setClientRevisionsLoading(false); }
+  };
 
   const totals = useMemo(() => cart.length ? calculateInvoice(cart.map(l => ({ quantity: l.quantity, unitPrice: l.product.price, discountRate: l.discount, vatRate: l.product.vat }))) : null, [cart]);
   const editTotals = useMemo(() => editLines.length ? calculateInvoice(editLines.map(l => ({ quantity: l.quantity, unitPrice: l.unitPrice, discountRate: l.discount, vatRate: l.vat }))) : null, [editLines]);
@@ -106,8 +117,11 @@ export default function App() {
     <View style={styles.demo}><Text style={styles.demoText}>Prototype • données fictives • stockage local non chiffré</Text></View>
     {storageError && <View style={styles.demo}><Text style={styles.demoText}>Impossible de lire les ventes locales. Vérifiez le stockage, puis réessayez.</Text><Button label="Réessayer" secondary onPress={() => { setLoading(true); void loadSales(); }} /></View>}
     {screen === 'clients' && <><Header title="Nouvelle vente" detail="Choisissez un client pour commencer." /><TextInput accessibilityLabel="Rechercher un client" style={styles.search} placeholder="Rechercher un client ou un secteur" value={query} onChangeText={setQuery} />
-      <Button label={`Historique local (${sales.length})`} secondary onPress={() => setScreen('history')} disabled={loading || storageError} /><Text style={styles.section}>CLIENTS</Text>{clients.filter(c => normalize(`${c.name} ${c.sector}`).includes(normalize(query))).map(c => <TouchableOpacity accessibilityRole="button" key={c.id} style={styles.card} disabled={loading || storageError} onPress={() => selectClient(c)}><View style={styles.row}><View style={styles.flex}><Text style={styles.cardTitle}>{c.name}</Text><Text style={styles.muted}>{c.sector} · Solde : {money(balanceFor(c))}</Text></View><Text style={styles.chevron}>›</Text></View>{isSaleBlocked(balanceFor(c), c.limit, false) && <Text style={styles.warning}>Limite atteinte · vente bloquée</Text>}</TouchableOpacity>)}
+      <Button label={`Historique local (${sales.length})`} secondary onPress={() => setScreen('history')} disabled={loading || storageError} /><Text style={styles.section}>CLIENTS</Text>{clients.filter(c => normalize(`${c.name} ${c.sector}`).includes(normalize(query))).map(c => <View key={c.id} style={styles.card}><Text style={styles.cardTitle}>{c.name}</Text><Text style={styles.muted}>{c.sector} · {balanceFor(c) < 0 ? `Crédit client : ${money(-balanceFor(c))}` : `Dette : ${money(balanceFor(c))}`}</Text>{isSaleBlocked(balanceFor(c), c.limit, false) && <Text style={styles.warning}>Limite atteinte · vente bloquée</Text>}<Button label="Consulter le solde" secondary disabled={loading || storageError} onPress={() => { void openClientBalance(c); }} /><Button label="Nouvelle vente" disabled={loading || storageError} onPress={() => selectClient(c)} /></View>)}
     </>}
+    {screen === 'clientBalance' && balanceClient && <><Header title="Solde client" detail={`${balanceClient.name} · ${balanceClient.sector}`} /><View style={styles.totalCard}><Row label="Dette actuelle" value={money(Math.max(0, balanceFor(balanceClient)))} strong /><Row label="Crédit en faveur du client" value={money(Math.max(0, -balanceFor(balanceClient)))} /><Row label="Plafond de crédit" value={money(balanceClient.limit)} /><Row label="Solde initial fictif" value={money(balanceClient.balance)} /></View><Text style={styles.hint}>La dette et le crédit sont compensés pour afficher le solde global du client. Le solde initial est une donnée fictive.</Text>{isSaleBlocked(balanceFor(balanceClient), balanceClient.limit, false) && <Text style={styles.warning}>Limite atteinte : vente bloquée.</Text>}
+      <Text style={styles.section}>VENTES DU CLIENT</Text>{sales.filter(s => s.clientId === balanceClient.id).length === 0 && <Text style={styles.muted}>Aucune vente enregistrée pour ce client.</Text>}{sales.filter(s => s.clientId === balanceClient.id).map(s => <TouchableOpacity key={s.id} accessibilityRole="button" style={styles.card} onPress={() => { void openSale(s); }}><Text style={styles.cardTitle}>Vente démo #{s.id}</Text><Text style={styles.muted}>{new Date(s.createdAt).toLocaleString('fr-FR')}</Text><Row label="Total actuel" value={money(s.total)} /><Row label="Paiement net conservé" value={money(s.paid)} /><Row label={s.total >= s.paid ? 'Dette de cette vente' : 'Crédit de cette vente'} value={money(Math.abs(s.total - s.paid))} /><Text style={styles.hint}>Appuyez pour consulter la vente et ses modifications.</Text></TouchableOpacity>)}
+      <Text style={styles.section}>REMBOURSEMENTS ENREGISTRÉS</Text>{clientRevisionsLoading && <Text style={styles.muted}>Chargement…</Text>}{clientRevisionsError && <><Text style={styles.warning}>Impossible de charger les remboursements.</Text><Button label="Réessayer" secondary onPress={() => { void openClientBalance(balanceClient); }} /></>}{!clientRevisionsLoading && !clientRevisionsError && clientRevisions.filter(r => r.refund > 0).length === 0 && <Text style={styles.muted}>Aucun remboursement enregistré.</Text>}{!clientRevisionsError && clientRevisions.filter(r => r.refund > 0).map(r => <View key={r.id} style={styles.card}><Text style={styles.cardTitle}>Retour d’argent : {money(r.refund)}</Text><Text style={styles.muted}>Vente démo #{r.current.id} · {new Date(r.createdAt).toLocaleString('fr-FR')}</Text><Text style={styles.hint}>Déjà pris en compte dans le paiement net conservé.</Text></View>)}<Text style={styles.disclaimer}>Données fictives sur ce téléphone uniquement. Les remboursements sont enregistrés, pas effectués par l’application. Le crédit ne peut pas encore être utilisé pour payer une autre vente.</Text><Button label="Retour aux clients" secondary onPress={() => setScreen('clients')} /></>}
     {screen === 'products' && client && <><Header title="Ajouter des articles" detail={`Client : ${client.name}`} /><TextInput accessibilityLabel="Rechercher un article" style={styles.search} placeholder="Rechercher un article ou un code" value={query} onChangeText={setQuery} />{notice ? <Text accessibilityLiveRegion="polite" style={styles.success}>{notice}</Text> : null}<Text style={styles.section}>CATALOGUE DE DÉMONSTRATION</Text>
       {products.filter(p => normalize(`${p.name} ${p.code}`).includes(normalize(query))).map(p => <View key={p.id} style={styles.card}><Text style={styles.cardTitle}>{p.name}</Text><Text style={styles.muted}>{p.code} · TVA {p.vat / 100} %</Text><View style={[styles.row, styles.cardBottom]}><Text style={styles.price}>{money(p.price)} HT</Text><Button label="+ Ajouter" secondary onPress={() => add(p)} /></View></View>)}
       <Button label={`Voir le panier (${cart.reduce((n, l) => n + l.quantity, 0)})`} onPress={() => setScreen('cart')} disabled={!cart.length} /><Button label="Changer de client" secondary onPress={reset} />
