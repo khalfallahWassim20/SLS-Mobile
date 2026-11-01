@@ -14,6 +14,12 @@ try {
       vat_rate integer NOT NULL DEFAULT 1900 CHECK (vat_rate BETWEEN 0 AND 10000),
       units_per_carton integer NOT NULL DEFAULT 1 CHECK (units_per_carton > 0), active boolean NOT NULL DEFAULT true,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
-    );`);
+    );
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id uuid PRIMARY KEY, actor text NOT NULL, action text NOT NULL, entity text NOT NULL,
+      entity_id uuid NOT NULL, entity_name text NOT NULL, changed_fields text[] NOT NULL DEFAULT '{}',
+      created_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS audit_log_created_idx ON audit_log (created_at DESC);`);
   console.log('Migration terminée.');
 } finally { await pool.end(); }

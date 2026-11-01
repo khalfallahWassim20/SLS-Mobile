@@ -13,3 +13,5 @@ node -e "console.log(require('bcryptjs').hashSync('CHOISIR_UN_MOT_DE_PASSE',12))
 Inscrire le hash dans `ADMIN_PASSWORD_HASH` sans guillemets ; remplacer le mot de passe d'exemple dans la commande. Ne pas partager ou versionner `.env`. Depuis la racine exécuter `npm run migrate`, puis `npm run api`.
 
 Prototype local uniquement : pas de TLS, mécanisme de révocation, audit, gestion de comptes ni sauvegarde de production. Ne pas exposer sur Internet ni utiliser de vraies données. Les migrations, les accès et la sécurité restent à vérifier sur une instance PostgreSQL réelle avant production.
+
+Après mise à jour, relancer `npm run migrate` pour créer les tables supplémentaires sans supprimer les données existantes. Le journal d'administration est écrit dans la même transaction que la création ou modification d'un client ou article ; il n'est pas encore un système d'audit complet de production.
