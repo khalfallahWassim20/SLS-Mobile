@@ -10,7 +10,7 @@ Fondations d'une application de facturation pour commerciaux de distribution en 
 
 ## Démarrer
 
-Installer Node.js 22 et npm, puis :
+Installer Node.js 22.13 ou une version compatible plus récente et npm, puis :
 
 ```sh
 npm ci
@@ -21,4 +21,4 @@ Les calculs utilisent des millimes entiers et des taux en centièmes de pour cen
 
 ## Prototype mobile
 
-Lancer `npm run mobile` et ouvrir le projet avec Expo Go sur Android. Voir `apps/mobile/README.md` pour ses limites.
+Le prototype utilise Expo SDK 58. Lancer `npm run mobile` et ouvrir le projet avec une version d’Expo Go compatible SDK 58 sur Android. Voir `apps/mobile/README.md` pour ses limites.
