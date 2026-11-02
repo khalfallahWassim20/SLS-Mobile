@@ -139,3 +139,42 @@ export async function savePreInvoice(value: Omit<TourPreInvoice, 'id'>): Promise
    throw error;
  }
 }
+
+export type TourJournalReceipt = { id: string; preInvoiceId: string; clientId: string; journalDate: string; createdAt: string; prePaid: number; oldDebtPaid: number; creditFull: boolean; mode: 'Espèces' | 'Chèque' | 'Virement'; chequeNumber: string; chequeBank: string; chequeDue: string; oldDebtLimitAtStart: number };
+async function ensureJournalReceipts() {
+ const database = await db();
+ await database.execAsync(`CREATE TABLE IF NOT EXISTS tour_journal_receipts (
+   id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
+ )`);
+ return database;
+}
+export async function getAllPreInvoices(): Promise<TourPreInvoice[]> {
+ const database = await db(); await getPreInvoices('0000-00-00');
+ const rows = await database.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid');
+ return rows.map(r => JSON.parse(r.payload));
+}
+export async function getTourReceipts(): Promise<TourJournalReceipt[]> {
+ const database = await ensureJournalReceipts();
+ const rows = await database.getAllAsync<{payload:string}>('SELECT payload FROM tour_journal_receipts ORDER BY rowid');
+ return rows.map(r => JSON.parse(r.payload));
+}
+export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, availableOldDebt: number): Promise<void> {
+ const { validatePreInvoiceReceipt } = await import('@sls/domain');
+ const database = await ensureJournalReceipts();
+ await database.withExclusiveTransactionAsync(async tx => {
+   const raw = await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE id=? AND client_id=? AND journal_date=?', value.preInvoiceId, value.clientId, value.journalDate);
+   if (!raw) throw new Error('Facture préétablie introuvable.');
+   const invoice: TourPreInvoice = JSON.parse(raw.payload);
+   const previousRows = await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_journal_receipts WHERE pre_invoice_id=? ORDER BY rowid', value.preInvoiceId);
+   const previous: TourJournalReceipt[] = previousRows.map(r => JSON.parse(r.payload));
+   if (previous.length && value.oldDebtLimitAtStart !== previous[0].oldDebtLimitAtStart) throw new Error('Ancienne dette incohérente.');
+   if (!Number.isSafeInteger(value.oldDebtLimitAtStart) || value.oldDebtLimitAtStart < 0) throw new Error('Ancienne dette invalide.');
+   const priorDebtPaid = previous.reduce((n,p) => n+p.oldDebtPaid, 0);
+   const bound = Math.min(availableOldDebt, Math.max(0,value.oldDebtLimitAtStart-priorDebtPaid));
+   if (!['Espèces','Chèque','Virement'].includes(value.mode)) throw new Error('Mode de paiement invalide.');
+   if (value.mode === 'Chèque' && (value.prePaid || value.oldDebtPaid) && (!value.chequeNumber.trim() || !value.chequeBank.trim() || !value.chequeDue.trim())) throw new Error('Renseignez le numéro, la banque et l’échéance du chèque.');
+   validatePreInvoiceReceipt(invoice.amount, previous, value, bound);
+   const id = randomUUID();
+   await tx.runAsync('INSERT INTO tour_journal_receipts(id,pre_invoice_id,client_id,journal_date,payload) VALUES (?,?,?,?,?)', id,value.preInvoiceId,value.clientId,value.journalDate,JSON.stringify({...value,id}));
+ });
+}

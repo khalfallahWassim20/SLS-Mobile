@@ -40,3 +40,21 @@ test('totaux de journée et client sans facture préétablie', () => {
  const result = calculateJournalDay([client, { ...client, clientId:'client-2', preInvoiceTotal:null, tourInvoices:[{total:250000,paid:250000}] }]);
  assert.equal(result.clientCount,2); assert.equal(result.totalBilled,850000); assert.equal(result.totalCollected,250000);
 });
+
+test('traitement local : crédit total puis paiement ultérieur sans double ajout', async () => {
+ const { summarizePreInvoice, validatePreInvoiceReceipt } = await import('../src/journal.js');
+ const initial={prePaid:0,oldDebtPaid:300000,creditFull:true};
+ const first=validatePreInvoiceReceipt(600000,[],initial,1000000);
+ assert.deepEqual(first,{prePaid:0,oldDebtPaid:300000,remaining:600000,declared:true,debtEffect:300000,totalCollected:300000});
+ const second=validatePreInvoiceReceipt(600000,[initial],{prePaid:200000,oldDebtPaid:0,creditFull:false},700000);
+ assert.equal(second.debtEffect,100000); assert.equal(second.totalCollected,500000);
+ assert.throws(()=>validatePreInvoiceReceipt(600000,[initial],{prePaid:600001,oldDebtPaid:0,creditFull:false},700000));
+ assert.throws(()=>validatePreInvoiceReceipt(600000,[],{prePaid:0,oldDebtPaid:1000001,creditFull:true},1000000));
+ assert.throws(()=>validatePreInvoiceReceipt(600000,[],{prePaid:0,oldDebtPaid:300000,creditFull:false},1000000));
+});
+test('saisie non traitée ne crée pas encore de dette ; un paiement partiel l’active', async () => {
+ const { summarizePreInvoice, validatePreInvoiceReceipt } = await import('../src/journal.js');
+ assert.equal(summarizePreInvoice(600000,[]).debtEffect,0);
+ assert.equal(validatePreInvoiceReceipt(600000,[],{prePaid:200000,oldDebtPaid:0,creditFull:false},0).debtEffect,400000);
+ assert.throws(()=>validatePreInvoiceReceipt(600000,[],{prePaid:200000,oldDebtPaid:0,creditFull:true},0));
+});

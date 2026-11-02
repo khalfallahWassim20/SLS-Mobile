@@ -78,3 +78,30 @@ export function calculateJournalDay(clients: JournalClientInput[]) {
   });
   return { rows, clientCount: rows.length, totalBilled: safe(billed), totalCollected: safe(collected), oldDebtPaid: safe(oldDebtPaid) };
 }
+
+/** Événement local du journal : les deux montants restent des paiements distincts. */
+export type PreInvoiceReceipt = { prePaid: number; oldDebtPaid: number; creditFull: boolean };
+export function summarizePreInvoice(total: number, receipts: PreInvoiceReceipt[]) {
+  integer(total, 'Facture préétablie', 1);
+  let prePaid=0n, oldDebtPaid=0n, declared=false;
+  for (const receipt of receipts) {
+    integer(receipt.prePaid, 'Paiement de facture'); integer(receipt.oldDebtPaid, 'Règlement de dette');
+    if (typeof receipt.creditFull !== 'boolean') throw new RangeError('Choix crédit invalide');
+    if (receipt.creditFull && (receipt.prePaid > 0 || prePaid > 0n || declared)) throw new RangeError('Le crédit total concerne seulement une facture entièrement impayée et non encore déclarée');
+    if (receipt.creditFull || receipt.prePaid > 0) declared=true;
+    prePaid += BigInt(receipt.prePaid); oldDebtPaid += BigInt(receipt.oldDebtPaid);
+    if (prePaid > BigInt(total)) throw new RangeError('Paiement supérieur à la facture préétablie');
+  }
+  const remaining=BigInt(total)-prePaid;
+  // Le montant de la facture est ajouté au solde seulement après paiement ou choix crédit.
+  const debtEffect=(declared ? remaining : 0n) - oldDebtPaid;
+  return { prePaid:safe(prePaid), oldDebtPaid:safe(oldDebtPaid), remaining:safe(remaining), declared, debtEffect:safe(debtEffect), totalCollected:safe(prePaid+oldDebtPaid) };
+}
+export function validatePreInvoiceReceipt(total: number, previous: PreInvoiceReceipt[], next: PreInvoiceReceipt, availableOldDebt: number) {
+  integer(availableOldDebt, 'Ancienne dette disponible');
+  const before=summarizePreInvoice(total,previous);
+  if (!next.creditFull && next.prePaid === 0 && next.oldDebtPaid === 0) throw new RangeError('Saisissez un paiement ou choisissez crédit total');
+  if (!before.declared && next.prePaid === 0 && !next.creditFull) throw new RangeError('Pour une facture entièrement impayée, choisissez crédit total');
+  if (next.oldDebtPaid > availableOldDebt) throw new RangeError('Règlement supérieur à l’ancienne dette disponible');
+  return summarizePreInvoice(total,[...previous,next]);
+}

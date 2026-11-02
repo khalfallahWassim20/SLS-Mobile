@@ -24,4 +24,4 @@ Après téléchargement de l'instantané v2, le téléphone combine le solde ser
 
 ## Journal de tournée — aperçu local
 
-L'écran d'accueil montre les ventes locales du jour et permet de saisir un montant préétabli par client et date, stocké uniquement sur cet appareil. Les préétablis ne sont ni synchronisés ni pris en compte dans les soldes et paiements. La clôture, les exports et l'identification des commerciaux restent à développer. Il ne s'agit pas d'un journal utilisable pour la facturation réelle.
+L'écran d'accueil montre les ventes locales du jour et permet de saisir un montant préétabli par client et date, stocké uniquement sur cet appareil. Les paiements et le crédit des préétablis ainsi que les règlements d’ancienne dette sont enregistrés localement et pris en compte dans le solde de ce téléphone, mais ne sont pas synchronisés. Le règlement global synchronisé est désactivé pour les clients ayant une opération de journal locale. Les paiements ultérieurs ne sont accessibles que dans le journal du jour. La clôture, les exports et l'identification des commerciaux restent à développer. Il ne s'agit pas d'un journal utilisable pour la facturation réelle.
