@@ -141,5 +141,5 @@ export function reconcileClientBalance(input: {
   return { balance: safe(balance), conflict };
 }
 
-export { calculateJournalClient, calculateJournalDay, validatePreInvoiceCreditChoice } from './journal.js';
-export type { JournalClientInput, JournalPayment, TourInvoice } from './journal.js';
+export { calculateJournalClient, calculateJournalDay, validatePreInvoiceCreditChoice } from './journal.ts';
+export type { JournalClientInput, JournalPayment, TourInvoice } from './journal.ts';

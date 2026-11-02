@@ -116,3 +116,26 @@ export async function acknowledgeOutbox(operationId: string): Promise<void> {
 export async function failOutbox(operationId: string, error: string): Promise<void> {
  await (await db()).runAsync('UPDATE sales_outbox SET last_error = ? WHERE operation_id = ?', error.slice(0, 300), operationId);
 }
+
+export type TourPreInvoice = { id: string; journalDate: string; clientId: string; clientName: string; sector: string; amount: number; createdAt: string };
+export async function getPreInvoices(journalDate: string): Promise<TourPreInvoice[]> {
+ const database = await db();
+ await database.execAsync(`CREATE TABLE IF NOT EXISTS tour_pre_invoices (
+   id TEXT PRIMARY KEY, journal_date TEXT NOT NULL, client_id TEXT NOT NULL,
+   payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
+ )`);
+ const rows = await database.getAllAsync<{payload: string}>('SELECT payload FROM tour_pre_invoices WHERE journal_date = ? ORDER BY rowid', journalDate);
+ return rows.map(row => JSON.parse(row.payload));
+}
+export async function savePreInvoice(value: Omit<TourPreInvoice, 'id'>): Promise<void> {
+ if (!value.clientId || !value.clientName || !Number.isSafeInteger(value.amount) || value.amount <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(value.journalDate)) throw new Error('Saisie invalide.');
+ const database = await db();
+ await getPreInvoices(value.journalDate); // initialise la table avant l'écriture
+ const id = randomUUID(), payload = { ...value, id };
+ try { await database.runAsync('INSERT INTO tour_pre_invoices (id,journal_date,client_id,payload) VALUES (?,?,?,?)', id, value.journalDate, value.clientId, JSON.stringify(payload)); }
+ catch (error) {
+   const existing = await database.getFirstAsync<{id: string}>('SELECT id FROM tour_pre_invoices WHERE journal_date=? AND client_id=?', value.journalDate, value.clientId);
+   if (existing) throw new Error('Une facture préétablie existe déjà pour ce client aujourd’hui.');
+   throw error;
+ }
+}

@@ -21,3 +21,7 @@ Les anciens clients et articles intégrés au prototype ne sont plus proposés. 
 ## Solde de démonstration multi-appareil
 
 Après téléchargement de l'instantané v2, le téléphone combine le solde serveur reçu avec les différences de versions locales et les règlements non inclus dans cet instantané. Les marqueurs serveur évitent de compter une opération deux fois même si la réponse d'envoi a été perdue. Les anciens instantanés restent consultables mais nécessitent une actualisation avant une vente. Les opérations d'un autre appareil ne sont visibles qu'après envoi et téléchargement manuel. Deux appareils hors ligne peuvent toujours dépasser une limite simultanément. Les anciens événements uniquement locaux restent locaux. Ce mécanisme est expérimental : tests d'intégration multi-appareil, conflits, sécurité et fiscalité restent indispensables.
+
+## Journal de tournée — aperçu local
+
+L'écran d'accueil montre les ventes locales du jour et permet de saisir un montant préétabli par client et date, stocké uniquement sur cet appareil. Les préétablis ne sont ni synchronisés ni pris en compte dans les soldes et paiements. La clôture, les exports et l'identification des commerciaux restent à développer. Il ne s'agit pas d'un journal utilisable pour la facturation réelle.
