@@ -69,3 +69,24 @@ test('règlement global de dette, sans trop-perçu ni double comptage', async ()
   assert.throws(() => balanceAfterSettlement(100000, 100001));
   assert.throws(() => balanceAfterSettlement(-1000, 1));
 });
+
+test('fusion du solde serveur avec opérations locales sans double comptage', async () => {
+ const { reconcileClientBalance } = await import('../src/index.js');
+ const server = { serverBalance: 60000, serverSales: [{saleId:'s1',version:1,total:50000,paid:10000}], serverSettlementIds:['p1'] };
+ assert.deepEqual(reconcileClientBalance({...server,localSales:[{syncSaleId:'s1',syncVersion:1,total:50000,paid:10000}],localSettlements:[{syncOperationId:'p1',amount:10000}]}),{balance:60000,conflict:false});
+ assert.deepEqual(reconcileClientBalance({...server,localSales:[{syncSaleId:'s1',syncVersion:2,total:70000,paid:10000},{syncSaleId:'s2',syncVersion:1,total:30000,paid:0}],localSettlements:[{syncOperationId:'p1',amount:10000},{syncOperationId:'p2',amount:5000}]}),{balance:105000,conflict:false});
+ assert.deepEqual(reconcileClientBalance({...server,localSales:[{syncSaleId:'s1',syncVersion:1,total:40000,paid:10000}],localSettlements:[]}),{balance:60000,conflict:true});
+ assert.deepEqual(reconcileClientBalance({...server,serverSales:[{saleId:'s1',version:2,total:70000,paid:10000}],localSales:[{syncSaleId:'s1',syncVersion:1,total:50000,paid:10000}],localSettlements:[]}),{balance:60000,conflict:true});
+});
+
+test('réception serveur avant accusé local, crédit et remboursement sans doublon', async () => {
+ const { reconcileClientBalance } = await import('../src/index.js');
+ // La version et le règlement reçus sont déjà inclus dans -20 DT côté serveur.
+ const common={serverBalance:-20000,serverSales:[{saleId:'x',version:2,total:100000,paid:150000}],serverSettlementIds:['p']};
+ const localSales=[{syncSaleId:'x',syncVersion:2,total:100000,paid:150000}];
+ const localSettlements=[{syncOperationId:'p',amount:10000}];
+ assert.deepEqual(reconcileClientBalance({...common,localSales,localSettlements}),{balance:-20000,conflict:false});
+ // Modification locale : remboursement de 50 DT, réduisant le crédit.
+ assert.deepEqual(reconcileClientBalance({...common,localSales:[{syncSaleId:'x',syncVersion:3,total:100000,paid:100000}],localSettlements}),{balance:30000,conflict:false});
+ assert.throws(()=>reconcileClientBalance({...common,localSales:[...localSales,...localSales],localSettlements}));
+});

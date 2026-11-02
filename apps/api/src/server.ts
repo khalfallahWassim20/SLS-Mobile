@@ -33,11 +33,26 @@ app.get('/api/mobile/reference', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60
   const db = await pool.connect();
   try {
     await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    const clients = await db.query(`SELECT id,name,sector,opening_balance::text AS "openingBalance",credit_limit::text AS "creditLimit" FROM clients WHERE active AND deleted_at IS NULL ORDER BY name`);
+    const clients = await db.query(`WITH latest AS (
+      SELECT DISTINCT ON (sale_id) client_id,payload FROM demo_sale_events ORDER BY sale_id,version DESC
+    ), sales AS (
+      SELECT client_id,sum((payload->'sale'->>'total')::bigint-(payload->'sale'->>'paid')::bigint) AS balance FROM latest GROUP BY client_id
+    ), payments AS (
+      SELECT client_id,sum((payload->'settlement'->>'amount')::bigint) AS total FROM demo_settlements GROUP BY client_id
+    ) SELECT c.id,c.name,c.sector,c.opening_balance::text AS "openingBalance",c.credit_limit::text AS "creditLimit",
+      (c.opening_balance + COALESCE(s.balance,0) - COALESCE(p.total,0))::text AS "serverBalance"
+      FROM clients c LEFT JOIN sales s ON s.client_id=c.id LEFT JOIN payments p ON p.client_id=c.id
+      WHERE c.active AND c.deleted_at IS NULL ORDER BY c.name`);
+    // Ces marqueurs permettent au mobile de ne pas recompter ses propres opérations.
+    const saleStates = await db.query(`SELECT DISTINCT ON (e.sale_id) e.sale_id AS "saleId",e.client_id AS "clientId",e.version,
+      e.payload->'sale'->>'total' AS total,e.payload->'sale'->>'paid' AS paid
+      FROM demo_sale_events e JOIN clients c ON c.id=e.client_id WHERE c.active AND c.deleted_at IS NULL ORDER BY e.sale_id,e.version DESC`);
+    const settlementStates = await db.query(`SELECT p.operation_id AS "operationId",p.client_id AS "clientId"
+      FROM demo_settlements p JOIN clients c ON c.id=p.client_id WHERE c.active AND c.deleted_at IS NULL`);
     // Projection explicite : pas de prix d'achat ni d'autres champs confidentiels.
     const articles = await db.query(`SELECT id,code,barcode,name,sale_ttc::text AS "saleTtc",vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton" FROM articles WHERE active AND deleted_at IS NULL ORDER BY name`);
     await db.query('COMMIT');
-    res.set('Cache-Control','no-store').json({ version: 1, clients: clients.rows, articles: articles.rows });
+    res.set('Cache-Control','no-store').json({ version: 2, clients: clients.rows, articles: articles.rows, saleStates: saleStates.rows, settlementStates: settlementStates.rows });
   } catch (error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
 });
 // Protocole de démonstration : chaque version est immuable et idempotente.

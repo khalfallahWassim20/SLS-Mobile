@@ -25,3 +25,11 @@ test('valide les soldes et préserve les anciens instantanés consultables', () 
  assert.equal(validateReference({version:1,clients:[{...base,openingBalance:'-50000',creditLimit:'2000000'}],articles:[]}).clients[0].openingBalance, '-50000');
  assert.throws(() => validateReference({version:1,clients:[{...base,openingBalance:'0',creditLimit:'-1'}],articles:[]}));
 });
+
+test('un instantané v2 exige un solde et des marqueurs cohérents', () => {
+ const base={version:2,clients:[{id:'c',name:'X',sector:'Sud',openingBalance:'100',creditLimit:'0',serverBalance:'-20'}],articles:[],saleStates:[{saleId:'s',clientId:'c',version:1,total:'100',paid:'20'}],settlementStates:[{operationId:'p',clientId:'c'}]};
+ assert.equal(validateReference(base).clients[0].serverBalance,'-20');
+ assert.throws(()=>validateReference({...base,settlementStates:undefined}));
+ assert.throws(()=>validateReference({...base,saleStates:[{...base.saleStates[0],clientId:'autre'}]}));
+ assert.throws(()=>validateReference({...base,saleStates:[base.saleStates[0],base.saleStates[0]]}));
+});

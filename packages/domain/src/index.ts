@@ -97,3 +97,46 @@ export function balanceAfterSettlement(balance: number, payment: number): number
   if (balance <= 0 || payment > balance) throw new RangeError('Le règlement doit être positif et ne pas dépasser la dette du client');
   return balance - payment;
 }
+
+/** Fusionne un instantané serveur et les opérations locales sans double comptage.
+ * Le booléen conflict signale une version locale incohérente ou plus ancienne.
+ */
+export function reconcileClientBalance(input: {
+  serverBalance: number;
+  localSales: { syncSaleId?: string; syncVersion?: number; total: number; paid: number }[];
+  serverSales: { saleId: string; version: number; total: number; paid: number }[];
+  localSettlements: { syncOperationId?: string; amount: number }[];
+  serverSettlementIds: string[];
+}): { balance: number; conflict: boolean } {
+  integer(input.serverBalance, 'Solde serveur', Number.MIN_SAFE_INTEGER);
+  let balance = BigInt(input.serverBalance), conflict = false;
+  const remote = new Map<string, typeof input.serverSales[number]>();
+  for (const s of input.serverSales) {
+    integer(s.version, 'Version serveur', 1); integer(s.total, 'Total serveur'); integer(s.paid, 'Paiement serveur');
+    if (remote.has(s.saleId)) throw new RangeError('Vente serveur dupliquée');
+    remote.set(s.saleId, s);
+  }
+  const localIds = new Set<string>();
+  for (const sale of input.localSales) {
+    integer(sale.total, 'Total local'); integer(sale.paid, 'Paiement local');
+    if (sale.syncSaleId) {
+      integer(sale.syncVersion ?? 0, 'Version locale', 1);
+      if (localIds.has(sale.syncSaleId)) throw new RangeError('Vente locale dupliquée');
+      localIds.add(sale.syncSaleId);
+    }
+    const server = sale.syncSaleId ? remote.get(sale.syncSaleId) : undefined;
+    if (!server) balance += BigInt(sale.total) - BigInt(sale.paid);
+    else if (sale.syncVersion! > server.version) balance += BigInt(sale.total) - BigInt(sale.paid) - BigInt(server.total) + BigInt(server.paid);
+    else if (sale.syncVersion! < server.version || sale.total !== server.total || sale.paid !== server.paid) conflict = true;
+  }
+  const settled = new Set(input.serverSettlementIds), localSettlementIds = new Set<string>();
+  for (const payment of input.localSettlements) {
+    integer(payment.amount, 'Règlement local', 1);
+    if (payment.syncOperationId) {
+      if (localSettlementIds.has(payment.syncOperationId)) throw new RangeError('Règlement local dupliqué');
+      localSettlementIds.add(payment.syncOperationId);
+    }
+    if (!payment.syncOperationId || !settled.has(payment.syncOperationId)) balance -= BigInt(payment.amount);
+  }
+  return { balance: safe(balance), conflict };
+}
