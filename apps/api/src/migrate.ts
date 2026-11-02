@@ -26,6 +26,11 @@ try {
       client_id uuid NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(sale_id,version)
     );
-    CREATE INDEX IF NOT EXISTS demo_sale_events_latest_idx ON demo_sale_events(sale_id,version DESC);`);
+    CREATE INDEX IF NOT EXISTS demo_sale_events_latest_idx ON demo_sale_events(sale_id,version DESC);
+    CREATE TABLE IF NOT EXISTS demo_settlements (
+      operation_id uuid PRIMARY KEY, client_id uuid NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS demo_settlements_client_idx ON demo_settlements(client_id);`);
   console.log('Migration terminée.');
 } finally { await pool.end(); }

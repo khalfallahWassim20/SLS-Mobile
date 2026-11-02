@@ -67,13 +67,22 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
   });
 }
 
-export type Settlement = { id: number; createdAt: string; clientId: string; clientName: string; amount: number; mode: string; chequeNumber: string; chequeBank: string; chequeDue: string };
+export type Settlement = { id: number; syncOperationId?: string; createdAt: string; clientId: string; clientName: string; amount: number; mode: string; chequeNumber: string; chequeBank: string; chequeDue: string };
 export async function getSettlements(): Promise<Settlement[]> {
   const rows = await (await db()).getAllAsync<{id: number; payload: string}>('SELECT id, payload FROM settlements ORDER BY id DESC');
   return rows.map(r => ({ ...JSON.parse(r.payload), id: r.id }));
 }
-export async function saveSettlement(settlement: Omit<Settlement, 'id'>): Promise<void> {
-  await (await db()).runAsync('INSERT INTO settlements (created_at, client_id, payload) VALUES (?, ?, ?)', settlement.createdAt, settlement.clientId, JSON.stringify(settlement));
+export async function saveSettlement(settlement: Omit<Settlement, 'id'>, syncEligible = false): Promise<void> {
+  const database = await db();
+  await database.withExclusiveTransactionAsync(async tx => {
+    const syncOperationId = syncEligible ? randomUUID() : undefined;
+    const snapshot = syncOperationId ? { ...settlement, syncOperationId } : settlement;
+    await tx.runAsync('INSERT INTO settlements (created_at, client_id, payload) VALUES (?, ?, ?)', snapshot.createdAt, snapshot.clientId, JSON.stringify(snapshot));
+    if (syncOperationId) {
+      const event = { operationId: syncOperationId, settlement: snapshot };
+      await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)', syncOperationId, syncOperationId, 1, JSON.stringify(event));
+    }
+  });
 }
 // La première version sauvegardée de chaque vente conserve le paiement initial,
 // y compris après remboursement. Pour une vente non modifiée, le payload actuel suffit.

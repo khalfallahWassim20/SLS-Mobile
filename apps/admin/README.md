@@ -7,3 +7,5 @@ Gestion de clients et articles : ajout, modification, activation et désactivati
 La vue d’ensemble présente uniquement les nombres de clients et articles. Le journal affiche les 200 dernières créations et modifications de ces données à partir de son activation ; les données existantes ne génèrent pas de traces rétroactives. Le journal n'enregistre pas encore les connexions, ventes ni paiements.
 
 Le menu « Ventes démo » affiche les ventes fictives manuellement envoyées par le mobile, sans mise à jour des soldes clients ni synchronisation des règlements de dette.
+
+Les menus « Soldes démo » et « Règlements démo » présentent les opérations reçues et le solde calculé côté serveur. Les anciennes opérations locales, les opérations non envoyées et la synchronisation multi-appareil ne sont pas encore prises en compte.
