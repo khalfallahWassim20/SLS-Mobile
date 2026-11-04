@@ -6,16 +6,16 @@ import { validatePreInvoiceReceipt } from '@sls/domain';
 
 const uuid = z.string().uuid();
 const amount = z.number().int().safe().nonnegative();
-const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
+export const journalDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine(value => {
   const d = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(d.getTime()) && d.toISOString().slice(0,10) === value;
 }, 'Date de tournée invalide');
 const invoiceSchema = z.object({
-  id:uuid, journalDate:date, clientId:uuid, clientName:z.string().trim().min(1).max(200),
+  id:uuid, journalDate:journalDateSchema, clientId:uuid, clientName:z.string().trim().min(1).max(200),
   sector:z.string().max(100), amount:amount.positive(), createdAt:z.string().datetime()
 }).strict();
 const receiptSchema = z.object({
-  id:uuid, preInvoiceId:uuid, clientId:uuid, journalDate:date, createdAt:z.string().datetime(),
+  id:uuid, preInvoiceId:uuid, clientId:uuid, journalDate:journalDateSchema, createdAt:z.string().datetime(),
   prePaid:amount, oldDebtPaid:amount, creditFull:z.boolean(), mode:z.enum(['Espèces','Chèque','Virement']),
   chequeNumber:z.string().max(100), chequeBank:z.string().max(100), chequeDue:z.string().max(100), oldDebtLimitAtStart:amount
 }).strict();

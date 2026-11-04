@@ -80,6 +80,15 @@ test('migration et stockage sur moteur PostgreSQL intégré, sans test de concur
   const second={...event,operationId:uuid(5),version:2,receipts:[receipt,{...receipt,id:uuid(6),creditFull:false,oldDebtPaid:0,prePaid:200000}]};
   assert.equal(await storeJournalSnapshot(pool,second),'received');
   await assert.rejects(storeJournalSnapshot(pool,{...event,operationId:uuid(7),invoice:{...invoice,id:uuid(8)},receipts:[]}),JournalConflict);
+  const saleId=uuid(20);
+  const sale={clientId:invoice.clientId,clientName:invoice.clientName,createdAt:'2026-11-03T23:30:00.000Z',total:120000,paid:0};
+  await db.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,1,$3,$4::jsonb,$5)',[uuid(21),saleId,invoice.clientId,JSON.stringify({sale}),'h1']);
+  await db.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,2,$3,$4::jsonb,$5)',[uuid(22),saleId,invoice.clientId,JSON.stringify({sale:{...sale,total:250000,paid:100000}}),'h2']);
+  const {readServerJournalDay}=await import('../../../apps/api/src/journal-day.js');
+  const day=await readServerJournalDay(pool,'2026-11-04');
+  assert.equal(day.rows.length,1); assert.equal(day.rows[0].preInvoiceTotal,600000); assert.equal(day.rows[0].tourTotal,250000); assert.equal(day.rows[0].totalClient,850000);
+  assert.equal(day.rows[0].preInvoicePaid,200000); assert.equal(day.rows[0].oldDebtPaid,300000); assert.equal(day.totalCollected,600000);
+  assert.equal((await readServerJournalDay(pool,'2026-11-03')).rows.length,0);
   const result=await db.query('SELECT version FROM demo_journal_events ORDER BY version');
   assert.deepEqual(result.rows.map((r:any)=>r.version),[1,2]);
   const express=(await import('express')).default;
@@ -100,6 +109,9 @@ test('migration et stockage sur moteur PostgreSQL intégré, sans test de concur
    assert.equal(duplicate.status,200); assert.equal((await duplicate.json()).status,'duplicate');
    assert.equal((await fetch(base+'/journal',{method:'POST',headers,body:JSON.stringify({...event,invoice:{...invoice,amount:700000}})})).status,409);
    assert.equal((await fetch(base+'/journal',{method:'POST',headers,body:'{}'})).status,400);
+   const invalidDay=await fetch(base+'/journal/day/2026-02-30',{headers}); assert.equal(invalidDay.status,400);
+   const dayResponse=await fetch(base+'/journal/day/2026-11-04',{headers}); assert.equal(dayResponse.status,200);
+   const dayData=await dayResponse.json(); assert.equal(dayData.rows[0].totalClient,850000); assert.match(dayData.warning,/expérimental/i);
    const listing=await fetch(base+'/journal',{headers}); assert.equal(listing.status,200);
    const data=await listing.json(); assert.equal(data.items.length,2); assert.ok(data.items.some((item:any)=>item.version===2)); assert.match(data.warning,/pas inclus/i);
   } finally { await new Promise<void>(resolve=>server.close(()=>resolve())); }

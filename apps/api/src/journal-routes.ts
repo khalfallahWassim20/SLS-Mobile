@@ -3,6 +3,7 @@ import { rateLimit } from 'express-rate-limit';
 import { ZodError } from 'zod';
 import type { Pool } from 'pg';
 import { JournalConflict, storeJournalSnapshot } from './journal-store.js';
+import { readServerJournalDay } from './journal-day.js';
 
 /** Route de test administrateur, activée explicitement et isolée des soldes.
  * Elle ne doit pas servir à synchroniser les téléphones avant la version de référence suivante. */
@@ -18,6 +19,10 @@ export function experimentalJournalRoutes(pool: Pool, enabled: boolean) {
       if (error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données de journal invalides.'}); return;}
       next(error);
     }
+  });
+  router.get('/day/:date', async (req,res,next) => {
+    try { const result=await readServerJournalDay(pool,req.params.date); res.set('Cache-Control','no-store').json({warning:'Aperçu expérimental, uniquement les opérations reçues ; les préétablis ne sont pas inclus dans les soldes serveur.',...result}); }
+    catch(error) { if(error instanceof ZodError) {res.status(400).json({error:'Date invalide.'}); return;} next(error); }
   });
   router.get('/', async (_req,res,next) => {
     try {
