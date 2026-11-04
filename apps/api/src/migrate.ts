@@ -31,6 +31,20 @@ try {
       operation_id uuid PRIMARY KEY, client_id uuid NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now()
     );
-    CREATE INDEX IF NOT EXISTS demo_settlements_client_idx ON demo_settlements(client_id);`);
+    CREATE INDEX IF NOT EXISTS demo_settlements_client_idx ON demo_settlements(client_id);
+    -- Préparation uniquement : ces tables ne sont pas encore utilisées par les soldes ni par une API publique.
+    CREATE TABLE IF NOT EXISTS demo_journal_invoices (
+      id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id), journal_date date NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(client_id,journal_date)
+    );
+    CREATE TABLE IF NOT EXISTS demo_journal_receipt_ids (
+      id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES demo_journal_invoices(id)
+    );
+    CREATE TABLE IF NOT EXISTS demo_journal_events (
+      operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES demo_journal_invoices(id),
+      version integer NOT NULL CHECK (version > 0), payload jsonb NOT NULL, payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(invoice_id,version)
+    );
+    CREATE INDEX IF NOT EXISTS demo_journal_events_latest_idx ON demo_journal_events(invoice_id,version DESC);`);
   console.log('Migration terminée.');
 } finally { await pool.end(); }
