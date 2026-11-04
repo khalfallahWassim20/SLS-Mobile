@@ -1,5 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import { randomUUID } from 'expo-crypto';
+import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -20,7 +21,12 @@ async function db() {
       id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, client_id TEXT NOT NULL, payload TEXT NOT NULL
     ); CREATE TABLE IF NOT EXISTS sales_outbox (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL UNIQUE, sale_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, last_error TEXT
-    );`);
+    ); CREATE TABLE IF NOT EXISTS tour_pre_invoices (
+      id TEXT PRIMARY KEY, journal_date TEXT NOT NULL, client_id TEXT NOT NULL,
+      payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
+    ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
+      id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
+    ); ${journalQueueSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -132,7 +138,10 @@ export async function savePreInvoice(value: Omit<TourPreInvoice, 'id'>): Promise
  const database = await db();
  await getPreInvoices(value.journalDate); // initialise la table avant l'écriture
  const id = randomUUID(), payload = { ...value, id };
- try { await database.runAsync('INSERT INTO tour_pre_invoices (id,journal_date,client_id,payload) VALUES (?,?,?,?)', id, value.journalDate, value.clientId, JSON.stringify(payload)); }
+ try { await database.withExclusiveTransactionAsync(async tx => {
+   await tx.runAsync('INSERT INTO tour_pre_invoices (id,journal_date,client_id,payload) VALUES (?,?,?,?)', id, value.journalDate, value.clientId, JSON.stringify(payload));
+   await queueJournalSnapshot(tx,id,randomUUID);
+ }); }
  catch (error) {
    const existing = await database.getFirstAsync<{id: string}>('SELECT id FROM tour_pre_invoices WHERE journal_date=? AND client_id=?', value.journalDate, value.clientId);
    if (existing) throw new Error('Une facture préétablie existe déjà pour ce client aujourd’hui.');
@@ -149,7 +158,8 @@ async function ensureJournalReceipts() {
  return database;
 }
 export async function getAllPreInvoices(): Promise<TourPreInvoice[]> {
- const database = await db(); await getPreInvoices('0000-00-00');
+ const database = await db();
+ await database.withExclusiveTransactionAsync(async tx => { await bootstrapJournalQueue(tx,randomUUID); });
  const rows = await database.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid');
  return rows.map(r => JSON.parse(r.payload));
 }
@@ -174,7 +184,10 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
    if (!['Espèces','Chèque','Virement'].includes(value.mode)) throw new Error('Mode de paiement invalide.');
    if (value.mode === 'Chèque' && (value.prePaid || value.oldDebtPaid) && (!value.chequeNumber.trim() || !value.chequeBank.trim() || !value.chequeDue.trim())) throw new Error('Renseignez le numéro, la banque et l’échéance du chèque.');
    validatePreInvoiceReceipt(invoice.amount, previous, value, bound);
+   const state = await tx.getFirstAsync<{version:number}>('SELECT version FROM journal_sync_state WHERE invoice_id=?', value.preInvoiceId);
+   if (!state) await queueJournalSnapshot(tx,value.preInvoiceId,randomUUID);
    const id = randomUUID();
    await tx.runAsync('INSERT INTO tour_journal_receipts(id,pre_invoice_id,client_id,journal_date,payload) VALUES (?,?,?,?,?)', id,value.preInvoiceId,value.clientId,value.journalDate,JSON.stringify({...value,id}));
+   await queueJournalSnapshot(tx,value.preInvoiceId,randomUUID);
  });
 }
