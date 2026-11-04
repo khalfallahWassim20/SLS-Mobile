@@ -1,4 +1,4 @@
-/** Stockage transactionnel de démonstration. Non connecté à une route HTTP. */
+/** Stockage transactionnel isolé, réservé aux tests administrateur expérimentaux. */
 import type { Pool } from 'pg';
 import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition } from './journal-protocol.js';
 
@@ -28,7 +28,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown): Promise<
       if (!client.rows.length) throw new JournalConflict('Client introuvable sur le serveur.');
       await db.query('INSERT INTO demo_journal_invoices(id,client_id,journal_date) VALUES($1,$2,$3::date)',[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);
     }
-    for (const receipt of event.receipts) {
+    for (const receipt of [...event.receipts].sort((a,b) => a.id.localeCompare(b.id))) {
       await db.query('INSERT INTO demo_journal_receipt_ids(id,invoice_id) VALUES($1,$2) ON CONFLICT(id) DO NOTHING',[receipt.id,event.invoice.id]);
       const owner = await db.query('SELECT invoice_id FROM demo_journal_receipt_ids WHERE id=$1',[receipt.id]);
       if (owner.rows[0]?.invoice_id !== event.invoice.id) throw new JournalConflict('Identifiant de règlement déjà utilisé pour une autre facture.');

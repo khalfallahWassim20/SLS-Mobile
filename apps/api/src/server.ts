@@ -7,6 +7,7 @@ import { z, ZodError } from 'zod';
 import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { pool } from './db.js';
 import { calculateInvoice } from '@sls/domain';
+import { experimentalJournalRoutes } from './journal-routes.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -108,6 +109,8 @@ app.post('/api/mobile/settlements', rateLimit({windowMs: 15*60*1000,limit:500,st
   } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
 });
 app.use('/api', auth);
+// Endpoint réservé aux essais administrateur : désactivé par défaut, hors soldes et hors synchronisation mobile.
+app.use('/api/experimental/journal', experimentalJournalRoutes(pool, process.env.JOURNAL_EXPERIMENTAL === '1'));
 const text = (max: number) => z.string().trim().max(max);
 const clientSchema = z.object({ name: text(200).min(1), sector: text(100), address: text(300), taxId: text(100), phone: text(50), openingBalance: z.number().int().safe(), creditLimit: z.number().int().safe().min(0), active: z.boolean() }).strict();
 const articleSchema = z.object({ name: text(200).min(1), barcode: text(100), purchaseTtc: z.number().int().safe().min(0), saleTtc: z.number().int().safe().min(0), vatRate: z.number().int().min(0).max(10000), unitsPerCarton: z.number().int().min(1).max(1000000), active: z.boolean() }).strict();

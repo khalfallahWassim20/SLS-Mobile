@@ -61,3 +61,47 @@ test('stockage transactionnel : création, accusé répété et conflit', async 
  await assert.rejects(storeJournalSnapshot(fake,event),JournalConflict);
  assert.deepEqual(calls.slice(-2),['ROLLBACK','RELEASE']);
 });
+
+test('migration et stockage sur moteur PostgreSQL intégré, sans test de concurrence', async () => {
+ const { PGlite } = await import('@electric-sql/pglite');
+ const { schemaSql } = await import('../../../apps/api/src/schema.js');
+ const { storeJournalSnapshot, JournalConflict } = await import('../../../apps/api/src/journal-store.js');
+ const { Pool } = await import('pg');
+ const db = new PGlite();
+ try {
+  await db.exec(schemaSql); await db.exec(schemaSql);
+  await db.query('INSERT INTO clients(id,name) VALUES($1,$2)',[invoice.clientId,invoice.clientName]);
+  // PGlite est mono-connexion : les verrous et les requêtes concurrentes sont à vérifier sur PostgreSQL réseau.
+  const client = {query: (sql: string, params?: unknown[]) => sql.startsWith('SELECT pg_advisory_xact_lock') ? Promise.resolve({rows:[]}) : db.query(sql,params), release: () => {}};
+  const pool = {connect:async()=>client} as unknown as InstanceType<typeof Pool>;
+  assert.equal(await storeJournalSnapshot(pool,event),'received');
+  assert.equal(await storeJournalSnapshot(pool,event),'duplicate');
+  await assert.rejects(storeJournalSnapshot(pool,{...event,invoice:{...invoice,amount:700000}}),JournalConflict);
+  const second={...event,operationId:uuid(5),version:2,receipts:[receipt,{...receipt,id:uuid(6),creditFull:false,oldDebtPaid:0,prePaid:200000}]};
+  assert.equal(await storeJournalSnapshot(pool,second),'received');
+  await assert.rejects(storeJournalSnapshot(pool,{...event,operationId:uuid(7),invoice:{...invoice,id:uuid(8)},receipts:[]}),JournalConflict);
+  const result=await db.query('SELECT version FROM demo_journal_events ORDER BY version');
+  assert.deepEqual(result.rows.map((r:any)=>r.version),[1,2]);
+  const express=(await import('express')).default;
+  const {experimentalJournalRoutes}=await import('../../../apps/api/src/journal-routes.js');
+  const app=express(); app.use(express.json());
+  app.use('/journal', (req,res,next) => { if(req.headers.authorization !== 'Bearer test-admin') { res.sendStatus(401); return; } next(); },experimentalJournalRoutes({ ...pool, query:(sql:string,params?:unknown[])=>db.query(sql,params) } as unknown as InstanceType<typeof Pool>,true));
+  app.use('/disabled',experimentalJournalRoutes(pool,false));
+  const server=app.listen(0,'127.0.0.1');
+  try {
+   await new Promise<void>((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});
+   const addr=server.address(); if (!addr || typeof addr === 'string') throw Error('Adresse de test indisponible');
+   const base=`http://127.0.0.1:${addr.port}`, headers={'Content-Type':'application/json',Authorization:'Bearer test-admin'};
+   assert.equal((await fetch(base+'/journal')).status,401);
+   assert.equal((await fetch(base+'/disabled')).status,404);
+   const fresh={operationId:uuid(9),version:1,invoice:{...invoice,id:uuid(10),journalDate:'2026-11-05'},receipts:[]};
+   assert.equal((await fetch(base+'/journal',{method:'POST',headers,body:JSON.stringify(fresh)})).status,201);
+   const duplicate=await fetch(base+'/journal',{method:'POST',headers,body:JSON.stringify(event)});
+   assert.equal(duplicate.status,200); assert.equal((await duplicate.json()).status,'duplicate');
+   assert.equal((await fetch(base+'/journal',{method:'POST',headers,body:JSON.stringify({...event,invoice:{...invoice,amount:700000}})})).status,409);
+   assert.equal((await fetch(base+'/journal',{method:'POST',headers,body:'{}'})).status,400);
+   const listing=await fetch(base+'/journal',{headers}); assert.equal(listing.status,200);
+   const data=await listing.json(); assert.equal(data.items.length,2); assert.ok(data.items.some((item:any)=>item.version===2)); assert.match(data.warning,/pas inclus/i);
+  } finally { await new Promise<void>(resolve=>server.close(()=>resolve())); }
+ } finally { await db.close(); }
+});

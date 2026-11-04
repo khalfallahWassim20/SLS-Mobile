@@ -16,6 +16,7 @@
     "migrate": "npm run migrate --workspace @sls/api"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
     "@types/node": "^22.0.0",
     "tsx": "^4.20.0",
     "typescript": "^5.8.0"
