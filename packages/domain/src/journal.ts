@@ -105,3 +105,42 @@ export function validatePreInvoiceReceipt(total: number, previous: PreInvoiceRec
   if (next.oldDebtPaid > availableOldDebt) throw new RangeError('Règlement supérieur à l’ancienne dette disponible');
   return summarizePreInvoice(total,[...previous,next]);
 }
+
+/** Instantané immuable d'une facture du journal pour le rapprochement.
+ * Le tableau des opérations est ordonné et doit être un préfixe de la version locale.
+ * Les données serveur doivent provenir du même instantané que le solde serveur. */
+export type JournalSyncReceipt = PreInvoiceReceipt & { id: string };
+export type JournalSyncInvoice = { id: string; total: number; receipts: JournalSyncReceipt[] };
+export function reconcileJournalBalance(serverBalance: number, local: JournalSyncInvoice[], server: JournalSyncInvoice[]) {
+  integer(serverBalance, 'Solde serveur', Number.MIN_SAFE_INTEGER);
+  const check = (invoices: JournalSyncInvoice[]) => {
+    const ids = new Set<string>(), receiptIds = new Set<string>();
+    for (const invoice of invoices) {
+      if (typeof invoice.id !== 'string' || !invoice.id.trim() || ids.has(invoice.id)) throw new RangeError('Facture du journal invalide ou dupliquée');
+      ids.add(invoice.id);
+      for (const receipt of invoice.receipts) {
+        if (typeof receipt.id !== 'string' || !receipt.id.trim() || receiptIds.has(receipt.id)) throw new RangeError('Opération du journal invalide ou dupliquée');
+        receiptIds.add(receipt.id);
+      }
+      summarizePreInvoice(invoice.total, invoice.receipts);
+    }
+  };
+  check(local); check(server);
+  const remote = new Map(server.map(invoice => [invoice.id, invoice]));
+  const remoteReceiptOwners = new Map(server.flatMap(invoice => invoice.receipts.map(receipt => [receipt.id, invoice.id] as const)));
+  let balance = BigInt(serverBalance), conflict = local.some(invoice => invoice.receipts.some(receipt => {
+    const owner = remoteReceiptOwners.get(receipt.id); return owner !== undefined && owner !== invoice.id;
+  }));
+  for (const invoice of local) {
+    const localSummary = summarizePreInvoice(invoice.total, invoice.receipts);
+    const received = remote.get(invoice.id);
+    if (!received) { balance += BigInt(localSummary.debtEffect); continue; }
+    if (received.total !== invoice.total || received.receipts.length > invoice.receipts.length || received.receipts.some((receipt, i) => {
+      const other = invoice.receipts[i];
+      return !other || receipt.id !== other.id || receipt.prePaid !== other.prePaid || receipt.oldDebtPaid !== other.oldDebtPaid || receipt.creditFull !== other.creditFull;
+    })) { conflict = true; continue; }
+    const receivedSummary = summarizePreInvoice(received.total, received.receipts);
+    balance += BigInt(localSummary.debtEffect) - BigInt(receivedSummary.debtEffect);
+  }
+  return { balance: safe(balance), conflict };
+}

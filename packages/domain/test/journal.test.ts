@@ -58,3 +58,27 @@ test('saisie non traitée ne crée pas encore de dette ; un paiement partiel l�
  assert.equal(validatePreInvoiceReceipt(600000,[],{prePaid:200000,oldDebtPaid:0,creditFull:false},0).debtEffect,400000);
  assert.throws(()=>validatePreInvoiceReceipt(600000,[],{prePaid:200000,oldDebtPaid:0,creditFull:true},0));
 });
+
+test('rapprochement journal : accusé perdu, paiements successifs et autres appareils', async () => {
+ const { reconcileJournalBalance } = await import('../src/journal.js');
+ const first = {id:'op-1', prePaid:0,oldDebtPaid:300000,creditFull:true};
+ const second = {id:'op-2', prePaid:200000,oldDebtPaid:0,creditFull:false};
+ const local = {id:'f-1',total:600000,receipts:[first,second]};
+ // Ancien solde 1 000 ; la première opération ajoute 300 au solde, la seconde retire 200.
+ assert.deepEqual(reconcileJournalBalance(1000000,[local],[]),{balance:1100000,conflict:false});
+ assert.deepEqual(reconcileJournalBalance(1300000,[local],[{...local,receipts:[first]}]),{balance:1100000,conflict:false});
+ assert.deepEqual(reconcileJournalBalance(1100000,[local],[local]),{balance:1100000,conflict:false});
+ // Une facture d'un autre appareil est déjà comprise dans le solde serveur.
+ assert.deepEqual(reconcileJournalBalance(1600000,[local],[local,{id:'autre',total:500000,receipts:[{id:'op-3',prePaid:0,oldDebtPaid:0,creditFull:true}]}]),{balance:1600000,conflict:false});
+});
+test('rapprochement journal : divergent ou serveur en avance, conflit bloquant', async () => {
+ const { reconcileJournalBalance } = await import('../src/journal.js');
+ const op = {id:'op-1', prePaid:200000,oldDebtPaid:0,creditFull:false};
+ const invoice = {id:'f-1',total:600000,receipts:[op]};
+ assert.equal(reconcileJournalBalance(400000,[invoice],[{...invoice,receipts:[{...op,prePaid:300000}]}]).conflict,true);
+ assert.equal(reconcileJournalBalance(400000,[{...invoice,receipts:[]}],[invoice]).conflict,true);
+ assert.equal(reconcileJournalBalance(400000,[invoice],[{...invoice,total:700000}]).conflict,true);
+ assert.equal(reconcileJournalBalance(400000,[invoice],[{...invoice,id:'autre'}]).conflict,true);
+ assert.throws(() => reconcileJournalBalance(0,[invoice,invoice],[]));
+ assert.throws(() => reconcileJournalBalance(0,[{...invoice,receipts:[op,op]}],[]));
+});

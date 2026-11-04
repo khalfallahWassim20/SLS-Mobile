@@ -145,3 +145,5 @@ export { calculateJournalClient, calculateJournalDay, validatePreInvoiceCreditCh
 export type { JournalClientInput, JournalPayment, TourInvoice } from './journal.ts';
 export { summarizePreInvoice, validatePreInvoiceReceipt } from './journal.ts';
 export type { PreInvoiceReceipt } from './journal.ts';
+export { reconcileJournalBalance } from './journal.ts';
+export type { JournalSyncInvoice, JournalSyncReceipt } from './journal.ts';
