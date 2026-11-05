@@ -3,7 +3,7 @@ export type RefClient = { id: string; name: string; sector: string; openingBalan
 export type RefArticle = { id: string; code: string; barcode: string; name: string; saleTtc: string; vatRate: number; unitsPerCarton: number };
 export type SaleState = { saleId: string; clientId: string; version: number; total: string; paid: string };
 export type SettlementState = { operationId: string; clientId: string };
-export type JournalState = { id:string; clientId:string; total:number; receipts:JournalSyncReceipt[] };
+export type JournalState = { id:string; clientId:string; journalDate?:string; total:number; receipts:JournalSyncReceipt[] };
 export type ReferenceData = { version: 1 | 2 | 3; journalStates?: JournalState[]; clients: RefClient[]; articles: RefArticle[]; saleStates?: SaleState[]; settlementStates?: SettlementState[]; syncedAt: string };
 const record = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown) => typeof v === 'string';
@@ -38,19 +38,42 @@ export function validateReference(value: unknown): Omit<ReferenceData, 'syncedAt
   });
   if (value.version === 2) return { version: 2, clients, articles, saleStates, settlementStates };
   if (!Array.isArray(value.journalStates) || clientIds.size !== clients.length) throw new Error('Marqueurs du journal absents ou clients dupliqués.');
-  const invoiceIds = new Set<string>(), receiptIds = new Set<string>();
+  const invoiceIds = new Set<string>(), receiptIds = new Set<string>(), clientDays = new Set<string>();
   const journalStates = value.journalStates.map(v => {
     if (!record(v) || !text(v.id) || !v.id.trim() || !text(v.clientId) || !clientIds.has(v.clientId) || invoiceIds.has(v.id) || !Number.isSafeInteger(v.total) || (v.total as number) <= 0 || !Array.isArray(v.receipts)) throw new Error('État du journal invalide.');
     invoiceIds.add(v.id);
+    if (v.journalDate !== undefined) {
+      if (!isJournalDate(v.journalDate)) throw new Error('Date du journal invalide.');
+      const key=JSON.stringify([v.clientId,v.journalDate]);
+      if (clientDays.has(key)) throw new Error('Facture client et date dupliquée.');
+      clientDays.add(key);
+    }
     const receipts = v.receipts.map(p => {
       if (!record(p) || !text(p.id) || !p.id.trim() || receiptIds.has(p.id) || !Number.isSafeInteger(p.prePaid) || (p.prePaid as number) < 0 || !Number.isSafeInteger(p.oldDebtPaid) || (p.oldDebtPaid as number) < 0 || typeof p.creditFull !== 'boolean') throw new Error('Règlement du journal invalide.');
       receiptIds.add(p.id);
       return {id:p.id,prePaid:p.prePaid as number,oldDebtPaid:p.oldDebtPaid as number,creditFull:p.creditFull};
     });
     summarizePreInvoice(v.total as number,receipts);
-    return {id:v.id,clientId:v.clientId,total:v.total as number,receipts};
+    return {id:v.id,clientId:v.clientId,...(v.journalDate !== undefined ? {journalDate:v.journalDate as string} : {}),total:v.total as number,receipts};
   });
   return { version: 3, clients, articles, saleStates, settlementStates, journalStates };
+}
+function isJournalDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0,10) === value;
+}
+/** L'état téléchargé peut être périmé hors ligne : seul le serveur tranche lors de l'envoi. */
+export function preInvoiceAvailability(reference: Pick<ReferenceData,'version'|'journalStates'> | null, clientId:string, day:string, local: {clientId:string;journalDate:string}[]): 'available'|'local'|'remote'|'refresh' {
+  if (local.some(p=>p.clientId===clientId && p.journalDate===day)) return 'local';
+  if (reference?.version !== 3) return 'available';
+  if (!reference.journalStates || reference.journalStates.some(p=>p.clientId===clientId && !p.journalDate)) return 'refresh';
+  return reference.journalStates.some(p=>p.clientId===clientId && p.journalDate===day) ? 'remote' : 'available';
+}
+/** Signale les factures concurrentes pour ne pas additionner deux fois la dette. */
+export function hasJournalDayConflict(clientId:string, local:{id:string;clientId:string;journalDate:string}[], remote:JournalState[]): boolean {
+ const mine=local.filter(p=>p.clientId===clientId);
+ return mine.length>0 && remote.some(r=>r.clientId===clientId && (!r.journalDate || mine.some(p=>p.journalDate===r.journalDate && p.id!==r.id)));
 }
 export function formatMillimes(value: string): string {
   const n = BigInt(value);

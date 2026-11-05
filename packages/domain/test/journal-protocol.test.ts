@@ -90,7 +90,7 @@ test('migration et stockage sur moteur PostgreSQL intégré, sans test de concur
   assert.equal(ref.journalStates.length,0); assert.equal(ref.clients[0].serverBalance,'150000');
   assert.equal(await storeJournalSnapshot(pool,event,'sync'),'received');
   ref=await readJournalReference(pool);
-  assert.equal(ref.clients[0].serverBalance,'450000'); assert.equal(ref.journalStates.length,1);
+  assert.equal(ref.clients[0].serverBalance,'450000'); assert.equal(ref.journalStates.length,1); assert.equal(ref.journalStates[0].journalDate,'2026-11-04');
   const {validateReference}=await import('../../../apps/mobile/reference.js');
   assert.equal(validateReference(ref).version,3);
   const {reconcileJournalBalance}=await import('../src/journal.js');

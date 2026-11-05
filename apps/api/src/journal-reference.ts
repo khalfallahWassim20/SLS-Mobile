@@ -33,7 +33,7 @@ export async function readJournalReference(pool: Pool, includeInactive = false) 
     const balance=BigInt(c.serverBalance)+BigInt(effect);
     if(balance>BigInt(Number.MAX_SAFE_INTEGER)||balance<BigInt(Number.MIN_SAFE_INTEGER)) throw new RangeError('Solde trop élevé.');
     c.serverBalance=balance.toString();
-    return {id:invoice.id,clientId:invoice.clientId,total:invoice.amount,receipts:receipts.map(p=>({id:p.id,prePaid:p.prePaid,oldDebtPaid:p.oldDebtPaid,creditFull:p.creditFull}))};
+    return {id:invoice.id,clientId:invoice.clientId,journalDate:invoice.journalDate,total:invoice.amount,receipts:receipts.map(p=>({id:p.id,prePaid:p.prePaid,oldDebtPaid:p.oldDebtPaid,creditFull:p.creditFull}))};
   });
   await db.query('COMMIT');
   return {version:3 as const,clients:clients.rows,articles:articles.rows,saleStates:saleStates.rows,settlementStates:settlementStates.rows,journalStates};
