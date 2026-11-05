@@ -11,7 +11,7 @@ import { experimentalJournalRoutes } from './journal-routes.js';
 import { readJournalReference } from './journal-reference.js';
 import { readServerJournalDay } from './journal-day.js';
 import { JournalConflict, storeJournalSnapshot } from './journal-store.js';
-import { listCommercials, saveCommercial } from './commercials.js';
+import { listCommercials, saveCommercial, setCommercialCredentials } from './commercials.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -147,6 +147,17 @@ const uuid = z.string().uuid();
 const clientFields = `id,name,sector,address,tax_id AS "taxId",phone,opening_balance::text AS "openingBalance",credit_limit::text AS "creditLimit",active`;
 const articleFields = `id,code,barcode,name,purchase_ttc::text AS "purchaseTtc",sale_ttc::text AS "saleTtc",vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton",active`;
 // Réservé à l'admin ; les fiches ne donnent pas encore accès au mobile.
+// La configuration prépare les comptes, sans encore autoriser la connexion mobile.
+app.put('/api/commercials/:id/credentials', async (req,res) => {
+ try {
+  const saved=await setCommercialCredentials(pool,username,req.params.id,req.body);
+  if (!saved) {res.status(404).json({error:'Commercial introuvable.'});return;}
+  res.set('Cache-Control','no-store').json(saved);
+ } catch(error) {
+  if (typeof error==='object' && error !== null && 'code' in error && error.code==='23505') {res.status(409).json({error:'Cet identifiant est déjà utilisé.'});return;}
+  throw error;
+ }
+});
 app.get('/api/commercials', async (_req,res) => {res.json(await listCommercials(pool));});
 app.post('/api/commercials', async (req,res) => {const saved=await saveCommercial(pool,username,req.body);res.status(201).json(saved);});
 app.put('/api/commercials/:id', async (req,res) => {const saved=await saveCommercial(pool,username,req.body,req.params.id);if(!saved) {res.status(404).json({error:'Commercial introuvable.'});return;}res.json(saved);});
