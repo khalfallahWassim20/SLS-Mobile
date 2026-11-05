@@ -6,6 +6,11 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       credit_limit bigint NOT NULL DEFAULT 0 CHECK (credit_limit >= 0), active boolean NOT NULL DEFAULT true,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
     );
+    CREATE TABLE IF NOT EXISTS commercials (
+      id uuid PRIMARY KEY, name text NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 200),
+      active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
+    );
     CREATE TABLE IF NOT EXISTS articles (
       id uuid PRIMARY KEY, code text UNIQUE NOT NULL, barcode text NOT NULL DEFAULT '', name text NOT NULL,
       purchase_ttc bigint NOT NULL CHECK (purchase_ttc >= 0), sale_ttc bigint NOT NULL CHECK (sale_ttc >= 0),
