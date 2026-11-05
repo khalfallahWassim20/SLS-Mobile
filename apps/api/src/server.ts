@@ -8,6 +8,9 @@ import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { pool } from './db.js';
 import { calculateInvoice } from '@sls/domain';
 import { experimentalJournalRoutes } from './journal-routes.js';
+import { readJournalReference } from './journal-reference.js';
+import { readServerJournalDay } from './journal-day.js';
+import { JournalConflict, storeJournalSnapshot } from './journal-store.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -24,6 +27,12 @@ const auth: RequestHandler = (req, res, next) => {
   try { const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1]; if (!token) throw new Error(); const claims = jwt.verify(token, secret, { algorithms: ['HS256'] }); if (typeof claims !== 'object' || claims.role !== 'admin' || claims.sub !== username) throw new Error(); next(); }
   catch { res.status(401).json({ error: 'Session invalide ou expirée.' }); }
 };
+// Une fois des journaux reçus, la référence v2 ne doit jamais masquer leur effet.
+async function journalSyncActive() {
+  if (process.env.MOBILE_JOURNAL_SYNC === '1') return true;
+  const result=await pool.query('SELECT EXISTS (SELECT 1 FROM sync_journal_events) AS active');
+  return result.rows[0].active === true;
+}
 // Mode de démonstration explicitement activé avec un jeton distinct de l'admin.
 // Ne jamais exposer ni utiliser avec de vraies données sans HTTPS et comptes commerciaux.
 app.get('/api/mobile/reference', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60, standardHeaders: 'draft-8', legacyHeaders: false }), async (req, res) => {
@@ -31,6 +40,7 @@ app.get('/api/mobile/reference', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60
   const supplied = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
   const a = Buffer.from(expected ?? ''), b = Buffer.from(supplied);
   if (!expected || expected.length < 32 || a.length !== b.length || !timingSafeEqual(a, b)) { res.status(401).json({ error: 'Accès mobile refusé.' }); return; }
+  if (await journalSyncActive()) { res.set('Cache-Control','no-store').json(await readJournalReference(pool)); return; }
   const db = await pool.connect();
   try {
     await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -69,6 +79,7 @@ app.post('/api/mobile/sales', rateLimit({windowMs: 15 * 60 * 1000, limit: 500, s
   const expected = process.env.MOBILE_DEMO_TOKEN, supplied = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
   const a = Buffer.from(expected ?? ''), b = Buffer.from(supplied);
   if (!expected || expected.length < 32 || a.length !== b.length || !timingSafeEqual(a,b)) { res.status(401).json({error:'Accès mobile refusé.'}); return; }
+  if (await journalSyncActive() && req.get('X-SLS-Reference-Version') !== '3') {res.status(409).json({error:'Mettez à jour l’application et téléchargez la référence v3.'});return;}
   const event = demoEventSchema.parse(req.body);
   if (event.saleId !== event.sale.syncSaleId || event.version !== event.sale.syncVersion) {res.status(400).json({error:'Identifiants de vente incohérents.'}); return;}
   const totals = calculateInvoice(event.sale.lines.map(l => ({quantity:l.quantity,unitPrice:l.unitPrice,discountRate:l.discount,vatRate:l.vat})));
@@ -95,6 +106,7 @@ app.post('/api/mobile/settlements', rateLimit({windowMs: 15*60*1000,limit:500,st
   const expected=process.env.MOBILE_DEMO_TOKEN, supplied=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
   const a=Buffer.from(expected ?? ''), b=Buffer.from(supplied);
   if(!expected || expected.length<32 || a.length!==b.length || !timingSafeEqual(a,b)) {res.status(401).json({error:'Accès mobile refusé.'});return;}
+  if (await journalSyncActive() && req.get('X-SLS-Reference-Version') !== '3') {res.status(409).json({error:'Mettez à jour l’application et téléchargez la référence v3.'});return;}
   const event=settlementSchema.parse(req.body), p=event.settlement;
   if(event.operationId!==p.syncOperationId || (p.mode==='Chèque' && (!p.chequeNumber.trim() || !p.chequeBank.trim() || !p.chequeDue.trim()))) {res.status(400).json({error:'Règlement incohérent.'});return;}
   const data=JSON.stringify(event), hash=createHash('sha256').update(data).digest('hex'), db=await pool.connect();
@@ -107,6 +119,22 @@ app.post('/api/mobile/settlements', rateLimit({windowMs: 15*60*1000,limit:500,st
     await db.query('INSERT INTO demo_settlements(operation_id,client_id,payload,payload_hash) VALUES($1,$2,$3::jsonb,$4)',[event.operationId,p.clientId,data,hash]);
     await db.query('COMMIT');res.status(201).json({status:'reçue'});
   } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
+});
+// Démonstration uniquement : ne pas activer avant validation des tests PostgreSQL et multi-appareils.
+app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standardHeaders:'draft-8',legacyHeaders:false}), async (req,res,next) => {
+  const expected=process.env.MOBILE_DEMO_TOKEN, supplied=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
+  const a=Buffer.from(expected ?? ''),b=Buffer.from(supplied);
+  if (!expected || expected.length<32 || a.length!==b.length || !timingSafeEqual(a,b)) {res.status(401).json({error:'Accès mobile refusé.'});return;}
+  try {
+    if (!(await journalSyncActive())) {res.status(404).json({error:'Synchronisation du journal non activée.'});return;}
+    if (req.get('X-SLS-Reference-Version') !== '3') {res.status(409).json({error:'Téléchargez la référence v3 avant l’envoi.'});return;}
+    const status=await storeJournalSnapshot(pool,req.body,'sync');
+    res.status(status==='received'?201:200).json({status});
+  } catch(error) {
+    if(error instanceof JournalConflict) {res.status(409).json({error:error.message});return;}
+    if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données de journal invalides.'});return;}
+    next(error);
+  }
 });
 app.use('/api', auth);
 // Endpoint réservé aux essais administrateur : désactivé par défaut, hors soldes et hors synchronisation mobile.
@@ -137,17 +165,12 @@ async function changeWithAudit(entity: 'clients' | 'articles', action: 'créatio
   finally { db.release(); }
 }
 app.get('/api/demo-balances', async (_req,res) => {
-  const result=await pool.query(`WITH latest AS (
-    SELECT DISTINCT ON (sale_id) client_id,payload FROM demo_sale_events ORDER BY sale_id,version DESC
-  ), sale_totals AS (
-    SELECT client_id,sum((payload->'sale'->>'total')::bigint - (payload->'sale'->>'paid')::bigint) AS balance FROM latest GROUP BY client_id
-  ), payments AS (
-    SELECT client_id,sum((payload->'settlement'->>'amount')::bigint) AS total FROM demo_settlements GROUP BY client_id
-  ) SELECT c.id,c.name,c.opening_balance::text AS "openingBalance",c.credit_limit::text AS "creditLimit",
-    (c.opening_balance + COALESCE(s.balance,0) - COALESCE(p.total,0))::text AS balance
-    FROM clients c LEFT JOIN sale_totals s ON s.client_id=c.id LEFT JOIN payments p ON p.client_id=c.id
-    WHERE c.deleted_at IS NULL ORDER BY c.name`);
-  res.json(result.rows);
+ const reference=await readJournalReference(pool,true);
+ res.json(reference.clients.map(c=>({id:c.id,name:c.name,openingBalance:c.openingBalance,creditLimit:c.creditLimit,balance:c.serverBalance})));
+});
+app.get('/api/demo-tour-journal/:date', async (req,res) => {
+ const result=await readServerJournalDay(pool,req.params.date,'sync');
+ res.set('Cache-Control','no-store').json(result);
 });
 app.get('/api/demo-settlements', async (_req,res) => {
  const r=await pool.query(`SELECT operation_id AS "operationId",payload->'settlement' AS settlement,received_at AS "receivedAt" FROM demo_settlements ORDER BY received_at DESC LIMIT 1000`); res.json(r.rows);

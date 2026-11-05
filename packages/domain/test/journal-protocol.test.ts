@@ -106,6 +106,7 @@ test('migration et stockage sur moteur PostgreSQL intégré, sans test de concur
   const day=await readServerJournalDay(pool,'2026-11-04');
   assert.equal(day.rows.length,1); assert.equal(day.rows[0].preInvoiceTotal,600000); assert.equal(day.rows[0].tourTotal,250000); assert.equal(day.rows[0].totalClient,850000);
   assert.equal(day.rows[0].preInvoicePaid,200000); assert.equal(day.rows[0].oldDebtPaid,300000); assert.equal(day.totalCollected,600000);
+  const liveDay=await readServerJournalDay(pool,'2026-11-04','sync'); assert.equal(liveDay.rows[0].totalClient,850000); assert.equal(liveDay.totalCollected,600000);
   assert.equal((await readServerJournalDay(pool,'2026-11-03')).rows.length,0);
   const result=await db.query('SELECT version FROM demo_journal_events ORDER BY version');
   assert.deepEqual(result.rows.map((r:any)=>r.version),[1,2]);

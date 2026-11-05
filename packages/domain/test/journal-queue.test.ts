@@ -64,3 +64,36 @@ test('nouvelle facture et paiement : deux versions, un retour arrière est refus
   assert.equal((db.prepare('SELECT count(*) AS n FROM tour_journal_receipts').get() as {n:number}).n,1);
  } finally { db.close(); }
 });
+
+test('file SQLite vers serveur : réception répétée et actualisation sans double comptage', async () => {
+ const {PGlite}=await import('@electric-sql/pglite');
+ const {schemaSql}=await import('../../../apps/api/src/schema.js');
+ const {storeJournalSnapshot}=await import('../../../apps/api/src/journal-store.js');
+ const {readJournalReference}=await import('../../../apps/api/src/journal-reference.js');
+ const {reconcileJournalBalance}=await import('../src/journal.js');
+ const {validateReference}=await import('../../../apps/mobile/reference.js');
+ const {Pool}=await import('pg');
+ const {db,tx,insertInvoice,insertReceipt}=createDb(), server=new PGlite();
+ try {
+  await server.exec(schemaSql);
+  await server.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,$3)',[invoice.clientId,invoice.clientName,1000000]);
+  const conn={query:(sql:string,params?:unknown[])=>sql.startsWith('SELECT pg_advisory_xact_lock')?Promise.resolve({rows:[]}):server.query(sql,params),release:()=>{}};
+  const pool={connect:async()=>conn} as unknown as InstanceType<typeof Pool>;
+  insertInvoice(); await queueJournalSnapshot(tx,invoice.id,()=>uuid(10)); insertReceipt(); await queueJournalSnapshot(tx,invoice.id,()=>uuid(11));
+  const pending=db.prepare('SELECT operation_id,payload FROM journal_sync_outbox ORDER BY sequence').all() as {operation_id:string;payload:string}[];
+  const v1=JSON.parse(pending[0].payload),v2=JSON.parse(pending[1].payload);
+  assert.equal(await storeJournalSnapshot(pool,v1,'sync'),'received');
+  assert.equal(await storeJournalSnapshot(pool,v1,'sync'),'duplicate'); // réponse perdue puis nouvel essai
+  db.prepare('DELETE FROM journal_sync_outbox WHERE operation_id=?').run(v1.operationId);
+  let reference=validateReference(await readJournalReference(pool));
+  const local={id:invoice.id,total:invoice.amount,receipts:[receipt]};
+  assert.equal(reconcileJournalBalance(Number(reference.clients[0].serverBalance),[local],reference.journalStates!).balance,1400000);
+  assert.equal(await storeJournalSnapshot(pool,v2,'sync'),'received');
+  assert.equal(await storeJournalSnapshot(pool,v2,'sync'),'duplicate');
+  db.prepare('DELETE FROM journal_sync_outbox WHERE operation_id=?').run(v2.operationId);
+  reference=validateReference(await readJournalReference(pool));
+  assert.equal(reference.clients[0].serverBalance,'1400000');
+  assert.deepEqual(reconcileJournalBalance(Number(reference.clients[0].serverBalance),[local],reference.journalStates!),{balance:1400000,conflict:false});
+  assert.equal((db.prepare('SELECT count(*) AS n FROM journal_sync_outbox').get() as {n:number}).n,0);
+ } finally {db.close();await server.close();}
+});

@@ -42,13 +42,14 @@ export function buildServerJournalDay(day: string, invoices: JournalSnapshot[], 
   return {day,rows:result,clientCount:result.length,totalBilled:safe(result.reduce((n,r)=>n+BigInt(r.totalClient),0n)),totalCollected:safe(result.reduce((n,r)=>n+BigInt(r.totalCollected),0n))};
 }
 /** Les deux requêtes partagent un instantané MVCC, sans effet sur les soldes. */
-export async function readServerJournalDay(pool: Pool, day: string) {
+export async function readServerJournalDay(pool: Pool, day: string, namespace: 'experimental'|'sync' = 'experimental') {
+  const prefix=namespace==='sync'?'sync_journal':'demo_journal';
   journalDateSchema.parse(day);
   const db=await pool.connect();
   try {
     await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     const invoices=await db.query(`SELECT DISTINCT ON (e.invoice_id) e.payload
-      FROM demo_journal_events e JOIN demo_journal_invoices i ON i.id=e.invoice_id
+      FROM ${prefix}_events e JOIN ${prefix}_invoices i ON i.id=e.invoice_id
       WHERE i.journal_date=$1::date ORDER BY e.invoice_id,e.version DESC`,[day]);
     const sales=await db.query(`WITH latest AS (SELECT DISTINCT ON (sale_id) sale_id,payload FROM demo_sale_events ORDER BY sale_id,version DESC)
       SELECT sale_id AS "saleId",payload->'sale' AS sale FROM latest

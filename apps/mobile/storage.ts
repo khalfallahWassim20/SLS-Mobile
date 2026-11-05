@@ -191,3 +191,12 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
    await queueJournalSnapshot(tx,value.preInvoiceId,randomUUID);
  });
 }
+
+// File distincte des ventes ; un accusé ne supprime que la version reçue.
+export type JournalOutboxEntry = { sequence:number; operationId:string; invoiceId:string; version:number; payload:string };
+export async function getJournalOutbox(): Promise<JournalOutboxEntry[]> {
+ return (await db()).getAllAsync<JournalOutboxEntry>('SELECT sequence,operation_id AS operationId,invoice_id AS invoiceId,version,payload FROM journal_sync_outbox ORDER BY sequence');
+}
+export async function acknowledgeJournalOutbox(operationId:string): Promise<void> {
+ await (await db()).runAsync('DELETE FROM journal_sync_outbox WHERE operation_id=?',operationId);
+}

@@ -1,10 +1,11 @@
-/** Préparation de la référence mobile v3 ; aucune route ne l'expose encore. */
+/** Référence mobile v3, activée uniquement pour les essais de synchronisation. */
 import type { Pool } from 'pg';
 import { summarizePreInvoice } from '@sls/domain';
 import { parseJournalSnapshot } from './journal-protocol.js';
 
 /** Les soldes et tous leurs marqueurs doivent être lus dans le même instantané PostgreSQL. */
-export async function readJournalReference(pool: Pool) {
+export async function readJournalReference(pool: Pool, includeInactive = false) {
+ const active = includeInactive ? '' : ' AND c.active';
  const db=await pool.connect();
  try {
   await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
@@ -15,15 +16,15 @@ export async function readJournalReference(pool: Pool) {
   SELECT c.id,c.name,c.sector,c.opening_balance::text AS "openingBalance",c.credit_limit::text AS "creditLimit",
   (c.opening_balance+COALESCE(s.balance,0)-COALESCE(p.total,0))::text AS "serverBalance"
   FROM clients c LEFT JOIN sales s ON s.client_id=c.id LEFT JOIN payments p ON p.client_id=c.id
-  WHERE c.active AND c.deleted_at IS NULL ORDER BY c.name`);
+  WHERE c.deleted_at IS NULL${active} ORDER BY c.name`);
   const saleStates=await db.query(`SELECT DISTINCT ON (e.sale_id) e.sale_id AS "saleId",e.client_id AS "clientId",e.version,
     e.payload->'sale'->>'total' AS total,e.payload->'sale'->>'paid' AS paid FROM demo_sale_events e JOIN clients c ON c.id=e.client_id
-    WHERE c.active AND c.deleted_at IS NULL ORDER BY e.sale_id,e.version DESC`);
-  const settlementStates=await db.query(`SELECT p.operation_id AS "operationId",p.client_id AS "clientId" FROM demo_settlements p JOIN clients c ON c.id=p.client_id WHERE c.active AND c.deleted_at IS NULL`);
+    WHERE c.deleted_at IS NULL${active} ORDER BY e.sale_id,e.version DESC`);
+  const settlementStates=await db.query(`SELECT p.operation_id AS "operationId",p.client_id AS "clientId" FROM demo_settlements p JOIN clients c ON c.id=p.client_id WHERE c.deleted_at IS NULL${active}`);
   const articles=await db.query(`SELECT id,code,barcode,name,sale_ttc::text AS "saleTtc",vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton" FROM articles WHERE active AND deleted_at IS NULL ORDER BY name`);
   const journals=await db.query(`SELECT DISTINCT ON (e.invoice_id) e.payload FROM sync_journal_events e
     JOIN sync_journal_invoices i ON i.id=e.invoice_id JOIN clients c ON c.id=i.client_id
-    WHERE c.active AND c.deleted_at IS NULL ORDER BY e.invoice_id,e.version DESC`);
+    WHERE c.deleted_at IS NULL${active} ORDER BY e.invoice_id,e.version DESC`);
   const clientMap=new Map<string,{serverBalance:string}>(clients.rows.map(c=>[c.id,c]));
   const journalStates=journals.rows.map(r=>{
     const event=parseJournalSnapshot(r.payload), {invoice,receipts}=event;
