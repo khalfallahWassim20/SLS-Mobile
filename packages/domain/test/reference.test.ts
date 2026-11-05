@@ -33,3 +33,15 @@ test('un instantané v2 exige un solde et des marqueurs cohérents', () => {
  assert.throws(()=>validateReference({...base,saleStates:[{...base.saleStates[0],clientId:'autre'}]}));
  assert.throws(()=>validateReference({...base,saleStates:[base.saleStates[0],base.saleStates[0]]}));
 });
+
+
+test('v3 contrôle et protège les marqueurs de factures et règlements du journal', () => {
+ const base={version:3,clients:[{id:'c',name:'X',sector:'Sud',openingBalance:'1000000',creditLimit:'0',serverBalance:'1300000'}],articles:[],saleStates:[],settlementStates:[], journalStates:[{id:'f',clientId:'c',total:600000,receipts:[{id:'r',prePaid:0,oldDebtPaid:300000,creditFull:true,secret:'privé'}]}]};
+ const v=validateReference(base);
+ assert.equal(v.version,3); assert.equal('secret' in v.journalStates![0].receipts[0],false);
+ assert.throws(()=>validateReference({...base,journalStates:undefined}));
+ assert.throws(()=>validateReference({...base,journalStates:[base.journalStates[0],base.journalStates[0]]}));
+ assert.throws(()=>validateReference({...base,journalStates:[{...base.journalStates[0],clientId:'autre'}]}));
+ assert.throws(()=>validateReference({...base,journalStates:[{...base.journalStates[0],receipts:[{...base.journalStates[0].receipts[0],prePaid:1}]}]}));
+ assert.throws(()=>validateReference({...base,journalStates:[{...base.journalStates[0],receipts:[base.journalStates[0].receipts[0],base.journalStates[0].receipts[0]]}]}));
+});

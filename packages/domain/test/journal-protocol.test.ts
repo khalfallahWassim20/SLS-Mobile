@@ -84,6 +84,24 @@ test('migration et stockage sur moteur PostgreSQL intégré, sans test de concur
   const sale={clientId:invoice.clientId,clientName:invoice.clientName,createdAt:'2026-11-03T23:30:00.000Z',total:120000,paid:0};
   await db.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,1,$3,$4::jsonb,$5)',[uuid(21),saleId,invoice.clientId,JSON.stringify({sale}),'h1']);
   await db.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,2,$3,$4::jsonb,$5)',[uuid(22),saleId,invoice.clientId,JSON.stringify({sale:{...sale,total:250000,paid:100000}}),'h2']);
+  // L'espace expérimental et l'espace de synchronisation restent séparés.
+  const {readJournalReference}=await import('../../../apps/api/src/journal-reference.js');
+  let ref=await readJournalReference(pool);
+  assert.equal(ref.journalStates.length,0); assert.equal(ref.clients[0].serverBalance,'150000');
+  assert.equal(await storeJournalSnapshot(pool,event,'sync'),'received');
+  ref=await readJournalReference(pool);
+  assert.equal(ref.clients[0].serverBalance,'450000'); assert.equal(ref.journalStates.length,1);
+  const {validateReference}=await import('../../../apps/mobile/reference.js');
+  assert.equal(validateReference(ref).version,3);
+  const {reconcileJournalBalance}=await import('../src/journal.js');
+  const remote=ref.journalStates[0];
+  assert.deepEqual(reconcileJournalBalance(Number(ref.clients[0].serverBalance),[{id:invoice.id,total:invoice.amount,receipts:[receipt]}],[remote]),{balance:450000,conflict:false});
+  assert.equal(await storeJournalSnapshot(pool,second,'sync'),'received');
+  ref=await readJournalReference(pool);
+  assert.equal(ref.clients[0].serverBalance,'250000');
+  assert.equal(ref.journalStates[0].receipts.length,2);
+  assert.equal(await storeJournalSnapshot(pool,second,'sync'),'duplicate');
+  assert.equal((await readJournalReference(pool)).clients[0].serverBalance,'250000');
   const {readServerJournalDay}=await import('../../../apps/api/src/journal-day.js');
   const day=await readServerJournalDay(pool,'2026-11-04');
   assert.equal(day.rows.length,1); assert.equal(day.rows[0].preInvoiceTotal,600000); assert.equal(day.rows[0].tourTotal,250000); assert.equal(day.rows[0].totalClient,850000);

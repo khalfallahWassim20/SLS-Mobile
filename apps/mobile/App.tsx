@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { calculateInvoice, calculatePayment, reconcileClientBalance, balanceAfterSettlement, isSaleBlocked, parseDinars, revisePayment, summarizePreInvoice, validatePreInvoiceReceipt } from '@sls/domain';
+import { calculateInvoice, calculatePayment, reconcileClientBalance, balanceAfterSettlement, isSaleBlocked, parseDinars, revisePayment, reconcileJournalBalance, summarizePreInvoice, validatePreInvoiceReceipt } from '@sls/domain';
 import { getAllPreInvoices, getTourReceipts, saveTourReceipt, TourJournalReceipt, savePreInvoice, TourPreInvoice, getReference, saveReference, getOutbox, acknowledgeOutbox, failOutbox, OutboxEntry, getSales, saveSale, updateSale, getRevisions, getOriginalSales, getSettlements, saveSettlement, SavedSale, Revision, Settlement } from './storage';
 import { validateReference, formatMillimes, unitPriceExcludingVat, ReferenceData, RefClient } from './reference';
 import { tunisDay, buildJournal, journalTotal } from './journal';
@@ -54,7 +54,7 @@ export default function App() {
   const [saleSource, setSaleSource] = useState<'reference'>('reference');
   const referenceProducts: Product[] = (reference?.articles ?? []).map(a => ({ id: a.id, name: a.name, code: a.code, price: unitPriceExcludingVat(a.saleTtc, a.vatRate), vat: a.vatRate }));
   const saleProducts = referenceProducts;
-  const toClient = (c: RefClient): Client | null => reference?.version !== 2 || c.serverBalance === undefined || c.creditLimit === undefined ? null : ({ id: c.id, name: c.name, sector: c.sector, balance: Number(c.serverBalance), limit: Number(c.creditLimit) });
+  const toClient = (c: RefClient): Client | null => (reference?.version !== 2 && reference?.version !== 3) || c.serverBalance === undefined || c.creditLimit === undefined ? null : ({ id: c.id, name: c.name, sector: c.sector, balance: Number(c.serverBalance), limit: Number(c.creditLimit) });
   const [cart, setCart] = useState<CartLine[]>([]);
   const [query, setQuery] = useState('');
   const [notice, setNotice] = useState('');
@@ -181,7 +181,7 @@ export default function App() {
     } finally { syncRef.current = false; setSyncBusy(false); }
   };
   const balanceDetails = (c: Client) => {
-    const remoteClient = reference?.version === 2 ? reference.clients.find(x => x.id === c.id) : undefined;
+    const remoteClient = reference?.version === 2 || reference?.version === 3 ? reference.clients.find(x => x.id === c.id) : undefined;
     if (journalLoading || journalError || !remoteClient || remoteClient.serverBalance === undefined || !reference?.saleStates || !reference.settlementStates) return { balance: c.balance, conflict: true };
     try {
       const reconciled = reconcileClientBalance({ serverBalance: Number(remoteClient.serverBalance),
@@ -189,6 +189,14 @@ export default function App() {
         serverSales: reference.saleStates.filter(s => s.clientId === c.id).map(s => ({ ...s, total: Number(s.total), paid: Number(s.paid) })),
         localSettlements: settlements.filter(p => p.clientId === c.id),
         serverSettlementIds: reference.settlementStates.filter(p => p.clientId === c.id).map(p => p.operationId) });
+      if (reference.version === 3) {
+        if (!reference.journalStates) throw Error('Marqueurs du journal absents');
+        const local=preInvoices.filter(p=>p.clientId===c.id).map(p=>({id:p.id,total:p.amount,receipts:journalReceiptsFor(p)}));
+        if (reference.journalStates.some(p=>p.clientId!==c.id && local.some(l=>l.id===p.id || l.receipts.some(r=>p.receipts.some(other=>other.id===r.id))))) throw Error('Facture ou règlement rattaché à un autre client');
+        const remote=reference.journalStates.filter(p=>p.clientId===c.id);
+        const journal=reconcileJournalBalance(reconciled.balance,local,remote);
+        return {balance:journal.balance,conflict:reconciled.conflict || journal.conflict};
+      }
       const balance = reconciled.balance + journalEffectFor(c.id);
       if (!Number.isSafeInteger(balance)) throw Error('Solde trop élevé');
       return { balance, conflict: reconciled.conflict };

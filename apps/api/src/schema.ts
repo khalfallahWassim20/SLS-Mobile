@@ -43,4 +43,18 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       version integer NOT NULL CHECK (version > 0), payload jsonb NOT NULL, payload_hash text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(invoice_id,version)
     );
-    CREATE INDEX IF NOT EXISTS demo_journal_events_latest_idx ON demo_journal_events(invoice_id,version DESC);`;
+    CREATE INDEX IF NOT EXISTS demo_journal_events_latest_idx ON demo_journal_events(invoice_id,version DESC);
+    -- Espace séparé des données expérimentales ; pas encore exposé aux téléphones.
+    CREATE TABLE IF NOT EXISTS sync_journal_invoices (
+      id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id), journal_date date NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(client_id,journal_date)
+    );
+    CREATE TABLE IF NOT EXISTS sync_journal_receipt_ids (
+      id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES sync_journal_invoices(id)
+    );
+    CREATE TABLE IF NOT EXISTS sync_journal_events (
+      operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES sync_journal_invoices(id),
+      version integer NOT NULL CHECK (version > 0), payload jsonb NOT NULL, payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(invoice_id,version)
+    );
+    CREATE INDEX IF NOT EXISTS sync_journal_events_latest_idx ON sync_journal_events(invoice_id,version DESC);`;

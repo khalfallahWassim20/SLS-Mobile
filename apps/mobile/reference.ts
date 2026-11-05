@@ -1,20 +1,22 @@
+import { summarizePreInvoice, type JournalSyncReceipt } from '@sls/domain';
 export type RefClient = { id: string; name: string; sector: string; openingBalance?: string; creditLimit?: string; serverBalance?: string };
 export type RefArticle = { id: string; code: string; barcode: string; name: string; saleTtc: string; vatRate: number; unitsPerCarton: number };
 export type SaleState = { saleId: string; clientId: string; version: number; total: string; paid: string };
 export type SettlementState = { operationId: string; clientId: string };
-export type ReferenceData = { version: 1 | 2; clients: RefClient[]; articles: RefArticle[]; saleStates?: SaleState[]; settlementStates?: SettlementState[]; syncedAt: string };
+export type JournalState = { id:string; clientId:string; total:number; receipts:JournalSyncReceipt[] };
+export type ReferenceData = { version: 1 | 2 | 3; journalStates?: JournalState[]; clients: RefClient[]; articles: RefArticle[]; saleStates?: SaleState[]; settlementStates?: SettlementState[]; syncedAt: string };
 const record = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const text = (v: unknown) => typeof v === 'string';
 /** Valider avant de remplacer le cache existant. Jamais sauvegarder de champs non prévus. */
 export function validateReference(value: unknown): Omit<ReferenceData, 'syncedAt'> {
-  if (!record(value) || (value.version !== 1 && value.version !== 2) || !Array.isArray(value.clients) || !Array.isArray(value.articles)) throw new Error('Réponse du serveur invalide.');
+  if (!record(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3) || !Array.isArray(value.clients) || !Array.isArray(value.articles)) throw new Error('Réponse du serveur invalide.');
   const clients = value.clients.map(v => {
     if (!record(v) || !text(v.id) || !text(v.name) || !text(v.sector)) throw new Error('Client invalide dans la réponse.');
     const amount = (x: unknown, signed: boolean) => typeof x === 'string' && (signed ? /^-?\d+$/ : /^\d+$/).test(x) && BigInt(x) <= BigInt(Number.MAX_SAFE_INTEGER) && BigInt(x) >= BigInt(Number.MIN_SAFE_INTEGER);
     // Un ancien cache reste consultable mais ne permet pas de vendre tant qu'il n'a pas été actualisé.
     if ((v.openingBalance !== undefined || v.creditLimit !== undefined) && (!amount(v.openingBalance, true) || !amount(v.creditLimit, false))) throw new Error('Solde ou plafond client invalide.');
-    if (value.version === 2 && (!amount(v.openingBalance, true) || !amount(v.creditLimit, false) || !amount(v.serverBalance, true))) throw new Error('Solde serveur invalide.');
-    return { id: v.id as string, name: v.name as string, sector: v.sector as string, ...(v.openingBalance !== undefined ? { openingBalance: v.openingBalance as string, creditLimit: v.creditLimit as string } : {}), ...(value.version === 2 ? {serverBalance: v.serverBalance as string} : {}) };
+    if (value.version !== 1 && (!amount(v.openingBalance, true) || !amount(v.creditLimit, false) || !amount(v.serverBalance, true))) throw new Error('Solde serveur invalide.');
+    return { id: v.id as string, name: v.name as string, sector: v.sector as string, ...(v.openingBalance !== undefined ? { openingBalance: v.openingBalance as string, creditLimit: v.creditLimit as string } : {}), ...(value.version !== 1 ? {serverBalance: v.serverBalance as string} : {}) };
   });
   const articles = value.articles.map(v => {
     if (!record(v) || !text(v.id) || !text(v.name) || !text(v.code) || !text(v.barcode) || typeof v.saleTtc !== 'string' || !/^\d+$/.test(v.saleTtc) || BigInt(v.saleTtc) > BigInt(Number.MAX_SAFE_INTEGER) || !Number.isInteger(v.vatRate) || (v.vatRate as number) < 0 || (v.vatRate as number) > 10000 || !Number.isInteger(v.unitsPerCarton) || (v.unitsPerCarton as number) < 1) throw new Error('Article invalide dans la réponse.');
@@ -34,7 +36,21 @@ export function validateReference(value: unknown): Omit<ReferenceData, 'syncedAt
     settlementIds.add(v.operationId as string);
     return { operationId: v.operationId as string, clientId: v.clientId as string };
   });
-  return { version: 2, clients, articles, saleStates, settlementStates };
+  if (value.version === 2) return { version: 2, clients, articles, saleStates, settlementStates };
+  if (!Array.isArray(value.journalStates) || clientIds.size !== clients.length) throw new Error('Marqueurs du journal absents ou clients dupliqués.');
+  const invoiceIds = new Set<string>(), receiptIds = new Set<string>();
+  const journalStates = value.journalStates.map(v => {
+    if (!record(v) || !text(v.id) || !v.id.trim() || !text(v.clientId) || !clientIds.has(v.clientId) || invoiceIds.has(v.id) || !Number.isSafeInteger(v.total) || (v.total as number) <= 0 || !Array.isArray(v.receipts)) throw new Error('État du journal invalide.');
+    invoiceIds.add(v.id);
+    const receipts = v.receipts.map(p => {
+      if (!record(p) || !text(p.id) || !p.id.trim() || receiptIds.has(p.id) || !Number.isSafeInteger(p.prePaid) || (p.prePaid as number) < 0 || !Number.isSafeInteger(p.oldDebtPaid) || (p.oldDebtPaid as number) < 0 || typeof p.creditFull !== 'boolean') throw new Error('Règlement du journal invalide.');
+      receiptIds.add(p.id);
+      return {id:p.id,prePaid:p.prePaid as number,oldDebtPaid:p.oldDebtPaid as number,creditFull:p.creditFull};
+    });
+    summarizePreInvoice(v.total as number,receipts);
+    return {id:v.id,clientId:v.clientId,total:v.total as number,receipts};
+  });
+  return { version: 3, clients, articles, saleStates, settlementStates, journalStates };
 }
 export function formatMillimes(value: string): string {
   const n = BigInt(value);
