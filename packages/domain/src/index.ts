@@ -147,3 +147,5 @@ export { summarizePreInvoice, validatePreInvoiceReceipt } from './journal.ts';
 export type { PreInvoiceReceipt } from './journal.ts';
 export { reconcileJournalBalance } from './journal.ts';
 export type { JournalSyncInvoice, JournalSyncReceipt } from './journal.ts';
+export { initialTourClosure, assertTourWritable, transitionTourClosure } from './tour-closure.ts';
+export type { TourActor, TourClosureState, TourClosureEvent } from './tour-closure.ts';
