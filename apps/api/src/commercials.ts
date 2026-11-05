@@ -1,4 +1,4 @@
-/** Référentiel de démonstration uniquement : aucun identifiant de connexion n'est créé. */
+/** Référentiel et identifiants de démonstration. */
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import bcrypt from 'bcryptjs';
@@ -23,6 +23,8 @@ export async function saveCommercial(pool:Pool, actor:string, input:unknown, exi
    ? await db.query('UPDATE commercials SET name=$2,active=$3,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING id,name,active',[id,data.name,data.active])
    : await db.query('INSERT INTO commercials(id,name,active) VALUES($1,$2,$3) RETURNING id,name,active',[id,data.name,data.active]);
   const saved=result.rows[0];
+  // Une désactivation ou réactivation révoque définitivement les sessions précédentes.
+  if (old && old.rows[0].active !== saved.active) await db.query('UPDATE commercial_credentials SET session_version=session_version+1 WHERE commercial_id=$1',[id]);
   const changed=old ? ['name','active'].filter(key=>old.rows[0][key]!==saved[key]) : [];
   await db.query('INSERT INTO audit_log(id,actor,action,entity,entity_id,entity_name,changed_fields) VALUES($1,$2,$3,$4,$5,$6,$7)',[randomUUID(),actor,existingId?'modification':'création','commercials',id,saved.name,changed]);
   await db.query('COMMIT'); return saved;
@@ -44,7 +46,7 @@ export async function setCommercialCredentials(pool:Pool, actor:string, id:strin
   const commercial=await db.query('SELECT name FROM commercials WHERE id=$1 AND deleted_at IS NULL FOR UPDATE',[commercialId]);
   if (!commercial.rows.length) {await db.query('ROLLBACK');return null;}
   await db.query(`INSERT INTO commercial_credentials(commercial_id,login,password_hash) VALUES($1,$2,$3)
-    ON CONFLICT(commercial_id) DO UPDATE SET login=excluded.login,password_hash=excluded.password_hash,updated_at=now()`,[commercialId,data.login,hash]);
+    ON CONFLICT(commercial_id) DO UPDATE SET login=excluded.login,password_hash=excluded.password_hash,session_version=commercial_credentials.session_version+1,updated_at=now()`,[commercialId,data.login,hash]);
   await db.query('INSERT INTO audit_log(id,actor,action,entity,entity_id,entity_name,changed_fields) VALUES($1,$2,$3,$4,$5,$6,$7)',[randomUUID(),actor,'identifiants modifiés','commercials',commercialId,commercial.rows[0].name,['login','password']]);
   await db.query('COMMIT');return {login:data.login};
  } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}

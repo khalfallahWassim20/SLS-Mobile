@@ -16,6 +16,7 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       commercial_id uuid PRIMARY KEY REFERENCES commercials(id), login text NOT NULL UNIQUE,
       password_hash text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
     );
+    ALTER TABLE commercial_credentials ADD COLUMN IF NOT EXISTS session_version bigint NOT NULL DEFAULT 1;
     CREATE TABLE IF NOT EXISTS articles (
       id uuid PRIMARY KEY, code text UNIQUE NOT NULL, barcode text NOT NULL DEFAULT '', name text NOT NULL,
       purchase_ttc bigint NOT NULL CHECK (purchase_ttc >= 0), sale_ttc bigint NOT NULL CHECK (sale_ttc >= 0),

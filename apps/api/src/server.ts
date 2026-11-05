@@ -12,6 +12,7 @@ import { readJournalReference } from './journal-reference.js';
 import { readServerJournalDay } from './journal-day.js';
 import { JournalConflict, storeJournalSnapshot } from './journal-store.js';
 import { listCommercials, saveCommercial, setCommercialCredentials } from './commercials.js';
+import { loginCommercial, verifyCommercialSession } from './commercial-session.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -28,6 +29,20 @@ const auth: RequestHandler = (req, res, next) => {
   try { const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1]; if (!token) throw new Error(); const claims = jwt.verify(token, secret, { algorithms: ['HS256'] }); if (typeof claims !== 'object' || claims.role !== 'admin' || claims.sub !== username) throw new Error(); next(); }
   catch { res.status(401).json({ error: 'Session invalide ou expirée.' }); }
 };
+// Connexion isolée pour essais : ces sessions ne donnent pas encore accès aux données mobiles.
+app.post('/api/mobile/session/login', rateLimit({windowMs:15*60*1000,limit:10,standardHeaders:'draft-8',legacyHeaders:false}), async (req,res) => {
+ const session=await loginCommercial(pool,secret,req.body);
+ res.set('Cache-Control','no-store');
+ if (!session) {res.status(401).json({error:'Identifiant ou mot de passe incorrect.'});return;}
+ res.json(session);
+});
+app.get('/api/mobile/session', rateLimit({windowMs:15*60*1000,limit:100,standardHeaders:'draft-8',legacyHeaders:false}), async (req,res) => {
+ const token=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
+ const commercial=await verifyCommercialSession(pool,secret,token);
+ res.set('Cache-Control','no-store');
+ if (!commercial) {res.status(401).json({error:'Session invalide ou expirée.'});return;}
+ res.json({commercial});
+});
 // Une fois des journaux reçus, la référence v2 ne doit jamais masquer leur effet.
 async function journalSyncActive() {
   if (process.env.MOBILE_JOURNAL_SYNC === '1') return true;
