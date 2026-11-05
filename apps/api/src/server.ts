@@ -129,7 +129,7 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
     if (!(await journalSyncActive())) {res.status(404).json({error:'Synchronisation du journal non activée.'});return;}
     if (req.get('X-SLS-Reference-Version') !== '3') {res.status(409).json({error:'Téléchargez la référence v3 avant l’envoi.'});return;}
     const status=await storeJournalSnapshot(pool,req.body,'sync');
-    res.status(status==='received'?201:200).json({status});
+    res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});
   } catch(error) {
     if(error instanceof JournalConflict) {res.status(409).json({error:error.message});return;}
     if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données de journal invalides.'});return;}

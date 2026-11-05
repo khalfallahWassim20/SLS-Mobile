@@ -4,6 +4,7 @@ import { calculateInvoice, calculatePayment, reconcileClientBalance, balanceAfte
 import { getAllPreInvoices, getTourReceipts, saveTourReceipt, getJournalOutbox, acknowledgeJournalOutbox, JournalOutboxEntry, TourJournalReceipt, savePreInvoice, TourPreInvoice, getReference, saveReference, getOutbox, acknowledgeOutbox, failOutbox, OutboxEntry, getSales, saveSale, updateSale, getRevisions, getOriginalSales, getSettlements, saveSettlement, SavedSale, Revision, Settlement } from './storage';
 import { validateReference, formatMillimes, unitPriceExcludingVat, ReferenceData, RefClient } from './reference';
 import { tunisDay, buildJournal, journalTotal } from './journal';
+import { uploadJournalQueue } from './journal-upload';
 
 // Données de démonstration uniquement. Aucun prix ou client réel n'est enregistré.
 type Client = { id: string; name: string; sector: string; balance: number; limit: number };
@@ -182,11 +183,7 @@ export default function App() {
         Alert.alert('Journal en attente', `${sent} vente(s) ou règlement(s) envoyé(s). Le journal reste en attente : téléchargez une référence v3 lorsque le serveur sera prêt.`);
         return;
       }
-      for (const entry of journals) {
-        const response=await fetch(`${url.origin}/api/mobile/journal`, {method:'POST',headers:{Authorization:`Bearer ${syncToken.trim()}`,'Content-Type':'application/json','X-SLS-Reference-Version':'3'},body:entry.payload});
-        if(!response.ok) { const data=await response.json().catch(()=>null); throw Error(data?.error || `Erreur journal (${response.status}).`); }
-        await acknowledgeJournalOutbox(entry.operationId); sent++;
-      }
+      sent += await uploadJournalQueue(journals, entry => fetch(`${url.origin}/api/mobile/journal`, {method:'POST',headers:{Authorization:`Bearer ${syncToken.trim()}`,'Content-Type':'application/json','X-SLS-Reference-Version':'3'},body:entry.payload}), acknowledgeJournalOutbox);
       setSyncToken(''); await loadSales(); await loadJournal(journalDate); setScreen('history'); Alert.alert('Envoi terminé', `${sent} version(s) envoyée(s). Actualisez les données pour recevoir le nouveau solde serveur.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Envoi impossible.';

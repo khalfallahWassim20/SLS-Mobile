@@ -35,6 +35,14 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   const reference=await readJournalReference(isolated);
   assert.equal(reference.clients[0].serverBalance,String(1000000+600000-paid));
   assert.equal((await isolated.query('SELECT count(*)::int AS count FROM sync_journal_events')).rows[0].count,2);
+  // Deux téléphones enregistrent une facture différente pour le même client/jour.
+  const competing=[1,2].map(()=>({operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:'2026-11-06'},receipts:[]}));
+  const outcomes=await Promise.allSettled(competing.map(e=>storeJournalSnapshot(isolated!,e,'sync')));
+  assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);
+  const conflict=outcomes.find(r=>r.status==='rejected'); assert.ok(conflict && conflict.status==='rejected' && conflict.reason instanceof JournalConflict);
+  const dayRows=await isolated.query("SELECT count(*)::int AS count FROM sync_journal_invoices WHERE client_id=$1 AND journal_date='2026-11-06'",[clientId]);
+  assert.equal(dayRows.rows[0].count,1);
+
  } finally {
   if (isolated) await isolated.end();
   if (created) await root.query(`DROP SCHEMA "${schema}" CASCADE`);
