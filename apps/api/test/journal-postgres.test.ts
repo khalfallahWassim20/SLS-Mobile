@@ -10,6 +10,7 @@ import { readJournalReference } from '../src/journal-reference.js';
 import {changeTourClosure, ClosureConflict, readTourClosure} from '../src/tour-closure-store.js';
 import {setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
+import {storeIdentifiedSale,storeIdentifiedSettlement} from '../src/identified-operations.js';
 
 dotenv.config({path:'apps/api/.env'});
 test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma temporaire', async () => {
@@ -73,6 +74,24 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   assert.equal(eventCount,write.status==='fulfilled'?1:0);
   if(write.status==='fulfilled') assert.equal(await storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),'duplicate');
   else await assert.rejects(storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),/clôturé/);
+  // Vente et règlement concurrentiels face à la clôture d'une autre journée.
+  const saleId=randomUUID(),opId=randomUUID(),settlementId=randomUUID();
+  const concurrentSale={operationId:opId,saleId,version:1,refund:0,sale:{createdAt:'2026-11-10T10:00:00.000Z',clientId,clientName:'Client test temporaire',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:0,remaining:119000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''}};
+  const concurrentPayment={operationId:settlementId,settlement:{syncOperationId:settlementId,createdAt:'2026-11-10T10:00:00.000Z',clientId,clientName:'Client test temporaire',amount:1000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}};
+  const [saleResult,paymentResult,closeResult]=await Promise.allSettled([
+   storeIdentifiedSale(isolated,concurrentSale,signed),storeIdentifiedSettlement(isolated,concurrentPayment,signed),
+   changeTourClosure(isolated,commercialId,'2026-11-10','close',actor,0)
+  ]);
+  assert.equal(closeResult.status,'fulfilled');
+  for(const result of [saleResult,paymentResult]) if(result.status==='rejected') assert.ok(result.reason instanceof JournalConflict);
+  const saleCount=(await isolated.query('SELECT count(*)::int AS count FROM identified_sale_events')).rows[0].count;
+  const paymentCount=(await isolated.query('SELECT count(*)::int AS count FROM identified_settlements')).rows[0].count;
+  assert.equal(saleCount,saleResult.status==='fulfilled'?1:0);assert.equal(paymentCount,paymentResult.status==='fulfilled'?1:0);
+  if(saleResult.status==='fulfilled') assert.equal(await storeIdentifiedSale(isolated,concurrentSale,signed),'duplicate');
+  else await assert.rejects(storeIdentifiedSale(isolated,concurrentSale,signed),/clôturé/);
+  if(paymentResult.status==='fulfilled') assert.equal(await storeIdentifiedSettlement(isolated,concurrentPayment,signed),'duplicate');
+  else await assert.rejects(storeIdentifiedSettlement(isolated,concurrentPayment,signed),/clôturé/);
+
 
 
  } finally {

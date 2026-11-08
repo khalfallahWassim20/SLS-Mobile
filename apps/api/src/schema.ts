@@ -99,4 +99,17 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       payload jsonb NOT NULL, payload_hash text NOT NULL, received_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE(invoice_id,version)
     );
-    CREATE INDEX IF NOT EXISTS identified_journal_events_latest_idx ON identified_journal_events(invoice_id,version DESC);`;
+    CREATE INDEX IF NOT EXISTS identified_journal_events_latest_idx ON identified_journal_events(invoice_id,version DESC);
+    -- Espace isolé de validation, absent des soldes et des routes actives.
+    CREATE TABLE IF NOT EXISTS identified_sale_events (
+      operation_id uuid PRIMARY KEY, sale_id uuid NOT NULL, version integer NOT NULL CHECK(version>0),
+      client_id uuid NOT NULL REFERENCES clients(id), commercial_id uuid NOT NULL REFERENCES commercials(id),
+      journal_date date NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(sale_id,version)
+    );
+    CREATE INDEX IF NOT EXISTS identified_sale_events_latest_idx ON identified_sale_events(sale_id,version DESC);
+    CREATE TABLE IF NOT EXISTS identified_settlements (
+      operation_id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
+      payload jsonb NOT NULL, payload_hash text NOT NULL, received_at timestamptz NOT NULL DEFAULT now()
+    );`;
