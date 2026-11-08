@@ -4,3 +4,4 @@
 select{font:inherit;width:100%;border:1px solid #dae4de;border-radius:8px;padding:11px;color:#1c302b;background:#fff}
 .export-actions{display:flex;gap:10px;flex-wrap:wrap;padding:0 22px}
 .sale-history{padding:22px;border-top:1px solid #e4ebe6}.sale-history .panel-head{padding:0}.history-version{border:1px solid #e4ebe6;border-radius:10px;margin:16px 0;padding:16px}.history-version h3{margin:0;color:#153f33}
+.payment-history{padding:22px;border-top:1px solid #e4ebe6}
