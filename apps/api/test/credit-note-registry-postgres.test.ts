@@ -10,6 +10,7 @@ import {saveCommercial,setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale} from '../src/identified-operations.js';
 import {lockIdentifiedOperation} from '../src/identified-overlap.js';
+import {readPrototypeCreditHistory} from '../src/credit-note-history-prototype.js';
 
 dotenv.config({path:'apps/api/.env'});
 async function waitForBlocked(pool:pg.Pool,pid:number) {
@@ -80,6 +81,7 @@ test('PostgreSQL : deux demandes et deux reprises simultanées dans le registre 
    await blocker.query('COMMIT');
    assert.equal((await pendingEdit2).value,'received');assert.match(String((await pendingNote2).error),/périmée/);
    const result=await pool.query('SELECT count(*)::int AS n FROM credit_note_prototype_events WHERE invoice_id=$1',[modified.invoiceId]);assert.equal(result.rows[0].n,0);
+   const history=await readPrototypeCreditHistory(pool);assert.equal(history.length,3);assert.ok(history.every(e=>e.kind==='sale'&&e.invoiceTotal===119000&&e.refund===50000&&e.ownerId===c.id));
 
   } finally {await blocker.query('ROLLBACK').catch(()=>{});blocker.release();}
  } finally {if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}

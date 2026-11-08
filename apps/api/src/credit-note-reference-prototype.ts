@@ -1,6 +1,6 @@
 /** Projection intégrée réservée aux tests. Aucun routeur actif ne l'expose ;
  * elle ne rend pas les registres expérimentaux utilisables en production. */
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
 import {canonicalJson,calculatePreInvoiceCancellation,type CreditNoteEvent} from '@sls/domain';
 import {readIdentifiedReferenceInTransaction} from './identified-reference.js';
@@ -19,10 +19,7 @@ function asNumber(value:unknown):number {
 }
 /** L'ancien solde et les nouveaux mouvements sont lus sous REPEATABLE READ.
  * Toute corruption ou version modifiée après avoir entraîne un refus complet. */
-export async function readPrototypeCreditReference(pool:Pool) {
- const db=await pool.connect();
- try {
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
+export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
   const base=await readIdentifiedReferenceInTransaction(db,true);
   const saleNotes=await db.query('SELECT operation_id,invoice_id,event FROM credit_note_prototype_events');
   const preNotes=await db.query('SELECT operation_id,invoice_id,event FROM pre_invoice_credit_prototype_events');
@@ -80,7 +77,13 @@ export async function readPrototypeCreditReference(pool:Pool) {
    return {...s,version:proof.version,creditNote:item?{operationId:item.command.operationId,expectedVersion:item.version,choice:item.command.choice,recordedAt:item.command.recordedAt,actor:item.actor}:null};
   });
   if(preById.size!==journalStates.filter(s=>s.creditNote).length)throw new RangeError('Préétablie annulée introuvable.');
-  await db.query('COMMIT');
   return {experimental:true as const,version:5 as const,clients:[...clients.values()],articles:base.articles,saleStates,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
+}
+export async function readPrototypeCreditReference(pool:Pool) {
+ const db=await pool.connect();
+ try {
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
+  const result=await readPrototypeCreditReferenceInTransaction(db);
+  await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

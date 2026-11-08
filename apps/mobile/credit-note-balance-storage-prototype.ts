@@ -3,7 +3,7 @@
 import {canonicalJson} from '@sls/domain';
 import type {DeviceIdentity} from './identified-device';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
-import {readAllOfflineCreditPrototype} from './credit-note-offline-prototype';
+import {readAllOfflineCreditPrototype,prepareOfflineCreditPrototype,type Kind} from './credit-note-offline-prototype';
 import {prototypeCreditBalance} from './credit-note-balance-prototype';
 
 type Bind=string|number|null;
@@ -41,4 +41,19 @@ export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,c
   return {id:row.id,clientId:row.clientId,journalDate:row.journalDate,version:state.version,total:invoice.amount,receipts:items as Parameters<typeof prototypeCreditBalance>[0]['journals'][number]['receipts'],snapshot};
  });
  return prototypeCreditBalance({clientId,identity,reference,sales,journals,settlements,notes});
+}
+
+/** Préparation atomique expérimentale : l'appelant doit ouvrir une transaction
+ * exclusive et l'annuler en cas d'erreur. Le solde ne doit jamais être utilisé
+ * par les écrans tant que le protocole complet n'est pas activé. */
+export async function prepareBalancedLocalCredit(tx:Tx,identity:DeviceIdentity,clientId:string,kind:Kind,command:import('@sls/domain').CreditNoteCommand) {
+ const before=await readPrototypeCreditBalance(tx,identity,clientId);
+ if(before.conflict)throw Error('Solde en conflit : avoir refusé.');
+ const note=await prepareOfflineCreditPrototype(tx,identity,kind,command);
+ const source=note.source as {clientId?:unknown;invoice?:{clientId?:unknown}};
+ if((kind==='sale'?source.clientId:source.invoice?.clientId)!==clientId)throw Error('Client de la facture incohérent.');
+ const after=await readPrototypeCreditBalance(tx,identity,clientId);
+ const expected=BigInt(before.balance)+BigInt(note.balanceDelta);
+ if(after.conflict||expected!==BigInt(after.balance))throw Error('Solde après avoir incohérent.');
+ return {note,balance:after.balance};
 }

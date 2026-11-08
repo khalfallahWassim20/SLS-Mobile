@@ -13,6 +13,7 @@ import {storeJournalSnapshot} from '../src/journal-store.js';
 import {lockTourClosure} from '../src/tour-closure-store.js';
 import {lockIdentifiedOperation} from '../src/identified-overlap.js';
 import {readPrototypeCreditReference} from '../src/credit-note-reference-prototype.js';
+import {readPrototypeCreditHistory} from '../src/credit-note-history-prototype.js';
 import {validatePrototypeCreditReference} from '../../mobile/credit-note-reference-prototype.js';
 
 dotenv.config({path:'apps/api/.env'});
@@ -89,6 +90,7 @@ test('préétablie : demandes et reprises concurrentes sur PostgreSQL réel',asy
    const reference=await readPrototypeCreditReference(pool);assert.equal(reference.clients[0].serverBalance,'500000');
    assert.equal(reference.journalStates.filter(s=>s.creditNote).length,3);
    const mobile=validatePrototypeCreditReference(reference);assert.equal(mobile.clients[0].serverBalance,'500000');assert.equal(mobile.journalStates.filter(s=>s.creditNote).length,3);
+   const history=await readPrototypeCreditHistory(pool);assert.equal(history.length,3);assert.ok(history.every(e=>e.kind==='preinvoice'&&e.ownerId===c.id&&e.invoiceTotal===600000&&!e.wasDeclared&&e.refund===0));
   }finally{await blocker.query('ROLLBACK').catch(()=>{});blocker.release();}
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });

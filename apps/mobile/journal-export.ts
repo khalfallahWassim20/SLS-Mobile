@@ -1,8 +1,11 @@
 import type { JournalRow } from './journal.js';
 import type { TourJournalReceipt } from './storage.js';
+import type {Note} from './credit-note-offline-prototype';
+import {prepareFullCreditNote,calculatePreInvoiceCancellation} from '@sls/domain';
+import {tunisDay} from './journal';
 
 /** Instantané local, distinct du journal consolidé reçu sur le serveur. */
-export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[] };
+export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[] };
 const amount = (value: number) => {
  if (!Number.isSafeInteger(value)) throw new Error('Montant invalide dans le journal.');
  const n = BigInt(value), abs = n < 0n ? -n : n;
@@ -30,6 +33,42 @@ function lines(data: JournalExport): string[][] {
  rows.push(['TOTAL PAIEMENTS FACTURE PRÉÉTABLIE','','','','',amount(sum(journalReceipts.map(p=>p.prePaid)))]);
  rows.push(['TOTAL ANCIENNE DETTE RÉGLÉE','','','','','',amount(sum(journalReceipts.map(p=>p.oldDebtPaid)))]);
  rows.push(['TOTAL ENCAISSÉ LOCAL','','','','',amount(sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>s.paid))]))]);
+ if(data.credits) {
+  const seen=new Set<string>();let total=0n,refund=0n;
+  const events=data.credits.map(({note,pending})=>{
+   if(!note||!note.command||typeof pending!=='boolean'||seen.has(note.command.operationId))throw Error('Avoir local invalide ou dupliqué.');
+   seen.add(note.command.operationId);
+   const source=note.source as Record<string,any>|null;
+   if(!source||typeof source!=='object'||!['sale','preinvoice'].includes(note.kind))throw Error('Source de l’avoir invalide.');
+   let name:string,invoiceTotal:number,invoiceDay:string,calculated:{balanceDelta:number;refund:number;retainedCredit:number};
+   if(note.kind==='sale') {
+    if(source.syncSaleId!==note.command.invoiceId||source.syncVersion!==note.command.expectedVersion)throw Error('Facture de l’avoir incohérente.');
+    name=source.clientName;invoiceTotal=source.total;invoiceDay=tunisDay(new Date(source.createdAt));
+    calculated=prepareFullCreditNote({actor:{id:note.commercialId,role:'commercial'},command:note.command,source:{invoiceId:source.syncSaleId,version:source.syncVersion,total:source.total,netPaid:source.paid,cancelled:false},daysOpen:true,previous:null}).event;
+   } else {
+    // Vérifie identifiant, acteur et date de la commande indépendamment du calcul.
+    prepareFullCreditNote({actor:{id:note.commercialId,role:'commercial'},command:{...note.command,choice:null},source:{invoiceId:note.command.invoiceId,version:note.command.expectedVersion,total:0,netPaid:0,cancelled:false},daysOpen:true,previous:null});
+    if(source.invoice?.id!==note.command.invoiceId||source.version!==note.command.expectedVersion||!Array.isArray(source.receipts))throw Error('Facture préétablie de l’avoir incohérente.');
+    name=source.invoice.clientName;invoiceTotal=source.invoice.amount;invoiceDay=source.invoice.journalDate;
+    if(typeof invoiceDay!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(invoiceDay))throw Error('Date de facture invalide.');
+    calculated=calculatePreInvoiceCancellation({balance:0,invoiceTotal,receipts:source.receipts,alreadyCancelled:false,choice:note.command.choice??undefined});
+   }
+   if(typeof name!=='string'||!name.trim()||calculated.balanceDelta!==note.balanceDelta||calculated.refund!==note.refund||calculated.retainedCredit!==note.retainedCredit)throw Error('Montants de l’avoir incohérents.');
+   return {note,pending,name,invoiceTotal,invoiceDay,day:tunisDay(new Date(note.command.recordedAt))};
+  }).filter(e=>e.day===data.day);
+  rows.push(['AVOIRS CRÉÉS CE JOUR — distincts des factures d’origine']);
+  for(const e of events){
+   total+=BigInt(e.invoiceTotal);refund+=BigInt(e.note.refund);
+   rows.push([e.name,'',e.note.kind==='sale'?'Avoir vente':'Avoir facture préétablie',`${e.note.command.invoiceId} · facture du ${e.invoiceDay} · ${e.pending?'en attente':'synchronisé'}`,amount(-e.invoiceTotal),amount(e.note.refund),'',e.note.retainedCredit?`Crédit conservé ${amount(e.note.retainedCredit)} DT`:'','']);
+  }
+  const billed=sum(data.rows.map(r=>r.total)),gross=sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>s.paid))]);
+  const asSafe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw Error('Total trop élevé');return Number(n);};
+  rows.push(['TOTAL AVOIRS DU JOUR','','','',amount(asSafe(total))]);
+  rows.push(['FACTURÉ DU JOUR MOINS AVOIRS DU JOUR','','','','','','','',amount(asSafe(BigInt(billed)-total))]);
+  rows.push(['REMBOURSEMENTS DES AVOIRS DU JOUR','','','','',amount(asSafe(refund))]);
+  rows.push(['ENCAISSÉ LOCAL MOINS REMBOURSEMENTS DES AVOIRS','','','','',amount(asSafe(BigInt(gross)-refund))]);
+  rows.push(['Note avoirs','Les avoirs sont datés du jour de création, même si la facture est d’un autre jour. Les paiements d’ancienne dette sont conservés. Une préétablie reste à corriger séparément dans le système principal.']);
+ }
  rows.push(['NOMBRE DE CLIENTS',String(data.rows.length)]);
  rows.push(['Note','Le total facturé ne représente pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.']);
  return rows;

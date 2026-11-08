@@ -1,4 +1,5 @@
 import type { Pool } from 'pg';
+import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import { z } from 'zod';
 import { summarizePreInvoice } from '@sls/domain';
 import { journalDateSchema, parseJournalSnapshot, type JournalSnapshot } from './journal-protocol.js';
@@ -48,6 +49,7 @@ export async function readServerJournalDay(pool: Pool, day: string, namespace: '
   const db=await pool.connect();
   try {
     await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    if(namespace==='combined')await assertOldCreditProtocolSafe(db);
     const invoices=namespace==='combined' ? await db.query(`WITH all_events AS (
       SELECT e.invoice_id,e.version,e.payload,i.journal_date FROM sync_journal_events e JOIN sync_journal_invoices i ON i.id=e.invoice_id
       UNION ALL SELECT e.invoice_id,e.version,e.payload,i.journal_date FROM identified_journal_events e JOIN identified_journal_invoices i ON i.id=e.invoice_id)

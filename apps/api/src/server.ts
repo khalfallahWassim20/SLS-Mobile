@@ -19,7 +19,7 @@ import {identifiedCommercialRoutes,identifiedAdminRoutes} from './identified-tou
 import {lockSyncMode,assertLegacyMode,LegacySyncDisabled,readSyncMode} from './tour-sync-mode.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
 import {activateIdentifiedTours,TourActivationConflict} from './tour-activation.js';
-import {CreditProtocolUpgradeRequired} from './credit-note-active-guards.js';
+import {CreditProtocolUpgradeRequired,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -235,9 +235,15 @@ app.get('/api/demo-settlements', async (_req,res) => {
 });
 app.use('/api/demo-sales',saleHistoryRoutes(pool));
 app.get('/api/demo-sales', async (_req, res) => {
- const mode=await readSyncMode(pool);
- const r = await pool.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM (SELECT sale_id,version,payload,received_at FROM demo_sale_events ${mode==='identified'?'UNION ALL SELECT sale_id,version,payload,received_at FROM identified_sale_events':''}) sales ORDER BY sale_id,version DESC`);
- res.json(r.rows);
+ const db=await pool.connect();
+ try {
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  const mode=(await db.query('SELECT mode FROM tour_sync_mode WHERE id=1')).rows[0]?.mode;
+  if(mode!=='legacy'&&mode!=='identified')throw Error('Mode de synchronisation indisponible.');
+  if(mode==='identified')await assertOldCreditProtocolSafe(db);
+  const r = await db.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM (SELECT sale_id,version,payload,received_at FROM demo_sale_events ${mode==='identified'?'UNION ALL SELECT sale_id,version,payload,received_at FROM identified_sale_events':''}) sales ORDER BY sale_id,version DESC`);
+  await db.query('COMMIT');res.set('Cache-Control','no-store').json(r.rows);
+ } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 });
 app.get('/api/overview', async (_req, res) => {
   const r = await pool.query(`SELECT

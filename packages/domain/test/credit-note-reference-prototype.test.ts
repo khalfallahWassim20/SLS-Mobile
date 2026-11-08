@@ -8,7 +8,10 @@ import {schemaSql} from '../../../apps/api/src/schema.js';
 import {creditNotePrototypeSchema,storePrototypeCreditNote} from '../../../apps/api/src/credit-note-registry-prototype.js';
 import {preInvoiceCreditPrototypeSchema,storePrototypePreInvoiceCredit} from '../../../apps/api/src/pre-invoice-credit-registry-prototype.js';
 import {readPrototypeCreditReference} from '../../../apps/api/src/credit-note-reference-prototype.js';
+import {readPrototypeCreditHistory} from '../../../apps/api/src/credit-note-history-prototype.js';
 import {readIdentifiedReference} from '../../../apps/api/src/identified-reference.js';
+import {readIdentifiedJournalDay} from '../../../apps/api/src/identified-journal-day.js';
+import {readServerJournalDay} from '../../../apps/api/src/journal-day.js';
 import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {storeIdentifiedSale} from '../../../apps/api/src/identified-operations.js';
@@ -19,7 +22,8 @@ import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js'
 import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {prototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-prototype.js';
 import {offlineCreditPrototypeSchema,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
-import {readPrototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
+import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
+import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
 
 test('projection intégrée isolée : soldes, crédits, factures et refus en cas de corruption',async()=>{
  const db=new PGlite();try{
@@ -47,6 +51,12 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   const saleResult=await storePrototypeCreditNote(pool,saleCommand,principal),preResult=await storePrototypePreInvoiceCredit(pool,preCommand,principal);
   // L’ancienne référence ne doit jamais masquer les avoirs existants.
   await assert.rejects(readIdentifiedReference(pool,true),/avoirs existent/);
+  await assert.rejects(readIdentifiedJournalDay(pool,c.id,day),/avoirs existent/);
+  await assert.rejects(readServerJournalDay(pool,day,'combined'),/avoirs existent/);
+  const history=await readPrototypeCreditHistory(pool);
+  assert.equal(history.length,2);
+  assert.deepEqual(history.find(x=>x.kind==='sale'),{kind:'sale',operationId:saleCommand.operationId,invoiceId:saleId,invoiceDay:day,recordedAt:saleCommand.recordedAt,recordedDay:day,clientId,clientName:'Client fictif',ownerId:c.id,actor:{id:c.id,role:'commercial'},version:1,invoiceTotal:119000,netPaid:50000,oldDebtPaid:0,wasDeclared:true,refund:50000,retainedCredit:0,balanceDelta:-69000});
+  assert.deepEqual(history.find(x=>x.kind==='preinvoice'),{kind:'preinvoice',operationId:preCommand.operationId,invoiceId,invoiceDay:day,recordedAt:preCommand.recordedAt,recordedDay:day,clientId,clientName:'Client fictif',ownerId:c.id,actor:{id:c.id,role:'commercial'},version:3,invoiceTotal:600000,netPaid:250000,oldDebtPaid:400000,wasDeclared:true,refund:0,retainedCredit:250000,balanceDelta:-600000});
   const result=await readPrototypeCreditReference(pool);
   assert.equal(result.experimental,true);assert.equal(result.version,5);assert.equal(result.clients[0].serverBalance,'350000');
   const cache=new DatabaseSync(':memory:');
@@ -84,7 +94,7 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
     CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);
     CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
     CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);
-    ${identifiedDeviceSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}`);
+    ${identifiedDeviceSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${tourCloseQueueSchema}`);
    const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>localDb.prepare(sql).get(...args) as T||null,
     getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>localDb.prepare(sql).all(...args) as T[],
     runAsync:async(sql:string,...args:(string|number|null)[])=>{localDb.prepare(sql).run(...args)}};
@@ -96,7 +106,15 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    localDb.prepare('INSERT INTO tour_pre_invoices VALUES(?,?,?,?)').run(invoiceId,clientId,day,JSON.stringify(invoice));
    for(const receipt of [r1,r2])localDb.prepare('INSERT INTO tour_journal_receipts VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,clientId,day,JSON.stringify(receipt));
    localDb.prepare('INSERT INTO journal_sync_state VALUES(?,?,?)').run(invoiceId,3,JSON.stringify(preResult.event.source));
-   for(const note of [localSale,localPre])localDb.prepare('INSERT INTO offline_credit_prototype(operation_id,invoice_id,kind,commercial_id,server_origin,payload,pending) VALUES(?,?,?,?,?,?,1)').run(note.command.operationId,note.command.invoiceId,note.kind,c.id,origin,JSON.stringify(note));
+   localDb.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(randomUUID(),c.id,'sale',saleId,at);
+   localDb.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(randomUUID(),c.id,'journal',invoiceId,at);
+   // La création refusée revient entièrement en arrière, puis les deux avoirs
+   // sont calculés et enregistrés dans la même transaction que leurs soldes.
+   localDb.exec('BEGIN');await assert.rejects(prepareBalancedLocalCredit(tx,identity,otherClient,'sale',saleCommand),/Client/);localDb.exec('ROLLBACK');
+   assert.equal(localDb.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,0);
+   localDb.exec('BEGIN');const createdSale=await prepareBalancedLocalCredit(tx,identity,clientId,'sale',saleCommand);assert.equal(createdSale.balance,950000);localDb.exec('COMMIT');
+   localDb.exec('BEGIN');const createdPre=await prepareBalancedLocalCredit(tx,identity,clientId,'preinvoice',preCommand);assert.equal(createdPre.balance,350000);localDb.exec('COMMIT');
+   assert.deepEqual(createdSale.note,localSale);assert.deepEqual(createdPre.note,localPre);
    localDb.exec('BEGIN');assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId),{balance:350000,conflict:false});localDb.exec('COMMIT');
    await savePrototypeCreditReference(tx,identity,identity,result);
    localDb.exec('BEGIN');assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId),{balance:350000,conflict:false});localDb.exec('COMMIT');
@@ -119,6 +137,7 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   assert.equal(result.journalStates[0].receipts[0].oldDebtPaid,300000);assert.equal(result.journalStates[0].receipts[1].oldDebtPaid,100000);
   await db.query("UPDATE pre_invoice_credit_prototype_movements SET balance_delta=1 WHERE operation_id=$1 AND kind='invoice_cancellation'",[preCommand.operationId]);
   await assert.rejects(readPrototypeCreditReference(pool),/Mouvements/);
+  await assert.rejects(readPrototypeCreditHistory(pool),/Mouvements/);
   await db.query("UPDATE pre_invoice_credit_prototype_movements SET balance_delta=-600000 WHERE operation_id=$1 AND kind='invoice_cancellation'",[preCommand.operationId]);
   const r3={...r2,id:randomUUID(),createdAt:'2026-11-08T13:00:00.000Z',prePaid:10000,oldDebtPaid:0};
   // Simule une corruption directe en base, sans passer par le chemin protégé.
