@@ -1,4 +1,4 @@
-/** Sessions en mémoire uniquement : aucun mot de passe ni jeton n’est enregistré. */
+/** La connexion vérifie l’identité en ligne ; le mot de passe n’est jamais conservé. */
 type ResponseLike={ok:boolean;status:number;json:()=>Promise<unknown>};
 type FetchLike=(url:string,options:{method:string;headers:Record<string,string>;body?:string})=>Promise<ResponseLike>;
 export function apiOrigin(value:string) {
@@ -8,18 +8,20 @@ export function apiOrigin(value:string) {
  return url.origin;
 }
 function object(value:unknown):Record<string,unknown>|null {return typeof value==='object' && value!==null && !Array.isArray(value)?value as Record<string,unknown>:null;}
-export async function openCommercialSession(address:string,login:string,password:string,request:FetchLike):Promise<{id:string;name:string;serverOrigin:string;token:string}> {
+export type CommercialSession={id:string;name:string;serverOrigin:string;token:string;expiresAt:string};
+export async function openCommercialSession(address:string,login:string,password:string,request:FetchLike):Promise<CommercialSession> {
  const origin=apiOrigin(address);
  if (!login.trim() || !password) throw Error('Saisissez l’identifiant et le mot de passe de test.');
  const response=await request(`${origin}/api/mobile/session/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login,password})});
  if (!response.ok) throw Error(response.status===401?'Identifiant ou mot de passe incorrect.':`Connexion impossible (${response.status}).`);
  const data=object(await response.json().catch(()=>null));
  if(typeof data?.token!=='string' || !data.token || data.token.length>8192) throw Error('Réponse de connexion invalide.');
+ if(typeof data.expiresAt!=='string' || !Number.isFinite(Date.parse(data.expiresAt)) || new Date(data.expiresAt).toISOString()!==data.expiresAt) throw Error('Expiration de session invalide : mettez à jour le serveur.');
  const verified=await request(`${origin}/api/mobile/session`,{method:'GET',headers:{Authorization:`Bearer ${data.token}`}});
  if(!verified.ok) throw Error('Session refusée ou expirée.');
  const body=object(await verified.json().catch(()=>null)); const user=object(body?.commercial);
  if(typeof user?.id!=='string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(user.id) || typeof user.name!=='string' || !user.name.trim() || user.name.length>200) throw Error('Réponse de session invalide.');
- return {id:user.id,name:user.name,serverOrigin:origin,token:data.token};
+ return {id:user.id,name:user.name,serverOrigin:origin,token:data.token,expiresAt:data.expiresAt};
 }
 /** L'écran de test ne conserve pas le jeton après vérification. */
 export async function testCommercialLogin(address:string,login:string,password:string,request:FetchLike):Promise<{id:string;name:string}> {

@@ -4,7 +4,7 @@ import {testCommercialLogin,openCommercialSession} from '../../../apps/mobile/co
 
 test('test mobile : identité vérifiée côté serveur sans conserver le jeton',async()=>{
  const calls:{url:string;options:any}[]=[];
- const send=async(url:string,options:any)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>calls.length===1?{token:'test-token',commercial:{name:'Ne pas utiliser'}}:{commercial:{id:'a1000000-0000-4000-8000-000000000001',name:'Commercial fictif'}}};};
+ const send=async(url:string,options:any)=>{calls.push({url,options});return {ok:true,status:200,json:async()=>calls.length===1?{token:'test-token',expiresAt:'2099-01-01T23:00:00.000Z',commercial:{name:'Ne pas utiliser'}}:{commercial:{id:'a1000000-0000-4000-8000-000000000001',name:'Commercial fictif'}}};};
  const result=await testCommercialLogin('http://192.168.1.10:3001','demo','fictif',send);
  assert.deepEqual(result,{id:'a1000000-0000-4000-8000-000000000001',name:'Commercial fictif'});
  assert.equal(calls[1].options.headers.Authorization,'Bearer test-token');
@@ -16,13 +16,13 @@ test('test mobile : refuse serveur invalide, erreur de connexion ou réponse inv
  await assert.rejects(testCommercialLogin('http://192.168.1.10:3001','demo','fictif',fail),/incorrect/);
  const invalid=async()=>({ok:true,status:200,json:async()=>({})});
  await assert.rejects(testCommercialLogin('http://192.168.1.10:3001','demo','fictif',invalid),/invalide/);
- let count=0;const revoked=async()=>({ok:++count===1,status:401,json:async()=>({token:'temp'})});
+ let count=0;const revoked=async()=>({ok:++count===1,status:401,json:async()=>({token:'temp',expiresAt:'2099-01-01T23:00:00.000Z'})});
  await assert.rejects(testCommercialLogin('http://192.168.1.10:3001','demo','fictif',revoked),/refusée/);
 });
 
-test('session commerciale : origine et jeton restent disponibles seulement en mémoire après vérification',async()=>{
+test('session commerciale : origine, expiration et jeton obtenus après vérification',async()=>{
  let calls=0;
- const send=async()=>({ok:true,status:200,json:async()=>++calls===1?{token:'session-fictive'}:{commercial:{id:'a1000000-0000-4000-8000-000000000001',name:'Fictif'}}});
+ const send=async()=>({ok:true,status:200,json:async()=>++calls===1?{token:'session-fictive',expiresAt:'2099-01-01T23:00:00.000Z'}:{commercial:{id:'a1000000-0000-4000-8000-000000000001',name:'Fictif'}}});
  const result=await openCommercialSession('http://192.168.1.10:3001/','demo','fictif',send);
- assert.deepEqual(result,{id:'a1000000-0000-4000-8000-000000000001',name:'Fictif',serverOrigin:'http://192.168.1.10:3001',token:'session-fictive'});
+ assert.deepEqual(result,{id:'a1000000-0000-4000-8000-000000000001',name:'Fictif',serverOrigin:'http://192.168.1.10:3001',token:'session-fictive',expiresAt:'2099-01-01T23:00:00.000Z'});
 });
