@@ -25,9 +25,11 @@ export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day
   const dayResult=buildServerJournalDay(day,invoices.rows.map(r=>r.payload),sales.rows.map(r=>({...r.sale,saleId:r.saleId})));
   const total=BigInt(dayResult.totalCollected)+BigInt(settlements.rows[0].amount);
   if(total>BigInt(Number.MAX_SAFE_INTEGER)||total<BigInt(Number.MIN_SAFE_INTEGER))throw new RangeError('Total encaissé trop élevé.');
+  const events=await db.query(`SELECT action,actor_id AS "actorId",actor_role AS "actorRole",occurred_at AS "occurredAt",version
+   FROM tour_closure_events WHERE commercial_id=$1 AND journal_date=$2::date ORDER BY version DESC LIMIT 200`,[commercialId,day]);
   const state=closure.rows[0];
   await db.query('COMMIT');
   return {...dayResult,commercial:commercial.rows[0],closure:{status:state?.status??'open',version:state?.version??0,closedAt:state?.closed_at?new Date(state.closed_at).toISOString():null},
-   journalCollected:dayResult.totalCollected,globalSettlementCount:settlements.rows[0].count,globalSettlementTotal:Number(settlements.rows[0].amount),totalCollected:Number(total)};
+   journalCollected:dayResult.totalCollected,globalSettlementCount:settlements.rows[0].count,globalSettlementTotal:Number(settlements.rows[0].amount),totalCollected:Number(total),closureEvents:events.rows};
  } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

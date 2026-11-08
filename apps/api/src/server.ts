@@ -13,6 +13,7 @@ import { readServerJournalDay } from './journal-day.js';
 import { JournalConflict, storeJournalSnapshot } from './journal-store.js';
 import { listCommercials, saveCommercial, setCommercialCredentials } from './commercials.js';
 import { loginCommercial, verifyCommercialSession } from './commercial-session.js';
+import { identifiedAdminReadRoutes } from './identified-admin-read.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -153,6 +154,8 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
   }
 });
 app.use('/api', auth);
+// Vue admin en lecture seule : l'espace expérimental ne reflète pas le journal mobile actuel.
+app.use('/api/identified-tour', identifiedAdminReadRoutes(pool));
 // Endpoint réservé aux essais administrateur : désactivé par défaut, hors soldes et hors synchronisation mobile.
 app.use('/api/experimental/journal', experimentalJournalRoutes(pool, process.env.JOURNAL_EXPERIMENTAL === '1'));
 const text = (max: number) => z.string().trim().max(max);
