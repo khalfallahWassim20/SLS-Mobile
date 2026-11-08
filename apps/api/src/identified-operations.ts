@@ -30,7 +30,7 @@ async function clientExists(db:PoolClient,id:string) {
  if (!(await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL',[id])).rows.length) throw new JournalConflict('Client introuvable.');
 }
 /** L'identité provient exclusivement de la session. Les anciennes opérations ne sont jamais réattribuées. */
-export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Session):Promise<'received'|'duplicate'> {
+export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Session,testGuard?:(db:PoolClient,event:{operationId:string;saleId:string;version:number})=>Promise<void>):Promise<'received'|'duplicate'> {
  const event=saleEventSchema.parse(input),sale=event.sale;
  if(event.saleId!==sale.syncSaleId || event.version!==sale.syncVersion) throw new RangeError('Identifiants de vente incohérents.');
  const recordedMs=Date.parse(event.recordedAt),createdMs=Date.parse(sale.createdAt);
@@ -54,6 +54,8 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    await db.query('COMMIT');return 'duplicate';
   }
+  // Crochet uniquement pour les tests du registre d’avoir non exposé.
+  if(testGuard)await testGuard(db,event);
   const legacy=await db.query('SELECT version,payload,client_id FROM demo_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1',[event.saleId]);
   const last=await db.query('SELECT version,payload,commercial_id,journal_date::text AS journal_date FROM identified_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1',[event.saleId]);
   const first=await db.query('SELECT version,commercial_id,journal_date::text AS journal_date FROM identified_sale_events WHERE sale_id=$1 ORDER BY version ASC LIMIT 1',[event.saleId]);
