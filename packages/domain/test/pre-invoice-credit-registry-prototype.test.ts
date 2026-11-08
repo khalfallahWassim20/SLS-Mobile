@@ -43,7 +43,7 @@ test('préétablie : registre isolé, paiement facture distinct de la dette anci
   const moves=await db.query<{kind:string;delta:string}>('SELECT kind,balance_delta::text AS delta FROM pre_invoice_credit_prototype_movements ORDER BY kind');
   assert.deepEqual(moves.rows.map(r=>[r.kind,r.delta]),[['invoice_cancellation','-600000'],['refund','250000']]);
   const pending={operationId:randomUUID(),version:4,invoice,receipts:[r1,r2,{...r2,id:randomUUID(),prePaid:10000,oldDebtPaid:0,createdAt:'2026-11-08T13:00:00.000Z'}]};
-  await assert.rejects(storePrototypeGuardedJournal(pool,pending,auth),/annulée/);
+  await assert.rejects(storePrototypeGuardedJournal(pool,pending,auth),/avoirs existent/);
   const receivedBefore={operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:'2026-11-09'},receipts:[]};
   await assert.rejects(storePrototypeGuardedJournal(pool,{...receivedBefore,operationId:cmd.operationId},auth),/déjà utilisé/);
   await changeTourClosure(pool,c.id,day,'close',{id:c.id,role:'commercial'},0);

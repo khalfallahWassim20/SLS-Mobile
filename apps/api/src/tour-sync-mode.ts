@@ -11,6 +11,11 @@ function parseMode(mode:unknown):Mode {
 export async function lockSyncMode(db:PoolClient):Promise<Mode> {
  const r=await db.query('SELECT mode FROM tour_sync_mode WHERE id=1 FOR SHARE');return parseMode(r.rows[0]?.mode);
 }
+/** Barrière globale : une création d’avoir attend toutes les écritures de
+ * l’ancien protocole et interdit les nouvelles avant leur contrôle. */
+export async function lockSyncModeExclusive(db:PoolClient):Promise<Mode> {
+ const r=await db.query('SELECT mode FROM tour_sync_mode WHERE id=1 FOR UPDATE');return parseMode(r.rows[0]?.mode);
+}
 export async function readSyncMode(pool:Pool):Promise<Mode> {
  const r=await pool.query('SELECT mode FROM tour_sync_mode WHERE id=1');return parseMode(r.rows[0]?.mode);
 }

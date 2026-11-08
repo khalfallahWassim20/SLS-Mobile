@@ -6,6 +6,7 @@ import {z} from 'zod';
 import {initialTourClosure,transitionTourClosure,type TourActor,type TourClosureState} from '@sls/domain';
 import {journalDateSchema} from './journal-protocol.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
+import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 
 export class ClosureConflict extends Error {}
 const identifier=z.string().uuid();
@@ -79,6 +80,7 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
    if(old.commercial_id!==commercialId || old.day!==day || old.action!==action || old.actor_id!==actor.id || old.actor_role!==actor.role || old.expected_version!==expectedVersion) throw new ClosureConflict('Identifiant de demande déjà utilisé.');
    await db.query('COMMIT');return {status:'duplicate' as const,requestId,commercialId,day,action,version:old.result_version,at:new Date(old.occurred_at).toISOString()};
   }
+  if(enforceMode)await assertOldCreditProtocolSafe(db);
   const state=await lockTourClosure(db,commercialId,day);
   let next;
   try {next=transitionTourClosure(state,action,actor,new Date().toISOString(),expectedVersion);}

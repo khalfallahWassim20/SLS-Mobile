@@ -45,8 +45,8 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   const preCommand={operationId:randomUUID(),invoiceId,expectedVersion:3,recordedAt:'2026-11-08T12:00:00.000Z',choice:'credit' as const};
   const before=validatePrototypeCreditReference(await readPrototypeCreditReference(pool));
   const saleResult=await storePrototypeCreditNote(pool,saleCommand,principal),preResult=await storePrototypePreInvoiceCredit(pool,preCommand,principal);
-  // La référence actuelle reste inchangée : la nouvelle projection est strictement isolée.
-  assert.equal((await readIdentifiedReference(pool,true)).clients[0].serverBalance,'1019000');
+  // L’ancienne référence ne doit jamais masquer les avoirs existants.
+  await assert.rejects(readIdentifiedReference(pool,true),/avoirs existent/);
   const result=await readPrototypeCreditReference(pool);
   assert.equal(result.experimental,true);assert.equal(result.version,5);assert.equal(result.clients[0].serverBalance,'350000');
   const cache=new DatabaseSync(':memory:');

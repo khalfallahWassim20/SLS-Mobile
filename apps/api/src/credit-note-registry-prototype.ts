@@ -8,7 +8,7 @@ import {prepareFullCreditNote,type CreditNoteActor,type CreditNoteEvent} from '@
 import {verifyCommercialSession} from './commercial-session.js';
 import {JournalAuthenticationError,JournalConflict} from './journal-store.js';
 import {lockIdentifiedOperation} from './identified-overlap.js';
-import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
+import {assertIdentifiedMode,lockSyncModeExclusive} from './tour-sync-mode.js';
 import {lockCreditNoteSale} from './credit-note-sale-lock.js';
 
 export const creditNotePrototypeSchema=`CREATE TABLE IF NOT EXISTS credit_note_prototype_operation_ids (operation_id uuid PRIMARY KEY);
@@ -30,7 +30,7 @@ export async function storePrototypeCreditNote(pool:Pool,raw:unknown,principal:P
  const command=inputSchema.parse(raw),db=await pool.connect();
  try {
   await db.query('BEGIN');
-  assertIdentifiedMode(await lockSyncMode(db));
+  assertIdentifiedMode(await lockSyncModeExclusive(db));
   let actor:CreditNoteActor;
   if(principal.kind==='commercial') {
    const commercial=await verifyCommercialSession(db,principal.secret,principal.token,true);

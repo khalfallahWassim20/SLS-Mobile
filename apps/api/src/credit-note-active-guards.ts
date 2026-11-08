@@ -26,3 +26,17 @@ export async function assertInvoiceNotCredited(db:PoolClient,kind:'sale'|'preinv
  const table=kind==='sale'?'credit_note_prototype_events':'pre_invoice_credit_prototype_events';
  if((await db.query(`SELECT 1 FROM ${table} WHERE invoice_id=$1`,[invoiceId])).rows.length)throw new JournalConflict('Facture annulée : modification ou paiement refusé.');
 }
+
+/** Un ancien calcul ne voit pas les avoirs. Bloquer plutôt que publier un
+ * solde erroné. Pour une écriture, tenir lockSyncMode (FOR SHARE) avant cet
+ * appel ; la création d’un avoir prend le verrou exclusif correspondant. */
+export class CreditProtocolUpgradeRequired extends Error {
+ constructor(){super('Des avoirs existent : mise à jour et rapprochement nécessaires avant de continuer.');}
+}
+export async function assertOldCreditProtocolSafe(db:PoolClient):Promise<void>{
+ if(!await tablesPresent(db))return;
+ const result=await db.query(`SELECT EXISTS(SELECT 1 FROM credit_note_prototype_events)
+  OR EXISTS(SELECT 1 FROM pre_invoice_credit_prototype_events)
+  OR EXISTS(SELECT 1 FROM credit_note_prototype_operation_ids) AS present`);
+ if(result.rows[0]?.present!==false)throw new CreditProtocolUpgradeRequired();
+}

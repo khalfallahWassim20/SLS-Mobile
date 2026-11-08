@@ -73,14 +73,14 @@ test('préétablie : demandes et reprises concurrentes sur PostgreSQL réel',asy
    // Attacher un gestionnaire immédiatement pour éviter un rejet non observé.
    const settledNote=noteFirst.then(value=>({value,error:null as unknown}),error=>({value:null,error}));
    await waitBlocked(pool,blocker.processID);
-   const settledPayment=storeJournalSnapshot(pool,payment.next,'identified',{...auth,enforceMode:true}).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
+   const settledPayment=storeJournalSnapshot(pool,payment.next,'identified',{...auth,enforceMode:false}).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
    await blocker.query('COMMIT');
    assert.equal((await settledNote).value?.status,'received');assert.match(String((await settledPayment).error),/annulée/);
-   assert.equal(await storeJournalSnapshot(pool,payment.first,'identified',{...auth,enforceMode:true}),'duplicate');
+   assert.equal(await storeJournalSnapshot(pool,payment.first,'identified',{...auth,enforceMode:false}),'duplicate');
    // Le paiement passe d'abord : la demande d'avoir sur l'ancienne version échoue.
    const paidFirst=await makeInvoice('2026-11-11'),payment2=await paymentFor(paidFirst);
    await blocker.query('BEGIN');await blocker.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",['journal-invoice',paidFirst.invoiceId]);
-   const settledPayment2=storeJournalSnapshot(pool,payment2.next,'identified',{...auth,enforceMode:true}).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
+   const settledPayment2=storeJournalSnapshot(pool,payment2.next,'identified',{...auth,enforceMode:false}).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
    await waitBlocked(pool,blocker.processID);
    const settledNote2=storePrototypePreInvoiceCredit(pool,paidFirst,principal).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
    await blocker.query('COMMIT');

@@ -5,7 +5,7 @@ import {lockTourClosure} from './tour-closure-store.js';
 import {verifyCommercialSession} from './commercial-session.js';
 import {lockSyncMode,assertLegacyMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
-import {assertCreditOperationAvailable,assertInvoiceNotCredited} from './credit-note-active-guards.js';
+import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition,type JournalSnapshot } from './journal-protocol.js';
 
 export class JournalConflict extends Error {}
@@ -48,6 +48,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       await db.query('COMMIT'); return 'duplicate';
     }
     if(legacyMode) assertLegacyMode(legacyMode);
+    if(namespace==='identified' && session?.enforceMode)await assertOldCreditProtocolSafe(db);
     if(namespace==='identified') {
       if(closure!.status==='closed') throw new TourDayClosed(closure!.day,closure!.commercialId);
       assertTourWritable(closure!);

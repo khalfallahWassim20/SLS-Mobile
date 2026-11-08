@@ -8,7 +8,7 @@ import {lockTourClosure} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
-import {assertCreditOperationAvailable,assertInvoiceNotCredited} from './credit-note-active-guards.js';
+import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 
 const uuid=z.string().uuid(), money=z.number().int().safe().nonnegative();
 const saleSchema=z.object({createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().min(1).max(200),syncSaleId:uuid,syncVersion:z.number().int().min(1).max(1000000),
@@ -56,6 +56,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    await db.query('COMMIT');return 'duplicate';
   }
+  if(session.enforceMode)await assertOldCreditProtocolSafe(db);
   await assertInvoiceNotCredited(db,'sale',event.saleId);
   // Crochet uniquement pour les tests du registre d’avoir non exposé.
   if(testGuard)await testGuard(db,event);
@@ -100,6 +101,7 @@ export async function storeIdentifiedSettlement(pool:Pool,input:unknown,session:
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    await db.query('COMMIT');return 'duplicate';
   }
+  if(session.enforceMode)await assertOldCreditProtocolSafe(db);
   assertOpen(closure);await clientExists(db,p.clientId);
   await db.query('INSERT INTO identified_settlements(operation_id,client_id,commercial_id,journal_date,payload,payload_hash) VALUES($1,$2,$3,$4::date,$5::jsonb,$6)',[event.operationId,p.clientId,actor.id,day,payload,hash]);
   await db.query('COMMIT');return 'received';

@@ -4,7 +4,7 @@ import type {Pool} from 'pg';
 import {z} from 'zod';
 import {calculatePreInvoiceCancellation,canonicalJson,type CreditNoteActor} from '@sls/domain';
 import {verifyCommercialSession} from './commercial-session.js';
-import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
+import {assertIdentifiedMode,lockSyncModeExclusive} from './tour-sync-mode.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
 import {lockTourClosure} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
@@ -33,7 +33,7 @@ export async function storePrototypePreInvoiceCredit(pool:Pool,raw:unknown,princ
  if(new Date(command.recordedAt).toISOString()!==command.recordedAt)throw new RangeError('Date invalide.');
  const db=await pool.connect();
  try {
-  await db.query('BEGIN');assertIdentifiedMode(await lockSyncMode(db));
+  await db.query('BEGIN');assertIdentifiedMode(await lockSyncModeExclusive(db));
   let actor:CreditNoteActor;
   if(principal.kind==='commercial') {
    const c=await verifyCommercialSession(db,principal.secret,principal.token,true);

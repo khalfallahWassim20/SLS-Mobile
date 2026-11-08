@@ -1,3 +1,4 @@
+import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 /** Projection expérimentale v4. Aucun routeur ne l'expose : une migration sûre reste nécessaire. */
 import type {Pool,PoolClient} from 'pg';
 import {createHash} from 'node:crypto';
@@ -75,6 +76,7 @@ export async function readIdentifiedReference(pool:Pool,includeInactive=false,en
  try {
   await db.query(enforceMode?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   if(enforceMode)assertIdentifiedMode(await lockSyncMode(db));
+  await assertOldCreditProtocolSafe(db);
   const result=await readIdentifiedReferenceInTransaction(db,includeInactive);
   await db.query('COMMIT');return result;
  } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
