@@ -17,6 +17,21 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       password_hash text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
     );
     ALTER TABLE commercial_credentials ADD COLUMN IF NOT EXISTS session_version bigint NOT NULL DEFAULT 1;
+    -- Préparation des clôtures : non exposée et sans verrouillage des écritures existantes.
+    CREATE TABLE IF NOT EXISTS tour_closures (
+      commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
+      status text NOT NULL CHECK(status IN ('open','closed')), version integer NOT NULL CHECK(version >= 0),
+      closed_at timestamptz, PRIMARY KEY(commercial_id,journal_date),
+      CHECK ((status='open' AND closed_at IS NULL) OR (status='closed' AND closed_at IS NOT NULL AND version>0))
+    );
+    CREATE TABLE IF NOT EXISTS tour_closure_events (
+      id uuid PRIMARY KEY, commercial_id uuid NOT NULL, journal_date date NOT NULL,
+      action text NOT NULL CHECK(action IN ('close','reopen')), actor_id text NOT NULL,
+      actor_role text NOT NULL CHECK(actor_role IN ('commercial','admin')),
+      occurred_at timestamptz NOT NULL, version integer NOT NULL CHECK(version>0),
+      UNIQUE(commercial_id,journal_date,version),
+      FOREIGN KEY(commercial_id,journal_date) REFERENCES tour_closures(commercial_id,journal_date)
+    );
     CREATE TABLE IF NOT EXISTS articles (
       id uuid PRIMARY KEY, code text UNIQUE NOT NULL, barcode text NOT NULL DEFAULT '', name text NOT NULL,
       purchase_ttc bigint NOT NULL CHECK (purchase_ttc >= 0), sale_ttc bigint NOT NULL CHECK (sale_ttc >= 0),

@@ -7,6 +7,7 @@ import dotenv from 'dotenv';
 import { schemaSql } from '../src/schema.js';
 import { storeJournalSnapshot, JournalConflict } from '../src/journal-store.js';
 import { readJournalReference } from '../src/journal-reference.js';
+import {changeTourClosure, ClosureConflict, readTourClosure} from '../src/tour-closure-store.js';
 
 dotenv.config({path:'apps/api/.env'});
 test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma temporaire', async () => {
@@ -42,6 +43,17 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   const conflict=outcomes.find(r=>r.status==='rejected'); assert.ok(conflict && conflict.status==='rejected' && conflict.reason instanceof JournalConflict);
   const dayRows=await isolated.query("SELECT count(*)::int AS count FROM sync_journal_invoices WHERE client_id=$1 AND journal_date='2026-11-06'",[clientId]);
   assert.equal(dayRows.rows[0].count,1);
+
+  // Clôtures concurrentes : une seule transition de la version 0 peut réussir.
+  const commercialId=randomUUID();
+  await isolated.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[commercialId,'Commercial test temporaire']);
+  const actor={id:commercialId,role:'commercial' as const};
+  const closures=await Promise.allSettled([1,2].map(()=>changeTourClosure(isolated!,commercialId,'2026-11-07','close',actor,0)));
+  assert.equal(closures.filter(r=>r.status==='fulfilled').length,1);
+  const closureFailure=closures.find(r=>r.status==='rejected');
+  assert.ok(closureFailure && closureFailure.status==='rejected' && closureFailure.reason instanceof ClosureConflict);
+  assert.equal((await readTourClosure(isolated,commercialId,'2026-11-07')).version,1);
+  assert.equal((await isolated.query('SELECT count(*)::int AS count FROM tour_closure_events')).rows[0].count,1);
 
  } finally {
   if (isolated) await isolated.end();
