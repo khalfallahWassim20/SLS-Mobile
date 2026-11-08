@@ -19,8 +19,8 @@ test('API de clôture isolée : rôles, écriture, réouverture et accusé perdu
   await setCommercialCredentials(pool,'admin',c.id,{login:'commercial.test',password:'mot de passe fictif'});
   const session=await loginCommercial(pool,secret,{login:'commercial.test',password:'mot de passe fictif'});assert.ok(session);
   const clientId=randomUUID();await db.query('INSERT INTO clients(id,name) VALUES($1,$2)',[clientId,'Client fictif']);
-  const app=express();app.use(express.json());app.use('/commercial',identifiedCommercialRoutes(pool,secret));
-  app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test'){res.sendStatus(401);return;}next();},'admin-test'));
+  const app=express();app.use(express.json());app.use('/commercial',identifiedCommercialRoutes(pool,secret,{enforceMode:false}));
+  app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test'){res.sendStatus(401);return;}next();},'admin-test',{enforceMode:false}));
   const server=app.listen(0,'127.0.0.1');
   try {
    await new Promise<void>((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject);});

@@ -16,3 +16,8 @@ export async function readSyncMode(pool:Pool):Promise<Mode> {
 }
 /** À appeler seulement après l'éventuelle reconnaissance d'un doublon déjà reçu. */
 export function assertLegacyMode(mode:Mode):void {if(mode!=='legacy')throw new LegacySyncDisabled();}
+
+export class IdentifiedSyncDisabled extends Error {
+ constructor() {super('Synchronisation individuelle non activée.');}
+}
+export function assertIdentifiedMode(mode:Mode):void {if(mode!=='identified')throw new IdentifiedSyncDisabled();}

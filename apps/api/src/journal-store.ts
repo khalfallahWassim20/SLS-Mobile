@@ -3,12 +3,13 @@ import type { Pool } from 'pg';
 import {assertTourWritable} from '@sls/domain';
 import {lockTourClosure} from './tour-closure-store.js';
 import {verifyCommercialSession} from './commercial-session.js';
-import {lockSyncMode,assertLegacyMode} from './tour-sync-mode.js';
+import {lockSyncMode,assertLegacyMode,assertIdentifiedMode} from './tour-sync-mode.js';
+import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
 import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition } from './journal-protocol.js';
 
 export class JournalConflict extends Error {}
 export class JournalAuthenticationError extends Error {}
-export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string}): Promise<'received' | 'duplicate'> {
+export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string;enforceMode?:boolean}): Promise<'received' | 'duplicate'> {
   const prefix = namespace === 'sync' ? 'sync_journal' : namespace === 'identified' ? 'identified_journal' : 'demo_journal';
   const event = parseJournalSnapshot(input);
   const hash = journalSnapshotHash(event);
@@ -16,6 +17,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
   try {
     await db.query('BEGIN');
     const legacyMode=namespace==='sync' ? await lockSyncMode(db) : null;
+    if(namespace==='identified' && session?.enforceMode) assertIdentifiedMode(await lockSyncMode(db));
     let commercialId:string|null=null;
     let closure:Awaited<ReturnType<typeof lockTourClosure>>|null=null;
     if(namespace==='identified') {
@@ -23,6 +25,8 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       const actor=await verifyCommercialSession(db,session.secret,session.token,true);
       if(!actor) throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
       commercialId=actor.id;
+      await lockIdentifiedOperation(db,event.operationId);
+      await assertOperationUnambiguous(db,event.operationId,'journal');
       // Même verrou que la clôture, conservé jusqu'au commit de l'écriture.
       closure=await lockTourClosure(db,commercialId!,event.invoice.journalDate);
     }
@@ -40,6 +44,10 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
     if(namespace==='identified') {
       try {assertTourWritable(closure!);} catch(error) {throw new JournalConflict(error instanceof Error ? error.message : 'Journal clôturé.');}
     }
+    if(namespace==='identified') {
+      const legacy=await db.query('SELECT id FROM sync_journal_invoices WHERE id=$1 OR (client_id=$2 AND journal_date=$3::date)',[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);
+      if(legacy.rows.length) throw new IdentifiedOverlap('Facture existante dans l’ancien journal : rapprochement nécessaire.');
+    }
     const invoice = await db.query(`SELECT id,client_id,journal_date::text AS journal_date${namespace==='identified'?',commercial_id':''} FROM ${prefix}_invoices WHERE id=$1 OR (client_id=$2 AND journal_date=$3::date)`,[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);
     if (invoice.rows.some(r => r.id !== event.invoice.id || r.client_id !== event.invoice.clientId || r.journal_date !== event.invoice.journalDate)) throw new JournalConflict('Une autre facture existe déjà pour ce client et cette date.');
     if(namespace==='identified' && invoice.rows.some(r=>r.commercial_id!==commercialId)) throw new JournalConflict('Facture attribuée à un autre commercial.');
@@ -53,6 +61,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       else await db.query(`INSERT INTO ${prefix}_invoices(id,client_id,journal_date) VALUES($1,$2,$3::date)`,[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);
     }
     for (const receipt of [...event.receipts].sort((a,b) => a.id.localeCompare(b.id))) {
+      if(namespace==='identified' && (await db.query('SELECT id FROM sync_journal_receipt_ids WHERE id=$1',[receipt.id])).rows.length) throw new IdentifiedOverlap('Règlement de journal déjà présent dans l’ancien espace.');
       await db.query(`INSERT INTO ${prefix}_receipt_ids(id,invoice_id) VALUES($1,$2) ON CONFLICT(id) DO NOTHING`,[receipt.id,event.invoice.id]);
       const owner = await db.query(`SELECT invoice_id FROM ${prefix}_receipt_ids WHERE id=$1`,[receipt.id]);
       if (owner.rows[0]?.invoice_id !== event.invoice.id) throw new JournalConflict('Identifiant de règlement déjà utilisé pour une autre facture.');

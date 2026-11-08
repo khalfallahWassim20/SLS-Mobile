@@ -2,6 +2,7 @@
 import type {Pool} from 'pg';
 import {summarizePreInvoice} from '@sls/domain';
 import {parseJournalSnapshot} from './journal-protocol.js';
+import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 export class ReferenceOverlap extends Error {}
 function unique(ids:string[],label:string) {
  const seen=new Set<string>();for(const id of ids){if(seen.has(id))throw new ReferenceOverlap(`${label} présent dans plusieurs espaces : rapprochement nécessaire.`);seen.add(id);}
@@ -11,10 +12,11 @@ function checked(value:bigint):string {
 }
 /** Anciennes et nouvelles écritures partagent un instantané MVCC. En cas de recouvrement,
  * refuser toute projection plutôt que compter deux fois ou choisir arbitrairement. */
-export async function readIdentifiedReference(pool:Pool,includeInactive=false) {
+export async function readIdentifiedReference(pool:Pool,includeInactive=false,enforceMode=false) {
  const db=await pool.connect();const active=includeInactive?'':' AND c.active';
  try {
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  await db.query(enforceMode?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  if(enforceMode)assertIdentifiedMode(await lockSyncMode(db));
   const clients=await db.query(`SELECT c.id,c.name,c.sector,c.opening_balance::text AS "openingBalance",c.credit_limit::text AS "creditLimit",c.opening_balance::text AS "serverBalance" FROM clients c WHERE c.deleted_at IS NULL${active} ORDER BY c.name`);
   const sales=await db.query(`WITH legacy AS (SELECT DISTINCT ON (sale_id) sale_id,client_id,version,payload FROM demo_sale_events ORDER BY sale_id,version DESC),
    identified AS (SELECT DISTINCT ON (sale_id) sale_id,client_id,version,payload FROM identified_sale_events ORDER BY sale_id,version DESC),

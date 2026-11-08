@@ -27,8 +27,8 @@ test('parcours isolé : synchronisation, clôture, réponse perdue et réouvertu
   const tx={getFirstAsync:async<T>(sql:string,...params:(string|number|null)[])=>mobileDb.prepare(sql).get(...params) as T||null,runAsync:async(sql:string,...params:(string|number|null)[])=>{mobileDb.prepare(sql).run(...params)}};
   const app=express();app.use(express.json());
   app.post('/login',async(req,res)=>{const result=await loginCommercial(pool,secret,req.body);if(!result){res.sendStatus(401);return;}res.json(result)});
-  app.use('/mobile',identifiedCommercialRoutes(pool,secret));
-  app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-fictif'){res.sendStatus(401);return;}next();},'admin-fictif'));
+  app.use('/mobile',identifiedCommercialRoutes(pool,secret,{enforceMode:false}));
+  app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-fictif'){res.sendStatus(401);return;}next();},'admin-fictif',{enforceMode:false}));
   const server=app.listen(0,'127.0.0.1');
   try {
    await new Promise<void>((resolve,reject)=>{server.once('listening',resolve);server.once('error',reject)});

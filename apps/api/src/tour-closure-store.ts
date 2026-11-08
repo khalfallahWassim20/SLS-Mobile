@@ -5,6 +5,7 @@ import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
 import {initialTourClosure,transitionTourClosure,type TourActor,type TourClosureState} from '@sls/domain';
 import {journalDateSchema} from './journal-protocol.js';
+import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 
 export class ClosureConflict extends Error {}
 const identifier=z.string().uuid();
@@ -50,11 +51,12 @@ export async function changeTourClosure(pool:Pool,commercialId:string,day:string
 /** Service expérimental uniquement : une session commerciale ne peut clôturer que sa propre journée.
  * L'admin est fourni uniquement par un middleware serveur, jamais par le corps de la requête. */
 export async function requestTourTransition(pool:Pool, input:{requestId:string;day:string;expectedVersion:number}, principal:
- {kind:'commercial';token:string;secret:string}|{kind:'admin';actorId:string;commercialId:string}) {
+ {kind:'commercial';token:string;secret:string}|{kind:'admin';actorId:string;commercialId:string}, enforceMode=false) {
  const {requestId,day,expectedVersion}=z.object({requestId:identifier,day:journalDateSchema,expectedVersion:z.number().int().min(0).max(2147483646)}).strict().parse(input);
  const db=await pool.connect();
  try {
   await db.query('BEGIN');
+  if(enforceMode) assertIdentifiedMode(await lockSyncMode(db));
   let commercialId:string,actor:TourActor,action:'close'|'reopen';
   if(principal.kind==='commercial') {
    // La vérification et le verrou de compte sont dans la même transaction que la transition.

@@ -3,12 +3,14 @@ import type {Pool} from 'pg';
 import {z} from 'zod';
 import {buildServerJournalDay} from './journal-day.js';
 import {journalDateSchema} from './journal-protocol.js';
+import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 
-export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day:string) {
+export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day:string,enforceMode=false) {
  z.string().uuid().parse(commercialId);journalDateSchema.parse(day);
  const db=await pool.connect();
  try {
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  await db.query(enforceMode?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  if(enforceMode)assertIdentifiedMode(await lockSyncMode(db));
   const commercial=await db.query('SELECT id,name FROM commercials WHERE id=$1 AND deleted_at IS NULL',[commercialId]);
   if(!commercial.rows.length)throw new RangeError('Commercial introuvable.');
   const invoices=await db.query(`SELECT DISTINCT ON (e.invoice_id) e.payload FROM identified_journal_events e

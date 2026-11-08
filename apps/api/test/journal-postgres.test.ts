@@ -12,6 +12,7 @@ import {setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from '../src/identified-operations.js';
 import {lockSyncMode,LegacySyncDisabled} from '../src/tour-sync-mode.js';
+import {IdentifiedOverlap} from '../src/identified-overlap.js';
 
 dotenv.config({path:'apps/api/.env'});
 test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma temporaire', async () => {
@@ -111,6 +112,14 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
    assert.equal(await storeJournalSnapshot(isolated,first,'sync'),'duplicate');
    const blocked={operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:'2026-11-12'},receipts:[]};
    await assert.rejects(storeJournalSnapshot(isolated,blocked,'sync'),LegacySyncDisabled);
+   // Deux types d'écritures identifiées utilisant le même UUID ne peuvent être reçus simultanément.
+   const sharedId=randomUUID(),freshSale=randomUUID(),guarded={...signed,enforceMode:true};
+   const duplicateSale={...concurrentSale,operationId:sharedId,saleId:freshSale,sale:{...concurrentSale.sale,syncSaleId:freshSale,createdAt:'2026-11-13T10:00:00.000Z'},recordedAt:'2026-11-13T10:00:00.000Z'};
+   const duplicateSettlement={...concurrentPayment,operationId:sharedId,settlement:{...concurrentPayment.settlement,syncOperationId:sharedId,createdAt:'2026-11-13T10:00:00.000Z'}};
+   const conflicting=await Promise.allSettled([storeIdentifiedSale(isolated,duplicateSale,guarded),storeIdentifiedSettlement(isolated,duplicateSettlement,guarded)]);
+   assert.equal(conflicting.filter(x=>x.status==='fulfilled').length,1);
+   const rejected=conflicting.find(x=>x.status==='rejected');assert.ok(rejected&&rejected.status==='rejected'&&rejected.reason instanceof IdentifiedOverlap);
+
   } finally {writer.release();switcher.release();}
 
 
