@@ -1,0 +1,51 @@
+/** Projection expérimentale v4. Aucun routeur ne l'expose : une migration sûre reste nécessaire. */
+import type {Pool} from 'pg';
+import {summarizePreInvoice} from '@sls/domain';
+import {parseJournalSnapshot} from './journal-protocol.js';
+export class ReferenceOverlap extends Error {}
+function unique(ids:string[],label:string) {
+ const seen=new Set<string>();for(const id of ids){if(seen.has(id))throw new ReferenceOverlap(`${label} présent dans plusieurs espaces : rapprochement nécessaire.`);seen.add(id);}
+}
+function checked(value:bigint):string {
+ if(value>BigInt(Number.MAX_SAFE_INTEGER)||value<BigInt(Number.MIN_SAFE_INTEGER))throw new RangeError('Solde trop élevé.');return value.toString();
+}
+/** Anciennes et nouvelles écritures partagent un instantané MVCC. En cas de recouvrement,
+ * refuser toute projection plutôt que compter deux fois ou choisir arbitrairement. */
+export async function readIdentifiedReference(pool:Pool,includeInactive=false) {
+ const db=await pool.connect();const active=includeInactive?'':' AND c.active';
+ try {
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  const clients=await db.query(`SELECT c.id,c.name,c.sector,c.opening_balance::text AS "openingBalance",c.credit_limit::text AS "creditLimit",c.opening_balance::text AS "serverBalance" FROM clients c WHERE c.deleted_at IS NULL${active} ORDER BY c.name`);
+  const sales=await db.query(`WITH legacy AS (SELECT DISTINCT ON (sale_id) sale_id,client_id,version,payload FROM demo_sale_events ORDER BY sale_id,version DESC),
+   identified AS (SELECT DISTINCT ON (sale_id) sale_id,client_id,version,payload FROM identified_sale_events ORDER BY sale_id,version DESC),
+   combined AS (SELECT * FROM legacy UNION ALL SELECT * FROM identified)
+   SELECT s.sale_id AS "saleId",s.client_id AS "clientId",s.version,s.payload->'sale'->>'total' AS total,s.payload->'sale'->>'paid' AS paid
+   FROM combined s JOIN clients c ON c.id=s.client_id WHERE c.deleted_at IS NULL${active}`);
+  const payments=await db.query(`WITH combined AS (SELECT operation_id,client_id,payload FROM demo_settlements UNION ALL SELECT operation_id,client_id,payload FROM identified_settlements)
+   SELECT p.operation_id AS "operationId",p.client_id AS "clientId",p.payload->'settlement'->>'amount' AS amount
+   FROM combined p JOIN clients c ON c.id=p.client_id WHERE c.deleted_at IS NULL${active}`);
+  const journals=await db.query(`WITH legacy AS (SELECT DISTINCT ON (invoice_id) invoice_id,payload FROM sync_journal_events ORDER BY invoice_id,version DESC),
+   identified AS (SELECT DISTINCT ON (invoice_id) invoice_id,payload FROM identified_journal_events ORDER BY invoice_id,version DESC),
+   combined AS (SELECT * FROM legacy UNION ALL SELECT * FROM identified)
+   SELECT e.payload FROM combined e JOIN clients c ON c.id=(e.payload->'invoice'->>'clientId')::uuid WHERE c.deleted_at IS NULL${active}`);
+  const operations=await db.query(`SELECT operation_id FROM demo_sale_events UNION ALL SELECT operation_id FROM identified_sale_events UNION ALL
+   SELECT operation_id FROM demo_settlements UNION ALL SELECT operation_id FROM identified_settlements UNION ALL
+   SELECT operation_id FROM sync_journal_events UNION ALL SELECT operation_id FROM identified_journal_events`);
+  const articles=await db.query(`SELECT id,code,barcode,name,sale_ttc::text AS "saleTtc",vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton" FROM articles WHERE active AND deleted_at IS NULL ORDER BY name`);
+  unique(operations.rows.map(r=>r.operation_id),'Opération');
+  unique(sales.rows.map(r=>r.saleId),'Vente');unique(payments.rows.map(r=>r.operationId),'Règlement');
+  const parsed=journals.rows.map(r=>parseJournalSnapshot(r.payload));
+  unique(parsed.map(e=>e.invoice.id),'Facture');unique(parsed.map(e=>`${e.invoice.clientId}:${e.invoice.journalDate}`),'Facture client/jour');
+  unique(parsed.flatMap(e=>e.receipts.map(r=>r.id)),'Règlement de journal');
+  const byId=new Map<string,{serverBalance:string}>(clients.rows.map(c=>[c.id,c]));
+  const adjust=(id:string,delta:bigint)=>{const c=byId.get(id);if(!c)throw new Error('Client introuvable.');c.serverBalance=checked(BigInt(c.serverBalance)+delta);};
+  for(const sale of sales.rows) adjust(sale.clientId,BigInt(sale.total)-BigInt(sale.paid));
+  for(const payment of payments.rows) adjust(payment.clientId,-BigInt(payment.amount));
+  const journalStates=parsed.map(({invoice,receipts})=>{
+   adjust(invoice.clientId,BigInt(summarizePreInvoice(invoice.amount,receipts).debtEffect));
+   return {id:invoice.id,clientId:invoice.clientId,journalDate:invoice.journalDate,total:invoice.amount,receipts:receipts.map(p=>({id:p.id,prePaid:p.prePaid,oldDebtPaid:p.oldDebtPaid,creditFull:p.creditFull}))};
+  });
+  await db.query('COMMIT');
+  return {version:4 as const,clients:clients.rows,articles:articles.rows,saleStates:sales.rows,settlementStates:payments.rows.map(({operationId,clientId})=>({operationId,clientId})),journalStates};
+ } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+}
