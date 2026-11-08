@@ -42,7 +42,7 @@ test('API de clôture isolée : rôles, écriture, réouverture et accusé perdu
    const receipt={id:randomUUID(),preInvoiceId:invoice.id,clientId,journalDate:day,createdAt:'2026-11-10T10:00:00.000Z',prePaid:200000,oldDebtPaid:0,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:0};
    const second={operationId:randomUUID(),version:2,invoice,receipts:[receipt]};
    assert.equal((await post('/commercial/journal',first)).status,200);
-   assert.equal((await post('/commercial/journal',second)).status,409);
+   const blocked=await post('/commercial/journal',second);assert.equal(blocked.status,409);const conflict=await blocked.json();assert.equal(conflict.code,'TOUR_DAY_CLOSED');assert.equal(conflict.day,day);assert.equal(conflict.commercialId,c.id);
    const reopen={requestId:randomUUID(),day,expectedVersion:1};
    assert.equal((await post(`/admin/${c.id}/reopen`,reopen)).status,401);
    assert.equal((await post(`/admin/${c.id}/reopen`,reopen,adminHeaders)).status,201);

@@ -5,7 +5,7 @@ import {z} from 'zod';
 import {assertTourWritable,calculateInvoice} from '@sls/domain';
 import {verifyCommercialSession} from './commercial-session.js';
 import {lockTourClosure} from './tour-closure-store.js';
-import {JournalAuthenticationError,JournalConflict} from './journal-store.js';
+import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 
@@ -22,7 +22,8 @@ function tunisDay(iso:string):string {
  return `${get('year')}-${get('month')}-${get('day')}`;
 }
 function assertOpen(closure:Awaited<ReturnType<typeof lockTourClosure>>) {
- try {assertTourWritable(closure);} catch(e) {throw new JournalConflict(e instanceof Error?e.message:'Journal clôturé.');}
+ if(closure.status==='closed')throw new TourDayClosed(closure.day,closure.commercialId);
+ assertTourWritable(closure);
 }
 function digest(payload:string) {return createHash('sha256').update(payload).digest('hex');}
 async function clientExists(db:PoolClient,id:string) {

@@ -2,6 +2,9 @@
 type Kind='sale'|'settlement'|'journal';
 export type IdentifiedEntry={operationId:string;kind:Kind;entityId:string;commercialId:string;recordedAt:string;payload:string};
 type Response={ok:boolean;status:number;json:()=>Promise<unknown>};
+export class ClosedDaySyncError extends Error {
+ constructor(readonly day:string,readonly commercialId:string) {super('Journée clôturée : opération conservée en attente.');}
+}
 const obj=(x:unknown):Record<string,unknown>|null=>typeof x==='object'&&x!==null&&!Array.isArray(x)?x as Record<string,unknown>:null;
 const uuid=(x:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
 /** Vérifie toute la file avant le premier envoi et ne supprime qu'après un accusé exact. */
@@ -34,7 +37,13 @@ export async function uploadIdentifiedOperations(entries:IdentifiedEntry[],ident
  let count=0;
  for(const request of requests){
   const response=await send(request.path,request.body);const body=obj(await response.json().catch(()=>null));
-  if(!response.ok)throw Error(typeof body?.error==='string'&&body.error?body.error.slice(0,300):`Erreur de synchronisation (${response.status}).`);
+  if(!response.ok){
+   if(response.status===409 && body?.code==='TOUR_DAY_CLOSED' && typeof body.day==='string' && /^\d{4}-\d{2}-\d{2}$/.test(body.day) && typeof body.commercialId==='string' && uuid(body.commercialId)) {
+    const date=new Date(`${body.day}T00:00:00.000Z`);
+    if(Number.isFinite(date.getTime()) && date.toISOString().slice(0,10)===body.day)throw new ClosedDaySyncError(body.day,body.commercialId);
+   }
+   throw Error(typeof body?.error==='string'&&body.error?body.error.slice(0,300):`Erreur de synchronisation (${response.status}).`);
+  }
   if(!body||(body.status!=='received'&&body.status!=='duplicate')||body.operationId!==request.entry.operationId)throw Error('Accusé invalide : opération conservée.');
   await acknowledge(request.entry.operationId,request.entry.kind);count++;
  }

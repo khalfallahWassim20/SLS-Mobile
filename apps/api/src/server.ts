@@ -14,6 +14,7 @@ import { JournalConflict, storeJournalSnapshot } from './journal-store.js';
 import { listCommercials, saveCommercial, setCommercialCredentials } from './commercials.js';
 import { loginCommercial, verifyCommercialSession } from './commercial-session.js';
 import { identifiedAdminReadRoutes } from './identified-admin-read.js';
+import { saleHistoryRoutes } from './sale-history.js';
 import {identifiedCommercialRoutes,identifiedAdminRoutes} from './identified-tour-routes.js';
 import {lockSyncMode,assertLegacyMode,LegacySyncDisabled,readSyncMode} from './tour-sync-mode.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
@@ -231,6 +232,7 @@ app.get('/api/demo-settlements', async (_req,res) => {
  const mode=await readSyncMode(pool);
  const r=await pool.query(`SELECT operation_id AS "operationId",payload->'settlement' AS settlement,received_at AS "receivedAt" FROM (SELECT operation_id,payload,received_at FROM demo_settlements ${mode==='identified'?'UNION ALL SELECT operation_id,payload,received_at FROM identified_settlements':''}) payments ORDER BY received_at DESC LIMIT 1000`); res.json(r.rows);
 });
+app.use('/api/demo-sales',saleHistoryRoutes(pool));
 app.get('/api/demo-sales', async (_req, res) => {
  const mode=await readSyncMode(pool);
  const r = await pool.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM (SELECT sale_id,version,payload,received_at FROM demo_sale_events ${mode==='identified'?'UNION ALL SELECT sale_id,version,payload,received_at FROM identified_sale_events':''}) sales ORDER BY sale_id,version DESC`);
