@@ -150,16 +150,7 @@ export type { JournalSyncInvoice, JournalSyncReceipt } from './journal.ts';
 export { initialTourClosure, assertTourWritable, transitionTourClosure } from './tour-closure.ts';
 export type { TourActor, TourClosureState, TourClosureEvent } from './tour-closure.ts';
 
-/** Représentation déterministe d'une valeur JSON, indépendante de l'ordre des clés PostgreSQL. */
-export function canonicalJson(value: unknown): string {
- if (value === null || typeof value === 'string' || typeof value === 'boolean' || (typeof value === 'number' && Number.isFinite(value))) return JSON.stringify(value);
- if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
- if (typeof value === 'object') {
-  const record=value as Record<string,unknown>;
-  return `{${Object.keys(record).sort().map(key=>`${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
- }
- throw new TypeError('Valeur JSON invalide.');
-}
+export { canonicalJson } from './canonical-json.ts';
 
 export { calculateFullCancellation } from './credit-note.ts';
 export type { FullCancellationInput, FullCreditChoice } from './credit-note.ts';
@@ -168,3 +159,4 @@ export type { CreditNoteActor, CreditNoteCommand, CreditNoteSource, CreditNoteEv
 export { calculatePreInvoiceCancellation } from './pre-invoice-credit-note.ts';
 export { reconcilePreInvoiceCredits } from './pre-invoice-credit-reconciliation.ts';
 export type { CreditJournalState } from './pre-invoice-credit-reconciliation.ts';
+export { reconcileSaleCredits } from './sale-credit-reconciliation.ts';

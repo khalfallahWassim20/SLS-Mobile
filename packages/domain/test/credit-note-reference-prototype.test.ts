@@ -17,6 +17,8 @@ import {validatePrototypeCreditReference} from '../../../apps/mobile/credit-note
 import {validateIdentifiedReference} from '../../../apps/mobile/identified-reference.js';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
+import {prototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-prototype.js';
+import type {Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
 
 test('projection intégrée isolée : soldes, crédits, factures et refus en cas de corruption',async()=>{
  const db=new PGlite();try{
@@ -37,9 +39,10 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   const r2={...r1,id:randomUUID(),createdAt:'2026-11-08T11:00:00.000Z',prePaid:50000,oldDebtPaid:100000};
   await storeJournalSnapshot(pool,{operationId:randomUUID(),version:2,invoice,receipts:[r1]},'identified',auth);
   await storeJournalSnapshot(pool,{operationId:randomUUID(),version:3,invoice,receipts:[r1,r2]},'identified',auth);
-  const saleCommand={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T12:00:00.000Z',choice:'refund'};
-  const preCommand={operationId:randomUUID(),invoiceId,expectedVersion:3,recordedAt:'2026-11-08T12:00:00.000Z',choice:'credit'};
-  await storePrototypeCreditNote(pool,saleCommand,principal);await storePrototypePreInvoiceCredit(pool,preCommand,principal);
+  const saleCommand={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T12:00:00.000Z',choice:'refund' as const};
+  const preCommand={operationId:randomUUID(),invoiceId,expectedVersion:3,recordedAt:'2026-11-08T12:00:00.000Z',choice:'credit' as const};
+  const before=validatePrototypeCreditReference(await readPrototypeCreditReference(pool));
+  const saleResult=await storePrototypeCreditNote(pool,saleCommand,principal),preResult=await storePrototypePreInvoiceCredit(pool,preCommand,principal);
   // La référence actuelle reste inchangée : la nouvelle projection est strictement isolée.
   assert.equal((await readIdentifiedReference(pool,true)).clients[0].serverBalance,'1019000');
   const result=await readPrototypeCreditReference(pool);
@@ -58,7 +61,16 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalStates:[{...result.journalStates[0],creditNote:null}]}),/périmée/);
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
   } finally {cache.close();}
-  const mobile=validatePrototypeCreditReference(result);assert.equal(mobile.clients[0].serverBalance,'350000');assert.equal(mobile.saleStates[0].creditNote?.refund,50000);assert.equal(mobile.journalStates[0].creditNote?.choice,'credit');
+  const mobile=validatePrototypeCreditReference(result);assert.equal(mobile.clients[0].serverBalance,'350000');
+  const origin='https://example.test';
+  const localSale:Note={kind:'sale',commercialId:c.id,serverOrigin:origin,command:saleCommand,source:sale,balanceDelta:saleResult.event.balanceDelta,refund:saleResult.event.refund,retainedCredit:saleResult.event.retainedCredit};
+  const localPre:Note={kind:'preinvoice',commercialId:c.id,serverOrigin:origin,command:preCommand,source:preResult.event.source,balanceDelta:preResult.event.balanceDelta,refund:preResult.event.refund,retainedCredit:preResult.event.retainedCredit};
+  const localJournal={id:invoiceId,clientId,journalDate:day,version:3,total:600000,receipts:[r1,r2],snapshot:preResult.event.source};
+  const current={clientId,identity:{commercialId:c.id,serverOrigin:origin},sales:[{...sale,id:1}],journals:[localJournal],settlements:[],notes:[localSale,localPre]};
+  assert.deepEqual(prototypeCreditBalance({...current,reference:before}),{balance:350000,conflict:false});
+  assert.deepEqual(prototypeCreditBalance({...current,reference:mobile}),{balance:350000,conflict:false});
+  assert.equal(prototypeCreditBalance({...current,notes:[localPre],reference:mobile}).conflict,true);
+  assert.throws(()=>prototypeCreditBalance({...current,sales:[{...sale,id:1,total:1}],reference:mobile}),/modifiée/);assert.equal(mobile.saleStates[0].creditNote?.refund,50000);assert.equal(mobile.journalStates[0].creditNote?.choice,'credit');
   assert.throws(()=>validateIdentifiedReference(result),/invalide/);
   assert.throws(()=>validatePrototypeCreditReference({...result,saleStates:[{...result.saleStates[0],paid:'1000'}]}),/incohérent/);
   assert.throws(()=>validatePrototypeCreditReference({...result,journalStates:[{...result.journalStates[0],version:2}]}),/Version/);
