@@ -13,6 +13,7 @@ import {storeJournalSnapshot} from '../src/journal-store.js';
 import {lockTourClosure} from '../src/tour-closure-store.js';
 import {lockIdentifiedOperation} from '../src/identified-overlap.js';
 import {storePrototypeGuardedJournal} from '../src/pre-invoice-credit-journal-prototype.js';
+import {readPrototypeCreditReference} from '../src/credit-note-reference-prototype.js';
 
 dotenv.config({path:'apps/api/.env'});
 async function waitBlocked(pool:pg.Pool,pid:number) {
@@ -85,6 +86,8 @@ test('préétablie : demandes et reprises concurrentes sur PostgreSQL réel',asy
    await blocker.query('COMMIT');
    assert.equal((await settledPayment2).value,'received');assert.match(String((await settledNote2).error),/périmée/);
    const saved=await pool.query('SELECT count(*)::int AS n FROM pre_invoice_credit_prototype_events WHERE invoice_id=$1',[paidFirst.invoiceId]);assert.equal(saved.rows[0].n,0);
+   const reference=await readPrototypeCreditReference(pool);assert.equal(reference.clients[0].serverBalance,'500000');
+   assert.equal(reference.journalStates.filter(s=>s.creditNote).length,3);
   }finally{await blocker.query('ROLLBACK').catch(()=>{});blocker.release();}
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });

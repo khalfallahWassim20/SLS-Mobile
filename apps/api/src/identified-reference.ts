@@ -1,5 +1,5 @@
 /** Projection expérimentale v4. Aucun routeur ne l'expose : une migration sûre reste nécessaire. */
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {createHash} from 'node:crypto';
 import {summarizePreInvoice,canonicalJson} from '@sls/domain';
 import {parseJournalSnapshot,validateJournalTransition} from './journal-protocol.js';
@@ -11,13 +11,10 @@ function unique(ids:string[],label:string) {
 function checked(value:bigint):string {
  if(value>BigInt(Number.MAX_SAFE_INTEGER)||value<BigInt(Number.MIN_SAFE_INTEGER))throw new RangeError('Solde trop élevé.');return value.toString();
 }
-/** Anciennes et nouvelles écritures partagent un instantané MVCC. En cas de recouvrement,
- * refuser toute projection plutôt que compter deux fois ou choisir arbitrairement. */
-export async function readIdentifiedReference(pool:Pool,includeInactive=false,enforceMode=false) {
- const db=await pool.connect();const active=includeInactive?'':' AND c.active';
- try {
-  await db.query(enforceMode?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-  if(enforceMode)assertIdentifiedMode(await lockSyncMode(db));
+/** L'appelant doit fournir une transaction REPEATABLE READ et appliquer lui-même
+ * la garde de mode si nécessaire. Aucun commit ou rollback n'est effectué ici. */
+export async function readIdentifiedReferenceInTransaction(db:PoolClient,includeInactive=false) {
+ const active=includeInactive?'':' AND c.active';
   const clients=await db.query(`SELECT c.id,c.name,c.sector,c.opening_balance::text AS "openingBalance",c.credit_limit::text AS "creditLimit",c.opening_balance::text AS "serverBalance" FROM clients c WHERE c.deleted_at IS NULL${active} ORDER BY c.name`);
   const sales=await db.query(`WITH legacy AS (SELECT DISTINCT ON (sale_id) sale_id,client_id,version,payload FROM demo_sale_events ORDER BY sale_id,version DESC),
    identified AS (SELECT DISTINCT ON (sale_id) sale_id,client_id,version,payload FROM identified_sale_events ORDER BY sale_id,version DESC),
@@ -70,7 +67,15 @@ export async function readIdentifiedReference(pool:Pool,includeInactive=false,en
    return {id:invoice.id,clientId:invoice.clientId,journalDate:invoice.journalDate,total:invoice.amount,receipts:receipts.map(p=>({id:p.id,prePaid:p.prePaid,oldDebtPaid:p.oldDebtPaid,creditFull:p.creditFull}))};
   });
   const journalProofs=parsed.map(snapshot=>({id:snapshot.invoice.id,version:snapshot.version,hash:createHash('sha256').update(canonicalJson(snapshot)).digest('hex')}));
-  await db.query('COMMIT');
-  return {version:4 as const,clients:clients.rows,articles:articles.rows,saleStates:[...latestSales.values()],settlementStates:payments.rows.map(({operationId,clientId})=>({operationId,clientId})),journalStates,journalProofs};
+ return {version:4 as const,clients:clients.rows,articles:articles.rows,saleStates:[...latestSales.values()],settlementStates:payments.rows.map(({operationId,clientId})=>({operationId,clientId})),journalStates,journalProofs};
+}
+/** Anciennes et nouvelles écritures partagent un instantané MVCC. */
+export async function readIdentifiedReference(pool:Pool,includeInactive=false,enforceMode=false) {
+ const db=await pool.connect();
+ try {
+  await db.query(enforceMode?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  if(enforceMode)assertIdentifiedMode(await lockSyncMode(db));
+  const result=await readIdentifiedReferenceInTransaction(db,includeInactive);
+  await db.query('COMMIT');return result;
  } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
