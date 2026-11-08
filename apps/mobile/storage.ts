@@ -14,6 +14,7 @@ import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readAllOfflin
 import {assertNoLocalCreditNote} from './credit-note-local-guard';
 import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {preparePrototypeClose} from './credit-note-close-prototype';
+import {readPrototypeCreditBalance} from './credit-note-balance-storage-prototype';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -310,4 +311,13 @@ export async function getCreditReferencePrototype(identity:DeviceIdentity) {
 /** Effacement explicite des données fictives de ce téléphone seulement. */
 export async function clearLocalTestOperations():Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await resetLocalTestOperations(tx);});
+}
+
+/** Préparatoire seulement : ne pas utiliser pour autoriser une opération avant
+ * l'activation coordonnée du protocole d'avoirs et de toutes ses protections. */
+export async function getPrototypeCreditBalance(identity:DeviceIdentity,clientId:string) {
+ const database=await db();
+ let result:Awaited<ReturnType<typeof readPrototypeCreditBalance>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readPrototypeCreditBalance(tx,identity,clientId);});
+ return result!;
 }

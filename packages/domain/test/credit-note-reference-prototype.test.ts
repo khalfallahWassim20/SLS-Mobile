@@ -18,7 +18,8 @@ import {validateIdentifiedReference} from '../../../apps/mobile/identified-refer
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {prototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-prototype.js';
-import type {Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
+import {offlineCreditPrototypeSchema,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
+import {readPrototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
 
 test('projection intégrée isolée : soldes, crédits, factures et refus en cas de corruption',async()=>{
  const db=new PGlite();try{
@@ -30,6 +31,7 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   const session=await loginCommercial(pool,secret,{login:'credit.test',password:'mot de passe fictif'});assert.ok(session);
   const clientId=randomUUID(),saleId=randomUUID(),invoiceId=randomUUID(),at='2026-11-08T09:00:00.000Z',day='2026-11-08';
   await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,$3)',[clientId,'Client fictif',1000000]);
+  const otherClient=randomUUID();await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,$3)',[otherClient,'Z autre client fictif',42000]);
   const auth={secret,token:session.token},principal={kind:'commercial' as const,...auth};
   const sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
   await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0},auth);
@@ -69,6 +71,43 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   const current={clientId,identity:{commercialId:c.id,serverOrigin:origin},sales:[{...sale,id:1}],journals:[localJournal],settlements:[],notes:[localSale,localPre]};
   assert.deepEqual(prototypeCreditBalance({...current,reference:before}),{balance:350000,conflict:false});
   assert.deepEqual(prototypeCreditBalance({...current,reference:mobile}),{balance:350000,conflict:false});
+  assert.deepEqual(prototypeCreditBalance({...current,sales:[],journals:[],notes:[],reference:mobile}),{balance:350000,conflict:false});
+  assert.deepEqual(prototypeCreditBalance({...current,clientId:otherClient,reference:mobile}),{balance:42000,conflict:false});
+  assert.deepEqual(prototypeCreditBalance({...current,reference:mobile,sales:[...current.sales,{id:2,clientId,total:200,paid:50}],settlements:[{clientId,amount:25}]}),{balance:350125,conflict:false});
+  assert.throws(()=>prototypeCreditBalance({...current,sales:[],reference:mobile}),/introuvable/);
+  assert.throws(()=>prototypeCreditBalance({...current,notes:[localSale,{...localPre,command:{...localPre.command,operationId:localSale.command.operationId}}],reference:mobile}),/dupliqué/);
+  // Lecture des vraies tables SQLite au même instant que le cache serveur.
+  const localDb=new DatabaseSync(':memory:');
+  try {
+   localDb.exec(`CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
+    CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
+    CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);
+    CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
+    CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);
+    ${identifiedDeviceSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}`);
+   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>localDb.prepare(sql).get(...args) as T||null,
+    getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>localDb.prepare(sql).all(...args) as T[],
+    runAsync:async(sql:string,...args:(string|number|null)[])=>{localDb.prepare(sql).run(...args)}};
+   const identity=current.identity;
+   localDb.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(c.id,origin);
+   await assert.rejects(readPrototypeCreditBalance(tx,identity,clientId),/indisponible/);
+   await savePrototypeCreditReference(tx,identity,identity,before);
+   localDb.prepare('INSERT INTO sales VALUES(?,?,?)').run(1,clientId,JSON.stringify(sale));
+   localDb.prepare('INSERT INTO tour_pre_invoices VALUES(?,?,?,?)').run(invoiceId,clientId,day,JSON.stringify(invoice));
+   for(const receipt of [r1,r2])localDb.prepare('INSERT INTO tour_journal_receipts VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,clientId,day,JSON.stringify(receipt));
+   localDb.prepare('INSERT INTO journal_sync_state VALUES(?,?,?)').run(invoiceId,3,JSON.stringify(preResult.event.source));
+   for(const note of [localSale,localPre])localDb.prepare('INSERT INTO offline_credit_prototype(operation_id,invoice_id,kind,commercial_id,server_origin,payload,pending) VALUES(?,?,?,?,?,?,1)').run(note.command.operationId,note.command.invoiceId,note.kind,c.id,origin,JSON.stringify(note));
+   localDb.exec('BEGIN');assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId),{balance:350000,conflict:false});localDb.exec('COMMIT');
+   await savePrototypeCreditReference(tx,identity,identity,result);
+   localDb.exec('BEGIN');assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId),{balance:350000,conflict:false});localDb.exec('COMMIT');
+   await assert.rejects(readPrototypeCreditBalance(tx,{...identity,serverOrigin:'https://other.test'},clientId),/identité/i);
+   localDb.exec('BEGIN');localDb.prepare('DELETE FROM journal_sync_state').run();await assert.rejects(readPrototypeCreditBalance(tx,identity,clientId),/sans version/);localDb.exec('ROLLBACK');
+   localDb.exec('BEGIN');localDb.prepare('UPDATE tour_journal_receipts SET payload=? WHERE id=?').run(JSON.stringify({...r1,oldDebtPaid:1}),r1.id);await assert.rejects(readPrototypeCreditBalance(tx,identity,clientId),/incohérent/);localDb.exec('ROLLBACK');
+   localDb.exec('BEGIN');localDb.prepare('DELETE FROM tour_pre_invoices').run();await assert.rejects(readPrototypeCreditBalance(tx,identity,clientId),/sans facture/);localDb.exec('ROLLBACK');
+   localDb.exec('BEGIN');localDb.prepare('UPDATE offline_credit_prototype SET payload=? WHERE operation_id=?').run(JSON.stringify({...localSale,refund:0}),saleCommand.operationId);await assert.rejects(readPrototypeCreditBalance(tx,identity,clientId),/Montants/);localDb.exec('ROLLBACK');
+   localDb.exec('BEGIN');localDb.prepare('DELETE FROM offline_credit_prototype WHERE operation_id=?').run(saleCommand.operationId);assert.equal((await readPrototypeCreditBalance(tx,identity,clientId)).conflict,true);localDb.exec('ROLLBACK');
+  }finally{localDb.close();}
+
   assert.equal(prototypeCreditBalance({...current,notes:[localPre],reference:mobile}).conflict,true);
   assert.throws(()=>prototypeCreditBalance({...current,sales:[{...sale,id:1,total:1}],reference:mobile}),/modifiée/);assert.equal(mobile.saleStates[0].creditNote?.refund,50000);assert.equal(mobile.journalStates[0].creditNote?.choice,'credit');
   assert.throws(()=>validateIdentifiedReference(result),/invalide/);

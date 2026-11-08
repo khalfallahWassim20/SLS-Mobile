@@ -23,11 +23,16 @@ export function prototypeCreditBalance(input:{clientId:string;identity:{commerci
   if(settlementIds.has(p.syncOperationId))throw Error('Règlement local dupliqué.');settlementIds.add(p.syncOperationId);
   if(remoteSettlements.has(p.syncOperationId)&&remoteSettlements.get(p.syncOperationId)!==p.clientId)paymentConflict=true;
  }
- const noteByEntity=new Map<string,Note>();
+ const noteByEntity=new Map<string,Note>(),noteIds=new Set<string>();
+ const remoteNotes=new Map<string,string>();
+ for(const s of reference.saleStates)if(s.creditNote)remoteNotes.set(s.creditNote.command.operationId,`sale:${s.saleId}`);
+ for(const j of reference.journalStates)if(j.creditNote)remoteNotes.set(j.creditNote.operationId,`preinvoice:${j.id}`);
  for(const note of input.notes){
   if(note.commercialId!==input.identity.commercialId||note.serverOrigin!==input.identity.serverOrigin)throw Error('Identité de l’avoir incohérente.');
   const key=`${note.kind}:${note.command.invoiceId}`;
-  if(noteByEntity.has(key))throw Error('Avoir local dupliqué.');
+  if(noteByEntity.has(key)||noteIds.has(note.command.operationId))throw Error('Avoir local dupliqué.');
+  noteIds.add(note.command.operationId);
+  if((remoteNotes.has(note.command.operationId)&&remoteNotes.get(note.command.operationId)!==key)||remoteSettlements.has(note.command.operationId)||settlementIds.has(note.command.operationId))paymentConflict=true;
   const source=note.source as {clientId?:unknown;invoice?:{clientId?:unknown}}|null;
   const owner=note.kind==='sale'?source?.clientId:source?.invoice?.clientId;
   const entities=note.kind==='sale'?input.sales.filter(s=>s.syncSaleId===note.command.invoiceId):input.journals.filter(j=>j.id===note.command.invoiceId);
