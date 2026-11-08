@@ -25,3 +25,7 @@ L'API de test `/api/mobile/sales` accepte des versions de vente fictive avec le 
 Le endpoint de test `/api/mobile/settlements` reçoit les nouveaux règlements globaux avec idempotence par UUID. L'administration affiche un solde de démonstration calculé à partir du solde initial et des ventes et règlements reçus. Il ne comprend pas les opérations en attente ou créées avant la mise en file, et il ne remplace pas un grand livre comptable. Le mobile récupère le solde global lors d'un téléchargement manuel. Les tests d'intégration, de réseau et de concurrence sur PostgreSQL et appareils restent à réaliser.
 
 L'instantané mobile v2 contient le solde de démonstration reçu par le serveur et les marqueurs des ventes et règlements reçus, pour permettre au téléphone de réconcilier ses opérations locales sans double comptage. La lecture est cohérente au sein d'une transaction PostgreSQL, mais ne résout pas les dépassements de plafond par plusieurs appareils hors ligne. Ce protocole n'est pas validé en production.
+
+## Fiches de commerciaux (démonstration)
+
+Après `npm run migrate`, l'administration peut créer, modifier ou désactiver des fiches de commerciaux fictifs. Les mutations sont tracées dans le journal d'audit. Ces fiches ne sont pas des comptes : elles ne donnent aucun accès mobile et ne sont pas encore associées aux ventes ou aux journaux. La désactivation ne révoque pas le jeton mobile partagé ; la clôture et la réouverture ne sont pas encore disponibles.

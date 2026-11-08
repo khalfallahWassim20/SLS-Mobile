@@ -1,6 +1,14 @@
 import * as SQLite from 'expo-sqlite';
-import { randomUUID } from 'expo-crypto';
+import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
+import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
+import {tourCloseQueueSchema,prepareTourClose,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,type Attempt} from './tour-close-queue';
+import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from './identified-outbox';
+import type {IdentifiedEntry} from './identified-upload';
+import {identifiedDeviceSchema,getDeviceIdentity,bindVerifiedDevice,saveVerifiedIdentifiedReference,assertDeviceWritable,recordDeviceOperation,assertKnownDeviceEntity,type DeviceIdentity} from './identified-device';
+import {validateIdentifiedReference} from './identified-reference';
+import {tunisDay} from './journal';
+import {resetLocalTestOperations} from './reset-test-operations';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -26,7 +34,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); ${journalQueueSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -38,12 +46,17 @@ export async function getSales(): Promise<SavedSale[]> {
 export async function saveSale(sale: Omit<SavedSale, 'id'>, syncEligible = false): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
+    const identity=await getDeviceIdentity(tx);
+    await assertDeviceWritable(tx,identity,[tunisDay(new Date(sale.createdAt))]);
+    if(identity && !syncEligible)throw new Error('Vente non synchronisable : actualisez les données.');
     const snapshot = syncEligible ? { ...sale, syncSaleId: randomUUID(), syncVersion: 1 } : sale;
     await tx.runAsync('INSERT INTO sales (created_at, client_id, payload) VALUES (?, ?, ?)', snapshot.createdAt, snapshot.clientId, JSON.stringify(snapshot));
     if (snapshot.syncSaleId) {
       const operationId = randomUUID();
       const event = { operationId, saleId: snapshot.syncSaleId, version: 1, sale: snapshot, refund: 0 };
       await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)', operationId, snapshot.syncSaleId, 1, JSON.stringify(event));
+      await recordSaleEventTime(tx,operationId,snapshot.createdAt);
+      await recordDeviceOperation(tx,identity,operationId,'sale',snapshot.syncSaleId,snapshot.createdAt);
     }
   });
 }
@@ -59,16 +72,21 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
   await database.withExclusiveTransactionAsync(async tx => {
     const row = await tx.getFirstAsync<{payload: string}>('SELECT payload FROM sales WHERE id = ?', previous.id);
     if (!row || JSON.stringify({ ...JSON.parse(row.payload), id: previous.id }) !== JSON.stringify(previous)) throw new Error('La vente a changé. Veuillez rouvrir son détail.');
+    const recordedAt=new Date().toISOString(),identity=await getDeviceIdentity(tx);
+    await assertDeviceWritable(tx,identity,[tunisDay(new Date(previous.createdAt)),tunisDay(new Date(recordedAt))]);
+    await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion??0,total:previous.total,paid:previous.paid});
     const { id: _id, ...originalPayload } = updated;
     const payload = previous.syncSaleId ? { ...originalPayload, syncVersion: (previous.syncVersion ?? 1) + 1 } : originalPayload;
     const json = JSON.stringify(payload);
     await tx.runAsync('UPDATE sales SET payload = ? WHERE id = ?', json, previous.id);
     const persisted = { ...payload, id: previous.id };
-    await tx.runAsync('INSERT INTO sale_revisions (sale_id, created_at, previous_payload, new_payload, refund) VALUES (?, ?, ?, ?, ?)', previous.id, new Date().toISOString(), JSON.stringify(previous), JSON.stringify(persisted), refund);
+    await tx.runAsync('INSERT INTO sale_revisions (sale_id, created_at, previous_payload, new_payload, refund) VALUES (?, ?, ?, ?, ?)', previous.id, recordedAt, JSON.stringify(previous), JSON.stringify(persisted), refund);
     if (previous.syncSaleId) {
       const operationId = randomUUID();
       const event = { operationId, saleId: previous.syncSaleId, version: payload.syncVersion, sale: payload, refund };
       await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)', operationId, previous.syncSaleId, payload.syncVersion!, JSON.stringify(event));
+      await recordSaleEventTime(tx,operationId,recordedAt);
+      await recordDeviceOperation(tx,identity,operationId,'sale',previous.syncSaleId,recordedAt);
     }
   });
 }
@@ -81,12 +99,16 @@ export async function getSettlements(): Promise<Settlement[]> {
 export async function saveSettlement(settlement: Omit<Settlement, 'id'>, syncEligible = false): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
+    const identity=await getDeviceIdentity(tx);
+    await assertDeviceWritable(tx,identity,[tunisDay(new Date(settlement.createdAt))]);
+    if(identity && !syncEligible)throw new Error('Règlement non synchronisable : actualisez les données.');
     const syncOperationId = syncEligible ? randomUUID() : undefined;
     const snapshot = syncOperationId ? { ...settlement, syncOperationId } : settlement;
     await tx.runAsync('INSERT INTO settlements (created_at, client_id, payload) VALUES (?, ?, ?)', snapshot.createdAt, snapshot.clientId, JSON.stringify(snapshot));
     if (syncOperationId) {
       const event = { operationId: syncOperationId, settlement: snapshot };
       await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)', syncOperationId, syncOperationId, 1, JSON.stringify(event));
+      await recordDeviceOperation(tx,identity,syncOperationId,'settlement',syncOperationId,snapshot.createdAt);
     }
   });
 }
@@ -139,8 +161,11 @@ export async function savePreInvoice(value: Omit<TourPreInvoice, 'id'>): Promise
  await getPreInvoices(value.journalDate); // initialise la table avant l'écriture
  const id = randomUUID(), payload = { ...value, id };
  try { await database.withExclusiveTransactionAsync(async tx => {
+   const identity=await getDeviceIdentity(tx);
+   await assertDeviceWritable(tx,identity,[value.journalDate]);
    await tx.runAsync('INSERT INTO tour_pre_invoices (id,journal_date,client_id,payload) VALUES (?,?,?,?)', id, value.journalDate, value.clientId, JSON.stringify(payload));
-   await queueJournalSnapshot(tx,id,randomUUID);
+   const operationId=await queueJournalSnapshot(tx,id,randomUUID);
+   await recordDeviceOperation(tx,identity,operationId,'journal',id,value.createdAt);
  }); }
  catch (error) {
    const existing = await database.getFirstAsync<{id: string}>('SELECT id FROM tour_pre_invoices WHERE journal_date=? AND client_id=?', value.journalDate, value.clientId);
@@ -172,6 +197,10 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
  const { validatePreInvoiceReceipt } = await import('@sls/domain');
  const database = await ensureJournalReceipts();
  await database.withExclusiveTransactionAsync(async tx => {
+   const identity=await getDeviceIdentity(tx);
+   await assertDeviceWritable(tx,identity,[value.journalDate]);
+   const state = await tx.getFirstAsync<{version:number;payload:string}>('SELECT version,payload FROM journal_sync_state WHERE invoice_id=?', value.preInvoiceId);
+   await assertKnownDeviceEntity(tx,identity,'journal',value.preInvoiceId,undefined,state ? {...state,digest:(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)} : undefined);
    const raw = await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE id=? AND client_id=? AND journal_date=?', value.preInvoiceId, value.clientId, value.journalDate);
    if (!raw) throw new Error('Facture préétablie introuvable.');
    const invoice: TourPreInvoice = JSON.parse(raw.payload);
@@ -184,11 +213,12 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
    if (!['Espèces','Chèque','Virement'].includes(value.mode)) throw new Error('Mode de paiement invalide.');
    if (value.mode === 'Chèque' && (value.prePaid || value.oldDebtPaid) && (!value.chequeNumber.trim() || !value.chequeBank.trim() || !value.chequeDue.trim())) throw new Error('Renseignez le numéro, la banque et l’échéance du chèque.');
    validatePreInvoiceReceipt(invoice.amount, previous, value, bound);
-   const state = await tx.getFirstAsync<{version:number}>('SELECT version FROM journal_sync_state WHERE invoice_id=?', value.preInvoiceId);
+   if (!state && identity) throw new Error('Historique identifié incomplet : rapprochement nécessaire.');
    if (!state) await queueJournalSnapshot(tx,value.preInvoiceId,randomUUID);
    const id = randomUUID();
    await tx.runAsync('INSERT INTO tour_journal_receipts(id,pre_invoice_id,client_id,journal_date,payload) VALUES (?,?,?,?,?)', id,value.preInvoiceId,value.clientId,value.journalDate,JSON.stringify({...value,id}));
-   await queueJournalSnapshot(tx,value.preInvoiceId,randomUUID);
+   const operationId=await queueJournalSnapshot(tx,value.preInvoiceId,randomUUID);
+   await recordDeviceOperation(tx,identity,operationId,'journal',value.preInvoiceId,value.createdAt);
  });
 }
 
@@ -199,4 +229,51 @@ export async function getJournalOutbox(): Promise<JournalOutboxEntry[]> {
 }
 export async function acknowledgeJournalOutbox(operationId:string): Promise<void> {
  await (await db()).runAsync('DELETE FROM journal_sync_outbox WHERE operation_id=?',operationId);
+}
+
+/** Tant que l'envoi individuel n'est pas activé, ne pas envoyer une file liée via le jeton partagé. */
+export async function isIdentifiedDeviceBound():Promise<boolean> {return !!(await getDeviceIdentity(await db()));}
+
+/** La session et la référence sont vérifiées en ligne par l'appelant. La liaison et les
+ * deux caches sont enregistrés ensemble ou pas du tout. */
+export async function bindAndCacheIdentified(identity:DeviceIdentity,reference:unknown):Promise<void> {
+ const parsed=validateIdentifiedReference(reference),database=await db();
+ await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
+ await database.withExclusiveTransactionAsync(async tx=>{
+  await bindVerifiedDevice(tx,identity);
+  await saveVerifiedIdentifiedReference(tx,identity,identity,parsed);
+  const snapshot={...parsed,version:3,syncedAt:new Date().toISOString()};
+  await tx.runAsync('INSERT INTO reference_snapshot(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',JSON.stringify(snapshot));
+ });
+}
+export async function getBoundIdentity():Promise<DeviceIdentity|null> {return getDeviceIdentity(await db());}
+export async function getIdentifiedOutbox(identity:DeviceIdentity):Promise<IdentifiedEntry[]> {
+ const database=await db();let entries:IdentifiedEntry[]=[];
+ await database.withExclusiveTransactionAsync(async tx=>{entries=await readIdentifiedOutbox(tx,identity);});return entries;
+}
+export async function acknowledgeIdentifiedEntry(identity:DeviceIdentity,entry:IdentifiedEntry):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeIdentifiedOutbox(tx,identity,entry);});
+}
+async function checkIdentity(tx:SQLite.SQLiteDatabase,identity:DeviceIdentity):Promise<void> {
+ const current=await getDeviceIdentity(tx);
+ if(!current||current.commercialId!==identity.commercialId||current.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur du téléphone incohérent.');
+}
+export async function observeIdentifiedTour(identity:DeviceIdentity,day:string,state:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await observeVerifiedTourState(tx,identity.commercialId,day,state);});
+}
+export async function getLocalCloseAttempt(identity:DeviceIdentity,day:string):Promise<Attempt|null> {
+ const database=await db();let result:Attempt|null=null;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);result=await findTourCloseAttempt(tx,identity.commercialId,day);});return result;
+}
+export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number):Promise<Attempt> {
+ const database=await db();let result:Attempt|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);result=await prepareTourClose(tx,identity.commercialId,day,version,randomUUID);});return result!;
+}
+export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
+}
+
+/** Effacement explicite des données fictives de ce téléphone seulement. */
+export async function clearLocalTestOperations():Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await resetLocalTestOperations(tx);});
 }

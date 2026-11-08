@@ -7,6 +7,16 @@ import dotenv from 'dotenv';
 import { schemaSql } from '../src/schema.js';
 import { storeJournalSnapshot, JournalConflict } from '../src/journal-store.js';
 import { readJournalReference } from '../src/journal-reference.js';
+import {changeTourClosure, ClosureConflict, readTourClosure, requestTourTransition} from '../src/tour-closure-store.js';
+import {setCommercialCredentials} from '../src/commercials.js';
+import {loginCommercial} from '../src/commercial-session.js';
+import {storeIdentifiedSale,storeIdentifiedSettlement} from '../src/identified-operations.js';
+import {lockSyncMode,LegacySyncDisabled} from '../src/tour-sync-mode.js';
+import {IdentifiedOverlap} from '../src/identified-overlap.js';
+import {readIdentifiedReference} from '../src/identified-reference.js';
+import {readServerJournalDay} from '../src/journal-day.js';
+import {activateIdentifiedTours} from '../src/tour-activation.js';
+import {resetTestOperations} from '../src/reset-test-operations.js';
 
 dotenv.config({path:'apps/api/.env'});
 test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma temporaire', async () => {
@@ -42,6 +52,117 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   const conflict=outcomes.find(r=>r.status==='rejected'); assert.ok(conflict && conflict.status==='rejected' && conflict.reason instanceof JournalConflict);
   const dayRows=await isolated.query("SELECT count(*)::int AS count FROM sync_journal_invoices WHERE client_id=$1 AND journal_date='2026-11-06'",[clientId]);
   assert.equal(dayRows.rows[0].count,1);
+
+  // Clôtures concurrentes : une seule transition de la version 0 peut réussir.
+  const commercialId=randomUUID();
+  await isolated.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[commercialId,'Commercial test temporaire']);
+  const actor={id:commercialId,role:'commercial' as const};
+  const closures=await Promise.allSettled([1,2].map(()=>changeTourClosure(isolated!,commercialId,'2026-11-07','close',actor,0)));
+  assert.equal(closures.filter(r=>r.status==='fulfilled').length,1);
+  const closureFailure=closures.find(r=>r.status==='rejected');
+  assert.ok(closureFailure && closureFailure.status==='rejected' && closureFailure.reason instanceof ClosureConflict);
+  assert.equal((await readTourClosure(isolated,commercialId,'2026-11-07')).version,1);
+  assert.equal((await isolated.query('SELECT count(*)::int AS count FROM tour_closure_events')).rows[0].count,1);
+  // Une écriture et une clôture simultanées se sérialisent sur le même verrou de journée.
+  const secret='secret fictif pour le test de concurrence';
+  await setCommercialCredentials(isolated,'admin',commercialId,{login:'test.concurrent',password:'mot de passe fictif'});
+  const session=await loginCommercial(isolated,secret,{login:'test.concurrent',password:'mot de passe fictif'});
+  assert.ok(session);
+  const signed={secret,token:session.token},raceDay='2026-11-09';
+  const concurrentInvoice={operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:raceDay},receipts:[]};
+  const [write,close]=await Promise.allSettled([
+   storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),
+   changeTourClosure(isolated,commercialId,raceDay,'close',actor,0)
+  ]);
+  assert.equal(close.status,'fulfilled');
+  if(write.status==='rejected') assert.ok(write.reason instanceof JournalConflict);
+  const eventCount=(await isolated.query('SELECT count(*)::int AS count FROM identified_journal_events')).rows[0].count;
+  assert.equal(eventCount,write.status==='fulfilled'?1:0);
+  if(write.status==='fulfilled') assert.equal(await storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),'duplicate');
+  else await assert.rejects(storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),/clôturé/);
+  // Vente et règlement concurrentiels face à la clôture d'une autre journée.
+  const saleId=randomUUID(),opId=randomUUID(),settlementId=randomUUID();
+  const concurrentSale={operationId:opId,saleId,version:1,recordedAt:'2026-11-10T10:00:00.000Z',refund:0,sale:{createdAt:'2026-11-10T10:00:00.000Z',clientId,clientName:'Client test temporaire',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:0,remaining:119000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''}};
+  const concurrentPayment={operationId:settlementId,settlement:{syncOperationId:settlementId,createdAt:'2026-11-10T10:00:00.000Z',clientId,clientName:'Client test temporaire',amount:1000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}};
+  const [saleResult,paymentResult,closeResult]=await Promise.allSettled([
+   storeIdentifiedSale(isolated,concurrentSale,signed),storeIdentifiedSettlement(isolated,concurrentPayment,signed),
+   changeTourClosure(isolated,commercialId,'2026-11-10','close',actor,0)
+  ]);
+  assert.equal(closeResult.status,'fulfilled');
+  for(const result of [saleResult,paymentResult]) if(result.status==='rejected') assert.ok(result.reason instanceof JournalConflict);
+  const saleCount=(await isolated.query('SELECT count(*)::int AS count FROM identified_sale_events')).rows[0].count;
+  const paymentCount=(await isolated.query('SELECT count(*)::int AS count FROM identified_settlements')).rows[0].count;
+  assert.equal(saleCount,saleResult.status==='fulfilled'?1:0);assert.equal(paymentCount,paymentResult.status==='fulfilled'?1:0);
+  if(saleResult.status==='fulfilled') assert.equal(await storeIdentifiedSale(isolated,concurrentSale,signed),'duplicate');
+  else await assert.rejects(storeIdentifiedSale(isolated,concurrentSale,signed),/clôturé/);
+  if(paymentResult.status==='fulfilled') assert.equal(await storeIdentifiedSettlement(isolated,concurrentPayment,signed),'duplicate');
+  else await assert.rejects(storeIdentifiedSettlement(isolated,concurrentPayment,signed),/clôturé/);
+  // Deux reprises simultanées de la même demande ne produisent qu'une transition.
+  const request={requestId:randomUUID(),day:'2026-11-11',expectedVersion:0};
+  const principal={kind:'commercial' as const,secret,token:session.token};
+  const acks=await Promise.all([requestTourTransition(isolated,request,principal),requestTourTransition(isolated,request,principal)]);
+  assert.deepEqual(acks.map(x=>x.status).sort(),['duplicate','received']);
+  assert.equal(acks[0].version,1);assert.equal(acks[1].version,1);
+  assert.equal((await isolated.query('SELECT count(*)::int AS count FROM tour_closure_events WHERE commercial_id=$1 AND journal_date=$2::date',[commercialId,request.day])).rows[0].count,1);
+  // Une facture héritée est reçue avant la transition, avec un paiement déjà enregistré.
+  const oldInvoice={...invoice,id:randomUUID(),journalDate:'2026-11-15'};
+  const oldReceipt={...receipt(randomUUID(),100000),preInvoiceId:oldInvoice.id,journalDate:oldInvoice.journalDate};
+  const oldJournal={operationId:randomUUID(),version:1,invoice:oldInvoice,receipts:[oldReceipt]};
+  assert.equal(await storeJournalSnapshot(isolated,oldJournal,'sync'),'received');
+  // La future bascule ne doit pas dépasser une écriture partagée en cours.
+  const writer=await isolated.connect(),switcher=await isolated.connect();
+  try {
+   await writer.query('BEGIN');assert.equal(await lockSyncMode(writer),'legacy');
+   await switcher.query('BEGIN');await switcher.query("SET LOCAL lock_timeout = '150ms'");
+   await assert.rejects(switcher.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1"), (e:any)=>e.code==='55P03');
+   await switcher.query('ROLLBACK');await writer.query('COMMIT');
+   await assert.rejects(activateIdentifiedTours(isolated,'admin','non'),/Confirmez/);
+   const activated=await Promise.all([activateIdentifiedTours(isolated,'admin','TOUS LES APPAREILS SONT SYNCHRONISÉS'),activateIdentifiedTours(isolated,'admin','TOUS LES APPAREILS SONT SYNCHRONISÉS')]);
+   assert.deepEqual(activated.map(x=>x.status).sort(),['activated','already-active']);
+   assert.equal((await isolated.query("SELECT count(*)::int AS count FROM audit_log WHERE action='activation' AND entity='synchronisation'")).rows[0].count,1);
+   // Accusé perdu : les reprises identiques déjà reçues restent possibles.
+   assert.equal(await storeJournalSnapshot(isolated,first,'sync'),'duplicate');
+   const blocked={operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:'2026-11-12'},receipts:[]};
+   await assert.rejects(storeJournalSnapshot(isolated,blocked,'sync'),LegacySyncDisabled);
+   // Deux types d'écritures identifiées utilisant le même UUID ne peuvent être reçus simultanément.
+   const sharedId=randomUUID(),freshSale=randomUUID(),guarded={...signed,enforceMode:true};
+   const duplicateSale={...concurrentSale,operationId:sharedId,saleId:freshSale,sale:{...concurrentSale.sale,syncSaleId:freshSale,createdAt:'2026-11-13T10:00:00.000Z'},recordedAt:'2026-11-13T10:00:00.000Z'};
+   const duplicateSettlement={...concurrentPayment,operationId:sharedId,settlement:{...concurrentPayment.settlement,syncOperationId:sharedId,createdAt:'2026-11-13T10:00:00.000Z'}};
+   const conflicting=await Promise.allSettled([storeIdentifiedSale(isolated,duplicateSale,guarded),storeIdentifiedSettlement(isolated,duplicateSettlement,guarded)]);
+   assert.equal(conflicting.filter(x=>x.status==='fulfilled').length,1);
+   const rejected=conflicting.find(x=>x.status==='rejected');assert.ok(rejected&&rejected.status==='rejected'&&rejected.reason instanceof IdentifiedOverlap);
+   // Deux paiements concurrents sur une facture héritée : une seule version suivante.
+   const updatesOld=[1,2].map(()=>({operationId:randomUUID(),version:2,invoice:oldInvoice,receipts:[oldReceipt,{...oldReceipt,id:randomUUID(),prePaid:50000}]}));
+   const journalRace=await Promise.allSettled(updatesOld.map(item=>storeJournalSnapshot(isolated!,item,'identified',guarded)));
+   assert.equal(journalRace.filter(item=>item.status==='fulfilled').length,1);
+   const journalFailed=journalRace.find(item=>item.status==='rejected');assert.ok(journalFailed&&journalFailed.status==='rejected'&&journalFailed.reason instanceof JournalConflict);
+   const winner=updatesOld[journalRace.findIndex(item=>item.status==='fulfilled')];
+   assert.equal(await storeJournalSnapshot(isolated,winner,'identified',guarded),'duplicate');
+   const owner=await isolated.query('SELECT commercial_id FROM identified_journal_invoices WHERE id=$1',[oldInvoice.id]);assert.equal(owner.rows[0].commercial_id,null);
+   const projection=await readIdentifiedReference(isolated);assert.equal(projection.journalStates.filter(item=>item.id===oldInvoice.id).length,1);
+   const combined=await readServerJournalDay(isolated,oldInvoice.journalDate,'combined');assert.equal(combined.rows[0].preInvoiceTotal,600000);assert.equal(combined.rows[0].preInvoicePaid,150000);
+   // Deux modifications concurrentes d'une vente héritée ne peuvent créer qu'une version suivante.
+   const oldId=randomUUID(),oldOp=randomUUID(),oldAt='2026-11-14T08:00:00.000Z';
+   const oldSale={...concurrentSale.sale,syncSaleId:oldId,createdAt:oldAt};
+   const oldEvent={operationId:oldOp,saleId:oldId,version:1,sale:oldSale,refund:0};
+   await isolated.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,1,$3,$4::jsonb,$5)',[oldOp,oldId,clientId,JSON.stringify(oldEvent),'fixture']);
+   const nextSales=[1,2].map(()=>({operationId:randomUUID(),saleId:oldId,version:2,recordedAt:'2026-11-14T09:00:00.000Z',refund:0,sale:{...oldSale,syncVersion:2}}));
+   const continuations=await Promise.allSettled(nextSales.map(s=>storeIdentifiedSale(isolated!,s,guarded)));
+   assert.equal(continuations.filter(x=>x.status==='fulfilled').length,1);
+   const failed=continuations.find(x=>x.status==='rejected');assert.ok(failed&&failed.status==='rejected'&&failed.reason instanceof JournalConflict);
+   await resetTestOperations(isolated);
+   for(const table of ['tour_closures','identified_journal_events','sync_journal_events','demo_sale_events','identified_sale_events','identified_settlements']) assert.equal((await isolated.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n,0);
+   const customer=await isolated.query('SELECT opening_balance::text AS balance FROM clients WHERE id=$1',[clientId]);assert.equal(customer.rows[0].balance,'1000000');
+   assert.equal((await isolated.query('SELECT count(*)::int AS n FROM commercial_credentials WHERE commercial_id=$1',[commercialId])).rows[0].n,1);
+   assert.equal((await isolated.query('SELECT mode FROM tour_sync_mode')).rows[0].mode,'identified');
+
+
+
+  } finally {writer.release();switcher.release();}
+
+
+
+
 
  } finally {
   if (isolated) await isolated.end();

@@ -42,16 +42,19 @@ export function buildServerJournalDay(day: string, invoices: JournalSnapshot[], 
   return {day,rows:result,clientCount:result.length,totalBilled:safe(result.reduce((n,r)=>n+BigInt(r.totalClient),0n)),totalCollected:safe(result.reduce((n,r)=>n+BigInt(r.totalCollected),0n))};
 }
 /** Les deux requêtes partagent un instantané MVCC, sans effet sur les soldes. */
-export async function readServerJournalDay(pool: Pool, day: string, namespace: 'experimental'|'sync' = 'experimental') {
+export async function readServerJournalDay(pool: Pool, day: string, namespace: 'experimental'|'sync'|'combined' = 'experimental') {
   const prefix=namespace==='sync'?'sync_journal':'demo_journal';
   journalDateSchema.parse(day);
   const db=await pool.connect();
   try {
     await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-    const invoices=await db.query(`SELECT DISTINCT ON (e.invoice_id) e.payload
+    const invoices=namespace==='combined' ? await db.query(`WITH all_events AS (
+      SELECT e.invoice_id,e.version,e.payload,i.journal_date FROM sync_journal_events e JOIN sync_journal_invoices i ON i.id=e.invoice_id
+      UNION ALL SELECT e.invoice_id,e.version,e.payload,i.journal_date FROM identified_journal_events e JOIN identified_journal_invoices i ON i.id=e.invoice_id)
+      SELECT DISTINCT ON (invoice_id) payload FROM all_events WHERE journal_date=$1::date ORDER BY invoice_id,version DESC`,[day]) : await db.query(`SELECT DISTINCT ON (e.invoice_id) e.payload
       FROM ${prefix}_events e JOIN ${prefix}_invoices i ON i.id=e.invoice_id
       WHERE i.journal_date=$1::date ORDER BY e.invoice_id,e.version DESC`,[day]);
-    const sales=await db.query(`WITH latest AS (SELECT DISTINCT ON (sale_id) sale_id,payload FROM demo_sale_events ORDER BY sale_id,version DESC)
+    const sales=await db.query(`WITH all_sales AS (SELECT sale_id,version,payload FROM demo_sale_events ${namespace==='combined'?'UNION ALL SELECT sale_id,version,payload FROM identified_sale_events':''}), latest AS (SELECT DISTINCT ON (sale_id) sale_id,payload FROM all_sales ORDER BY sale_id,version DESC)
       SELECT sale_id AS "saleId",payload->'sale' AS sale FROM latest
       WHERE ((payload->'sale'->>'createdAt')::timestamptz AT TIME ZONE 'Africa/Tunis')::date=$1::date`,[day]);
     const result=buildServerJournalDay(day,invoices.rows.map(r=>r.payload),sales.rows.map(r=>({...r.sale,saleId:r.saleId})));

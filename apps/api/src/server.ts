@@ -11,6 +11,13 @@ import { experimentalJournalRoutes } from './journal-routes.js';
 import { readJournalReference } from './journal-reference.js';
 import { readServerJournalDay } from './journal-day.js';
 import { JournalConflict, storeJournalSnapshot } from './journal-store.js';
+import { listCommercials, saveCommercial, setCommercialCredentials } from './commercials.js';
+import { loginCommercial, verifyCommercialSession } from './commercial-session.js';
+import { identifiedAdminReadRoutes } from './identified-admin-read.js';
+import {identifiedCommercialRoutes,identifiedAdminRoutes} from './identified-tour-routes.js';
+import {lockSyncMode,assertLegacyMode,LegacySyncDisabled,readSyncMode} from './tour-sync-mode.js';
+import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
+import {activateIdentifiedTours,TourActivationConflict} from './tour-activation.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -27,6 +34,20 @@ const auth: RequestHandler = (req, res, next) => {
   try { const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1]; if (!token) throw new Error(); const claims = jwt.verify(token, secret, { algorithms: ['HS256'] }); if (typeof claims !== 'object' || claims.role !== 'admin' || claims.sub !== username) throw new Error(); next(); }
   catch { res.status(401).json({ error: 'Session invalide ou expirée.' }); }
 };
+// Connexion isolée pour essais : ces sessions ne donnent pas encore accès aux données mobiles.
+app.post('/api/mobile/session/login', rateLimit({windowMs:15*60*1000,limit:10,standardHeaders:'draft-8',legacyHeaders:false}), async (req,res) => {
+ const session=await loginCommercial(pool,secret,req.body);
+ res.set('Cache-Control','no-store');
+ if (!session) {res.status(401).json({error:'Identifiant ou mot de passe incorrect.'});return;}
+ res.json(session);
+});
+app.get('/api/mobile/session', rateLimit({windowMs:15*60*1000,limit:100,standardHeaders:'draft-8',legacyHeaders:false}), async (req,res) => {
+ const token=req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
+ const commercial=await verifyCommercialSession(pool,secret,token);
+ res.set('Cache-Control','no-store');
+ if (!commercial) {res.status(401).json({error:'Session invalide ou expirée.'});return;}
+ res.json({commercial});
+});
 // Une fois des journaux reçus, la référence v2 ne doit jamais masquer leur effet.
 async function journalSyncActive() {
   if (process.env.MOBILE_JOURNAL_SYNC === '1') return true;
@@ -40,10 +61,11 @@ app.get('/api/mobile/reference', rateLimit({ windowMs: 15 * 60 * 1000, limit: 60
   const supplied = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1] ?? '';
   const a = Buffer.from(expected ?? ''), b = Buffer.from(supplied);
   if (!expected || expected.length < 32 || a.length !== b.length || !timingSafeEqual(a, b)) { res.status(401).json({ error: 'Accès mobile refusé.' }); return; }
-  if (await journalSyncActive()) { res.set('Cache-Control','no-store').json(await readJournalReference(pool)); return; }
+  if (await journalSyncActive()) { res.set('Cache-Control','no-store').json(await readJournalReference(pool,false,true)); return; }
   const db = await pool.connect();
   try {
-    await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    assertLegacyMode(await lockSyncMode(db));
     const clients = await db.query(`WITH latest AS (
       SELECT DISTINCT ON (sale_id) client_id,payload FROM demo_sale_events ORDER BY sale_id,version DESC
     ), sales AS (
@@ -88,9 +110,11 @@ app.post('/api/mobile/sales', rateLimit({windowMs: 15 * 60 * 1000, limit: 500, s
   const db = await pool.connect();
   try {
     await db.query('BEGIN');
+    const legacyMode=await lockSyncMode(db);
     await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [event.saleId]);
     const same = await db.query('SELECT payload_hash FROM demo_sale_events WHERE operation_id=$1', [event.operationId]);
     if (same.rows.length) { await db.query('ROLLBACK'); if(same.rows[0].payload_hash !== hash) {res.status(409).json({error:'Opération déjà utilisée avec des données différentes.'});return;} res.json({status:'déjà reçue'}); return; }
+    assertLegacyMode(legacyMode);
     const last = await db.query('SELECT version,payload FROM demo_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1', [event.saleId]);
     if ((last.rows[0]?.version ?? 0) + 1 !== event.version) { await db.query('ROLLBACK'); res.status(409).json({error:'Version de vente manquante ou déjà utilisée.'}); return; }
     if (last.rows.length) { const old = last.rows[0].payload.sale; if (old.clientId !== event.sale.clientId || old.createdAt !== event.sale.createdAt || event.sale.paid !== old.paid - event.refund || event.refund > Math.max(0, old.paid - event.sale.total)) { await db.query('ROLLBACK'); res.status(400).json({error:'Modification ou remboursement incohérent.'}); return; } }
@@ -112,9 +136,11 @@ app.post('/api/mobile/settlements', rateLimit({windowMs: 15*60*1000,limit:500,st
   const data=JSON.stringify(event), hash=createHash('sha256').update(data).digest('hex'), db=await pool.connect();
   try {
     await db.query('BEGIN');
+    const legacyMode=await lockSyncMode(db);
     await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[event.operationId]);
     const existing=await db.query('SELECT payload_hash FROM demo_settlements WHERE operation_id=$1',[event.operationId]);
     if(existing.rows.length) {await db.query('ROLLBACK'); if(existing.rows[0].payload_hash!==hash) {res.status(409).json({error:'Opération déjà utilisée avec des données différentes.'});return;} res.json({status:'déjà reçue'});return;}
+    assertLegacyMode(legacyMode);
     if(!(await db.query('SELECT id FROM clients WHERE id=$1',[p.clientId])).rows.length) {await db.query('ROLLBACK');res.status(400).json({error:'Client introuvable sur le serveur.'});return;}
     await db.query('INSERT INTO demo_settlements(operation_id,client_id,payload,payload_hash) VALUES($1,$2,$3::jsonb,$4)',[event.operationId,p.clientId,data,hash]);
     await db.query('COMMIT');res.status(201).json({status:'reçue'});
@@ -131,20 +157,47 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
     const status=await storeJournalSnapshot(pool,req.body,'sync');
     res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});
   } catch(error) {
-    if(error instanceof JournalConflict) {res.status(409).json({error:error.message});return;}
+    if(error instanceof JournalConflict || error instanceof LegacySyncDisabled) {res.status(409).json({error:error.message});return;}
     if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données de journal invalides.'});return;}
     next(error);
   }
 });
+// Routes individuelles protégées par session commerciale et garde de mode transactionnelle.
+// Tant que la transition n'est pas autorisée, elles refusent toute écriture.
+app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret));
 app.use('/api', auth);
+app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username));
+app.get('/api/tour-sync-mode',async(_req,res)=>{res.set('Cache-Control','no-store').json({mode:await readSyncMode(pool)});});
+app.post('/api/tour-sync-mode/activate',async(req,res,next)=>{
+ try {const data=z.object({confirmation:z.string()}).strict().parse(req.body);res.json(await activateIdentifiedTours(pool,username,data.confirmation));}
+ catch(error){if(error instanceof TourActivationConflict||error instanceof ReferenceOverlap){res.status(409).json({error:error.message});return;}if(error instanceof ZodError){res.status(400).json({error:'Confirmation invalide.'});return;}next(error);}
+});
+
+// Vue admin en lecture seule : l'espace expérimental ne reflète pas le journal mobile actuel.
+app.use('/api/identified-tour', identifiedAdminReadRoutes(pool));
 // Endpoint réservé aux essais administrateur : désactivé par défaut, hors soldes et hors synchronisation mobile.
-app.use('/api/experimental/journal', experimentalJournalRoutes(pool, process.env.JOURNAL_EXPERIMENTAL === '1'));
+app.use('/api/experimental/journal',async(_req,res,next)=>{if(await readSyncMode(pool)!=='legacy'){res.status(409).json({error:'Journal expérimental désactivé après transition.'});return;}next();}, experimentalJournalRoutes(pool, process.env.JOURNAL_EXPERIMENTAL === '1'));
 const text = (max: number) => z.string().trim().max(max);
 const clientSchema = z.object({ name: text(200).min(1), sector: text(100), address: text(300), taxId: text(100), phone: text(50), openingBalance: z.number().int().safe(), creditLimit: z.number().int().safe().min(0), active: z.boolean() }).strict();
 const articleSchema = z.object({ name: text(200).min(1), barcode: text(100), purchaseTtc: z.number().int().safe().min(0), saleTtc: z.number().int().safe().min(0), vatRate: z.number().int().min(0).max(10000), unitsPerCarton: z.number().int().min(1).max(1000000), active: z.boolean() }).strict();
 const uuid = z.string().uuid();
 const clientFields = `id,name,sector,address,tax_id AS "taxId",phone,opening_balance::text AS "openingBalance",credit_limit::text AS "creditLimit",active`;
 const articleFields = `id,code,barcode,name,purchase_ttc::text AS "purchaseTtc",sale_ttc::text AS "saleTtc",vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton",active`;
+// Réservé à l'admin ; les fiches ne donnent pas encore accès au mobile.
+// La configuration prépare les comptes, sans encore autoriser la connexion mobile.
+app.put('/api/commercials/:id/credentials', async (req,res) => {
+ try {
+  const saved=await setCommercialCredentials(pool,username,req.params.id,req.body);
+  if (!saved) {res.status(404).json({error:'Commercial introuvable.'});return;}
+  res.set('Cache-Control','no-store').json(saved);
+ } catch(error) {
+  if (typeof error==='object' && error !== null && 'code' in error && error.code==='23505') {res.status(409).json({error:'Cet identifiant est déjà utilisé.'});return;}
+  throw error;
+ }
+});
+app.get('/api/commercials', async (_req,res) => {res.json(await listCommercials(pool));});
+app.post('/api/commercials', async (req,res) => {const saved=await saveCommercial(pool,username,req.body);res.status(201).json(saved);});
+app.put('/api/commercials/:id', async (req,res) => {const saved=await saveCommercial(pool,username,req.body,req.params.id);if(!saved) {res.status(404).json({error:'Commercial introuvable.'});return;}res.json(saved);});
 app.get('/api/clients', async (_req, res) => { const r = await pool.query(`SELECT ${clientFields} FROM clients WHERE deleted_at IS NULL ORDER BY name LIMIT 10000`); res.json(r.rows); });
 app.get('/api/articles', async (_req, res) => { const r = await pool.query(`SELECT ${articleFields} FROM articles WHERE deleted_at IS NULL ORDER BY name LIMIT 10000`); res.json(r.rows); });
 // La mutation et son journal sont validés ensemble ou annulés ensemble.
@@ -165,18 +218,22 @@ async function changeWithAudit(entity: 'clients' | 'articles', action: 'créatio
   finally { db.release(); }
 }
 app.get('/api/demo-balances', async (_req,res) => {
- const reference=await readJournalReference(pool,true);
+ const reference=await readSyncMode(pool)==='identified'?await readIdentifiedReference(pool,true):await readJournalReference(pool,true);
  res.json(reference.clients.map(c=>({id:c.id,name:c.name,openingBalance:c.openingBalance,creditLimit:c.creditLimit,balance:c.serverBalance})));
 });
 app.get('/api/demo-tour-journal/:date', async (req,res) => {
- const result=await readServerJournalDay(pool,req.params.date,'sync');
+ const mode=await readSyncMode(pool);
+ if(mode==='identified')await readIdentifiedReference(pool,true); // refuse les historiques ambigus avant agrégation
+ const result=await readServerJournalDay(pool,req.params.date,mode==='identified'?'combined':'sync');
  res.set('Cache-Control','no-store').json(result);
 });
 app.get('/api/demo-settlements', async (_req,res) => {
- const r=await pool.query(`SELECT operation_id AS "operationId",payload->'settlement' AS settlement,received_at AS "receivedAt" FROM demo_settlements ORDER BY received_at DESC LIMIT 1000`); res.json(r.rows);
+ const mode=await readSyncMode(pool);
+ const r=await pool.query(`SELECT operation_id AS "operationId",payload->'settlement' AS settlement,received_at AS "receivedAt" FROM (SELECT operation_id,payload,received_at FROM demo_settlements ${mode==='identified'?'UNION ALL SELECT operation_id,payload,received_at FROM identified_settlements':''}) payments ORDER BY received_at DESC LIMIT 1000`); res.json(r.rows);
 });
 app.get('/api/demo-sales', async (_req, res) => {
- const r = await pool.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM demo_sale_events ORDER BY sale_id,version DESC`);
+ const mode=await readSyncMode(pool);
+ const r = await pool.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM (SELECT sale_id,version,payload,received_at FROM demo_sale_events ${mode==='identified'?'UNION ALL SELECT sale_id,version,payload,received_at FROM identified_sale_events':''}) sales ORDER BY sale_id,version DESC`);
  res.json(r.rows);
 });
 app.get('/api/overview', async (_req, res) => {
@@ -195,5 +252,5 @@ app.post('/api/clients', async (req, res) => { const c = clientSchema.parse(req.
 app.put('/api/clients/:id', async (req, res) => { const id = uuid.parse(req.params.id), c = clientSchema.parse(req.body); const r = await changeWithAudit('clients','modification',id,`UPDATE clients SET name=$2,sector=$3,address=$4,tax_id=$5,phone=$6,opening_balance=$7,credit_limit=$8,active=$9,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING ${clientFields}`, [id,c.name,c.sector,c.address,c.taxId,c.phone,c.openingBalance,c.creditLimit,c.active],clientFields); if (!r) { res.status(404).json({error:'Client introuvable.'}); return; } res.json(r); });
 app.post('/api/articles', async (req, res) => { const a = articleSchema.parse(req.body), id = randomUUID(); const r = await changeWithAudit('articles','création',id,`INSERT INTO articles(id,code,name,barcode,purchase_ttc,sale_ttc,vat_rate,units_per_carton,active) VALUES($1,'ART-' || lpad(nextval('article_code_seq')::text, 6, '0'),$2,$3,$4,$5,$6,$7,$8) RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); res.status(201).json(r); });
 app.put('/api/articles/:id', async (req, res) => { const id = uuid.parse(req.params.id), a = articleSchema.parse(req.body); const r = await changeWithAudit('articles','modification',id,`UPDATE articles SET name=$2,barcode=$3,purchase_ttc=$4,sale_ttc=$5,vat_rate=$6,units_per_carton=$7,active=$8,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); if (!r) { res.status(404).json({error:'Article introuvable.'}); return; } res.json(r); });
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof LegacySyncDisabled) { res.status(409).json({error:err.message}); return; } if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
 app.listen(Number(process.env.PORT || 3001), process.env.API_HOST || '127.0.0.1', () => console.log('API de développement prête sur le port ' + (process.env.PORT || 3001)));

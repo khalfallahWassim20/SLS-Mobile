@@ -1,0 +1,10 @@
+/** L'appelant doit avoir confirmé la suppression ; à exécuter en transaction exclusive.
+ * L'identité du téléphone est conservée, mais les caches deviennent invalides. */
+type Tx={runAsync(sql:string,...params:(string|number|null)[]):Promise<unknown>};
+export async function resetLocalTestOperations(tx:Tx):Promise<void> {
+ for(const table of ['sales_outbox','sale_event_times','sale_revisions','sales','settlements',
+  'journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices',
+  'identified_local_operations','identified_reference_cache','tour_close_attempts','tour_known_server_states','reference_snapshot']) {
+  await tx.runAsync(`DELETE FROM ${table}`);
+ }
+}

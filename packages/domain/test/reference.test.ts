@@ -45,3 +45,21 @@ test('v3 contrôle et protège les marqueurs de factures et règlements du journ
  assert.throws(()=>validateReference({...base,journalStates:[{...base.journalStates[0],receipts:[{...base.journalStates[0].receipts[0],prePaid:1}]}]}));
  assert.throws(()=>validateReference({...base,journalStates:[{...base.journalStates[0],receipts:[base.journalStates[0].receipts[0],base.journalStates[0].receipts[0]]}]}));
 });
+
+test('facture serveur existante : contrôle du client et du jour, ancien cache et conflits', async () => {
+ const {preInvoiceAvailability,hasJournalDayConflict}=await import('../../../apps/mobile/reference.js');
+ const base={version:3,clients:[{id:'c',name:'X',sector:'Sud',openingBalance:'1000000',creditLimit:'0',serverBalance:'1300000'}],articles:[],saleStates:[],settlementStates:[],journalStates:[{id:'f',clientId:'c',journalDate:'2026-11-05',total:600000,receipts:[]}]};
+ const ref=validateReference(base);
+ assert.equal(ref.journalStates![0].journalDate,'2026-11-05');
+ assert.equal(preInvoiceAvailability(ref,'c','2026-11-05',[]),'remote');
+ assert.equal(preInvoiceAvailability(ref,'c','2026-11-06',[]),'available');
+ assert.equal(hasJournalDayConflict('c',[{id:'g',clientId:'c',journalDate:'2026-11-05'}],ref.journalStates!),true);
+ assert.equal(hasJournalDayConflict('c',[{id:'f',clientId:'c',journalDate:'2026-11-05'}],ref.journalStates!),false);
+ assert.equal(hasJournalDayConflict('c',[{id:'g',clientId:'c',journalDate:'2026-11-06'}],ref.journalStates!),false);
+ assert.equal(preInvoiceAvailability(ref,'c','2026-11-05',[{clientId:'c',journalDate:'2026-11-05'}]),'local');
+ const legacy=validateReference({...base,journalStates:[{...base.journalStates[0],journalDate:undefined}]});
+ assert.equal(preInvoiceAvailability(legacy,'c','2026-11-05',[]),'refresh');
+ assert.equal(hasJournalDayConflict('c',[{id:'f',clientId:'c',journalDate:'2026-11-05'}],legacy.journalStates!),true);
+ assert.throws(()=>validateReference({...base,journalStates:[{...base.journalStates[0],journalDate:'2026-02-30'}]}));
+ assert.throws(()=>validateReference({...base,journalStates:[base.journalStates[0],{...base.journalStates[0],id:'g'}]}));
+});

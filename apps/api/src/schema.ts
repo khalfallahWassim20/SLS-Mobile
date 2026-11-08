@@ -6,6 +6,45 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       credit_limit bigint NOT NULL DEFAULT 0 CHECK (credit_limit >= 0), active boolean NOT NULL DEFAULT true,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
     );
+    CREATE TABLE IF NOT EXISTS commercials (
+      id uuid PRIMARY KEY, name text NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 200),
+      active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
+    );
+    -- Comptes préparatoires : aucun accès mobile accordé à ce stade.
+    CREATE TABLE IF NOT EXISTS commercial_credentials (
+      commercial_id uuid PRIMARY KEY REFERENCES commercials(id), login text NOT NULL UNIQUE,
+      password_hash text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
+    );
+    ALTER TABLE commercial_credentials ADD COLUMN IF NOT EXISTS session_version bigint NOT NULL DEFAULT 1;
+    -- Préparation des clôtures : non exposée et sans verrouillage des écritures existantes.
+    CREATE TABLE IF NOT EXISTS tour_closures (
+      commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
+      status text NOT NULL CHECK(status IN ('open','closed')), version integer NOT NULL CHECK(version >= 0),
+      closed_at timestamptz, PRIMARY KEY(commercial_id,journal_date),
+      CHECK ((status='open' AND closed_at IS NULL) OR (status='closed' AND closed_at IS NOT NULL AND version>0))
+    );
+    CREATE TABLE IF NOT EXISTS tour_closure_events (
+      id uuid PRIMARY KEY, commercial_id uuid NOT NULL, journal_date date NOT NULL,
+      action text NOT NULL CHECK(action IN ('close','reopen')), actor_id text NOT NULL,
+      actor_role text NOT NULL CHECK(actor_role IN ('commercial','admin')),
+      occurred_at timestamptz NOT NULL, version integer NOT NULL CHECK(version>0),
+      UNIQUE(commercial_id,journal_date,version),
+      FOREIGN KEY(commercial_id,journal_date) REFERENCES tour_closures(commercial_id,journal_date)
+    );
+    -- Reprises idempotentes des demandes de clôture/réouverture.
+    CREATE TABLE IF NOT EXISTS tour_closure_requests (
+      request_id uuid PRIMARY KEY, commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
+      action text NOT NULL CHECK(action IN ('close','reopen')), actor_id text NOT NULL,
+      actor_role text NOT NULL CHECK(actor_role IN ('commercial','admin')),
+      expected_version integer NOT NULL CHECK(expected_version>=0), result_version integer NOT NULL CHECK(result_version>0),
+      occurred_at timestamptz NOT NULL
+    );
+    -- Préparation d'une bascule exclusive ; aucun endpoint ne permet encore de changer ce mode.
+    CREATE TABLE IF NOT EXISTS tour_sync_mode (
+      id integer PRIMARY KEY CHECK(id=1), mode text NOT NULL CHECK(mode IN ('legacy','identified'))
+    );
+    INSERT INTO tour_sync_mode(id,mode) VALUES(1,'legacy') ON CONFLICT(id) DO NOTHING;
     CREATE TABLE IF NOT EXISTS articles (
       id uuid PRIMARY KEY, code text UNIQUE NOT NULL, barcode text NOT NULL DEFAULT '', name text NOT NULL,
       purchase_ttc bigint NOT NULL CHECK (purchase_ttc >= 0), sale_ttc bigint NOT NULL CHECK (sale_ttc >= 0),
@@ -57,4 +96,36 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       version integer NOT NULL CHECK (version > 0), payload jsonb NOT NULL, payload_hash text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(invoice_id,version)
     );
-    CREATE INDEX IF NOT EXISTS sync_journal_events_latest_idx ON sync_journal_events(invoice_id,version DESC);`;
+    CREATE INDEX IF NOT EXISTS sync_journal_events_latest_idx ON sync_journal_events(invoice_id,version DESC);
+    -- Espace isolé pour la future synchronisation authentifiée ; non compris dans les soldes.
+    CREATE TABLE IF NOT EXISTS identified_journal_invoices (
+      id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id), journal_date date NOT NULL,
+      commercial_id uuid NOT NULL REFERENCES commercials(id), created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(client_id,journal_date)
+    );
+    -- Une facture héritée n'a pas d'auteur commercial fiable.
+    ALTER TABLE identified_journal_invoices ALTER COLUMN commercial_id DROP NOT NULL;
+    CREATE TABLE IF NOT EXISTS identified_journal_receipt_ids (
+      id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES identified_journal_invoices(id)
+    );
+    CREATE TABLE IF NOT EXISTS identified_journal_events (
+      operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES identified_journal_invoices(id),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), version integer NOT NULL CHECK(version>0),
+      payload jsonb NOT NULL, payload_hash text NOT NULL, received_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(invoice_id,version)
+    );
+    CREATE INDEX IF NOT EXISTS identified_journal_events_latest_idx ON identified_journal_events(invoice_id,version DESC);
+    -- Espace isolé de validation, absent des soldes et des routes actives.
+    CREATE TABLE IF NOT EXISTS identified_sale_events (
+      operation_id uuid PRIMARY KEY, sale_id uuid NOT NULL, version integer NOT NULL CHECK(version>0),
+      client_id uuid NOT NULL REFERENCES clients(id), commercial_id uuid NOT NULL REFERENCES commercials(id),
+      journal_date date NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(sale_id,version)
+    );
+    ALTER TABLE identified_sale_events ADD COLUMN IF NOT EXISTS event_date date;
+    CREATE INDEX IF NOT EXISTS identified_sale_events_latest_idx ON identified_sale_events(sale_id,version DESC);
+    CREATE TABLE IF NOT EXISTS identified_settlements (
+      operation_id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
+      payload jsonb NOT NULL, payload_hash text NOT NULL, received_at timestamptz NOT NULL DEFAULT now()
+    );`;
