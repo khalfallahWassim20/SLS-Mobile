@@ -12,6 +12,7 @@ import {tunisDay} from './journal';
 import {resetLocalTestOperations} from './reset-test-operations';
 import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readAllOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Kind,type Note} from './credit-note-offline-prototype';
 import {assertNoLocalCreditNote} from './credit-note-local-guard';
+import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {preparePrototypeClose} from './credit-note-close-prototype';
 
 export type SavedSale = {
@@ -38,7 +39,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -295,6 +296,15 @@ export async function getReadyLocalCreditPrototypes(identity:DeviceIdentity):Pro
 }
 export async function acknowledgeLocalCreditPrototype(identity:DeviceIdentity,note:Note,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeOfflineCreditPrototype(tx,identity,note,response);});
+}
+
+/** Référence future non reliée au cache ni aux écrans actuels. */
+export async function cacheCreditReferencePrototype(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await savePrototypeCreditReference(tx,identity,verified,value);});
+}
+export async function getCreditReferencePrototype(identity:DeviceIdentity) {
+ const database=await db();let result:Awaited<ReturnType<typeof readPrototypeCreditReferenceCache>>=null;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readPrototypeCreditReferenceCache(tx,identity);});return result;
 }
 
 /** Effacement explicite des données fictives de ce téléphone seulement. */

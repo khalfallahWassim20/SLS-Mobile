@@ -37,7 +37,7 @@ test('nettoyage serveur : atomique, sans effacer référentiel, comptes, soldes 
 
 test('nettoyage local : files, caches et clôtures effacés, liaison commerciale conservée',async()=>{
  const db=new DatabaseSync(':memory:');
- const tables=['offline_credit_prototype','sales_outbox','sale_event_times','sale_revisions','sales','settlements','journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices','identified_local_operations','identified_reference_cache','tour_close_attempts','tour_known_server_states','reference_snapshot'];
+ const tables=['credit_reference_prototype_cache','offline_credit_prototype','sales_outbox','sale_event_times','sale_revisions','sales','settlements','journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices','identified_local_operations','identified_reference_cache','tour_close_attempts','tour_known_server_states','reference_snapshot'];
  try {
   for(const table of tables)db.exec(`CREATE TABLE ${table}(id TEXT); INSERT INTO ${table} VALUES('fictif')`);
   db.exec("CREATE TABLE identified_device(id TEXT); INSERT INTO identified_device VALUES('commercial')");

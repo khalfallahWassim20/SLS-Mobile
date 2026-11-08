@@ -44,7 +44,7 @@ export async function readPrototypeCreditReference(pool:Pool) {
   const saleById=new Map(saleNotes.rows.map(r=>[r.invoice_id,r.event as CreditNoteEvent]));
   const saleStates=base.saleStates.map(s=>{
    const e=saleById.get(s.saleId);
-   return e?{...s,version:e.resultVersion,total:'0',paid:String(e.retainedCredit),cancelled:true,creditNote:e.command}:{...s,cancelled:false,creditNote:null};
+   return e?{...s,version:e.resultVersion,total:'0',paid:String(e.retainedCredit),cancelled:true,creditNote:e}:{...s,cancelled:false,creditNote:null};
   });
   const movementRows=await db.query('SELECT operation_id,kind,balance_delta::text AS delta FROM pre_invoice_credit_prototype_movements');
   const movements=new Map<string,Map<string,number>>(),preIds=new Set(preNotes.rows.map(r=>r.operation_id));
@@ -81,6 +81,6 @@ export async function readPrototypeCreditReference(pool:Pool) {
   });
   if(preById.size!==journalStates.filter(s=>s.creditNote).length)throw new RangeError('Préétablie annulée introuvable.');
   await db.query('COMMIT');
-  return {experimental:true as const,clients:[...clients.values()],saleStates,journalStates};
+  return {experimental:true as const,version:5 as const,clients:[...clients.values()],articles:base.articles,saleStates,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

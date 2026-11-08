@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
 import {PGlite} from '@electric-sql/pglite';
 import type {Pool} from 'pg';
 import {schemaSql} from '../../../apps/api/src/schema.js';
@@ -12,6 +13,10 @@ import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/com
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {storeIdentifiedSale} from '../../../apps/api/src/identified-operations.js';
 import {storeJournalSnapshot} from '../../../apps/api/src/journal-store.js';
+import {validatePrototypeCreditReference} from '../../../apps/mobile/credit-note-reference-prototype.js';
+import {validateIdentifiedReference} from '../../../apps/mobile/identified-reference.js';
+import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
+import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 
 test('projection intégrée isolée : soldes, crédits, factures et refus en cas de corruption',async()=>{
  const db=new PGlite();try{
@@ -38,7 +43,26 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   // La référence actuelle reste inchangée : la nouvelle projection est strictement isolée.
   assert.equal((await readIdentifiedReference(pool,true)).clients[0].serverBalance,'1019000');
   const result=await readPrototypeCreditReference(pool);
-  assert.equal(result.experimental,true);assert.equal(result.clients[0].serverBalance,'350000');
+  assert.equal(result.experimental,true);assert.equal(result.version,5);assert.equal(result.clients[0].serverBalance,'350000');
+  const cache=new DatabaseSync(':memory:');
+  try {
+   cache.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${creditReferencePrototypeSchema}`);
+   const identity={commercialId:c.id,serverOrigin:'https://example.test'};
+   cache.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(c.id,identity.serverOrigin);
+   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>cache.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{cache.prepare(sql).run(...args)}};
+   await savePrototypeCreditReference(tx,identity,identity,result);
+   assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
+   await assert.rejects(savePrototypeCreditReference(tx,identity,{...identity,serverOrigin:'https://other.test'},result),/Session/);
+   const previousSale={...result.saleStates[0],version:1,total:'119000',paid:'50000',cancelled:false,creditNote:null};
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleStates:[previousSale]}),/périmée/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalStates:[{...result.journalStates[0],creditNote:null}]}),/périmée/);
+   assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
+  } finally {cache.close();}
+  const mobile=validatePrototypeCreditReference(result);assert.equal(mobile.clients[0].serverBalance,'350000');assert.equal(mobile.saleStates[0].creditNote?.refund,50000);assert.equal(mobile.journalStates[0].creditNote?.choice,'credit');
+  assert.throws(()=>validateIdentifiedReference(result),/invalide/);
+  assert.throws(()=>validatePrototypeCreditReference({...result,saleStates:[{...result.saleStates[0],paid:'1000'}]}),/incohérent/);
+  assert.throws(()=>validatePrototypeCreditReference({...result,journalStates:[{...result.journalStates[0],version:2}]}),/Version/);
+  assert.throws(()=>validatePrototypeCreditReference({...result,journalStates:[{...result.journalStates[0],creditNote:{...result.journalStates[0].creditNote!,operationId:saleCommand.operationId}}]}),/dupliqué/);
   assert.equal(result.saleStates[0].total,'0');assert.equal(result.saleStates[0].paid,'0');assert.equal(result.saleStates[0].version,2);assert.equal(result.saleStates[0].cancelled,true);
   assert.equal(result.journalStates[0].creditNote?.operationId,preCommand.operationId);assert.equal(result.journalStates[0].version,3);
   assert.equal(result.journalStates[0].receipts[0].oldDebtPaid,300000);assert.equal(result.journalStates[0].receipts[1].oldDebtPaid,100000);
