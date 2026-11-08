@@ -76,7 +76,7 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   else await assert.rejects(storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),/clôturé/);
   // Vente et règlement concurrentiels face à la clôture d'une autre journée.
   const saleId=randomUUID(),opId=randomUUID(),settlementId=randomUUID();
-  const concurrentSale={operationId:opId,saleId,version:1,refund:0,sale:{createdAt:'2026-11-10T10:00:00.000Z',clientId,clientName:'Client test temporaire',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:0,remaining:119000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''}};
+  const concurrentSale={operationId:opId,saleId,version:1,recordedAt:'2026-11-10T10:00:00.000Z',refund:0,sale:{createdAt:'2026-11-10T10:00:00.000Z',clientId,clientName:'Client test temporaire',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:0,remaining:119000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''}};
   const concurrentPayment={operationId:settlementId,settlement:{syncOperationId:settlementId,createdAt:'2026-11-10T10:00:00.000Z',clientId,clientName:'Client test temporaire',amount:1000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}};
   const [saleResult,paymentResult,closeResult]=await Promise.allSettled([
    storeIdentifiedSale(isolated,concurrentSale,signed),storeIdentifiedSettlement(isolated,concurrentPayment,signed),

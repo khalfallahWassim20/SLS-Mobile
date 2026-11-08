@@ -1,6 +1,7 @@
 import * as SQLite from 'expo-sqlite';
 import { randomUUID } from 'expo-crypto';
 import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
+import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -26,7 +27,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); ${journalQueueSchema}`);
+    ); ${journalQueueSchema} ${saleEventTimeSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -44,6 +45,7 @@ export async function saveSale(sale: Omit<SavedSale, 'id'>, syncEligible = false
       const operationId = randomUUID();
       const event = { operationId, saleId: snapshot.syncSaleId, version: 1, sale: snapshot, refund: 0 };
       await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)', operationId, snapshot.syncSaleId, 1, JSON.stringify(event));
+      await recordSaleEventTime(tx,operationId,snapshot.createdAt);
     }
   });
 }
@@ -64,11 +66,13 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
     const json = JSON.stringify(payload);
     await tx.runAsync('UPDATE sales SET payload = ? WHERE id = ?', json, previous.id);
     const persisted = { ...payload, id: previous.id };
-    await tx.runAsync('INSERT INTO sale_revisions (sale_id, created_at, previous_payload, new_payload, refund) VALUES (?, ?, ?, ?, ?)', previous.id, new Date().toISOString(), JSON.stringify(previous), JSON.stringify(persisted), refund);
+    const recordedAt=new Date().toISOString();
+    await tx.runAsync('INSERT INTO sale_revisions (sale_id, created_at, previous_payload, new_payload, refund) VALUES (?, ?, ?, ?, ?)', previous.id, recordedAt, JSON.stringify(previous), JSON.stringify(persisted), refund);
     if (previous.syncSaleId) {
       const operationId = randomUUID();
       const event = { operationId, saleId: previous.syncSaleId, version: payload.syncVersion, sale: payload, refund };
       await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)', operationId, previous.syncSaleId, payload.syncVersion!, JSON.stringify(event));
+      await recordSaleEventTime(tx,operationId,recordedAt);
     }
   });
 }

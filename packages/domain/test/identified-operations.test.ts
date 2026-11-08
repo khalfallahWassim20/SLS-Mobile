@@ -25,7 +25,7 @@ test('ventes et règlements identifiés : verrouillage, identité et reprise san
   const saleId=randomUUID();
   // En Tunisie, 23h30 UTC appartient au lendemain.
   const sale={createdAt:'2026-11-07T23:30:00.000Z',clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:0,remaining:119000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''};
-  const event={operationId:randomUUID(),saleId,version:1,sale,refund:0};
+  const event={operationId:randomUUID(),saleId,version:1,recordedAt:sale.createdAt,sale,refund:0};
   const payId=randomUUID(),settlement={operationId:payId,settlement:{syncOperationId:payId,createdAt:'2026-11-07T23:31:00.000Z',clientId,clientName:'Client fictif',amount:1000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}};
   await assert.rejects(storeIdentifiedSale(pool,event,{secret,token:'invalide'}),/Session/);
   await assert.rejects(storeIdentifiedSale(pool,{...event,sale:{...sale,total:1}},s),/Totaux/);
@@ -36,21 +36,26 @@ test('ventes et règlements identifiés : verrouillage, identité et reprise san
   await changeTourClosure(pool,c.id,'2026-11-08','close',{id:c.id,role:'commercial'},0);
   assert.equal(await storeIdentifiedSale(pool,event,s),'duplicate');
   assert.equal(await storeIdentifiedSettlement(pool,settlement,s),'duplicate');
-  const changed={operationId:randomUUID(),saleId,version:2,sale:{...sale,syncVersion:2},refund:0};
+  const changed={operationId:randomUUID(),saleId,version:2,recordedAt:'2026-11-09T10:00:00.000Z',sale:{...sale,syncVersion:2},refund:0};
   const newPayment={...settlement,operationId:randomUUID(),settlement:{...settlement.settlement,syncOperationId:randomUUID()}};
   newPayment.settlement.syncOperationId=newPayment.operationId;
   await assert.rejects(storeIdentifiedSale(pool,changed,s),/clôturé/);
   await assert.rejects(storeIdentifiedSettlement(pool,newPayment,s),/clôturé/);
   await changeTourClosure(pool,c.id,'2026-11-08','reopen',{id:'admin',role:'admin'},1);
+  await changeTourClosure(pool,c.id,'2026-11-09','close',{id:c.id,role:'commercial'},0);
+  await assert.rejects(storeIdentifiedSale(pool,changed,s),/clôturé/);
+  await changeTourClosure(pool,c.id,'2026-11-09','reopen',{id:'admin',role:'admin'},1);
+  await assert.rejects(storeIdentifiedSale(pool,{...changed,recordedAt:'2026-11-07T22:00:00.000Z'},s),/Date/);
   assert.equal(await storeIdentifiedSale(pool,changed,s),'received');
-  const shared={operationId:randomUUID(),saleId,version:3,sale:{...sale,syncVersion:3},refund:0};
+  const shared={operationId:randomUUID(),saleId,version:3,recordedAt:'2026-11-09T11:00:00.000Z',sale:{...sale,syncVersion:3},refund:0};
   assert.equal(await storeIdentifiedSale(pool,shared,otherSession),'received');
   await changeTourClosure(pool,c.id,'2026-11-08','close',{id:c.id,role:'commercial'},2);
-  const blocked={operationId:randomUUID(),saleId,version:4,sale:{...sale,syncVersion:4},refund:0};
+  const blocked={operationId:randomUUID(),saleId,version:4,recordedAt:'2026-11-09T12:00:00.000Z',sale:{...sale,syncVersion:4},refund:0};
   await assert.rejects(storeIdentifiedSale(pool,blocked,otherSession),/clôturé/);
   assert.equal(await storeIdentifiedSettlement(pool,newPayment,otherSession),'received');
-  const history=await db.query<{commercial_id:string;journal_date:string}>('SELECT commercial_id,journal_date::text FROM identified_sale_events ORDER BY version');
+  const history=await db.query<{commercial_id:string;journal_date:string;event_date:string}>('SELECT commercial_id,journal_date::text,event_date::text FROM identified_sale_events ORDER BY version');
   assert.deepEqual(history.rows.map(r=>[r.commercial_id,r.journal_date]),[[c.id,'2026-11-08'],[c.id,'2026-11-08'],[other.id,'2026-11-08']]);
+  assert.deepEqual(history.rows.map(r=>r.event_date),['2026-11-08','2026-11-09','2026-11-09']);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM demo_sale_events')).rows[0].n,0);
  } finally {await db.close();}
 });

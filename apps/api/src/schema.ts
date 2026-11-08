@@ -107,6 +107,7 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       journal_date date NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(sale_id,version)
     );
+    ALTER TABLE identified_sale_events ADD COLUMN IF NOT EXISTS event_date date;
     CREATE INDEX IF NOT EXISTS identified_sale_events_latest_idx ON identified_sale_events(sale_id,version DESC);
     CREATE TABLE IF NOT EXISTS identified_settlements (
       operation_id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id),
