@@ -2,13 +2,15 @@
 import type { Pool } from 'pg';
 import { summarizePreInvoice } from '@sls/domain';
 import { parseJournalSnapshot } from './journal-protocol.js';
+import {lockSyncMode,assertLegacyMode} from './tour-sync-mode.js';
 
 /** Les soldes et tous leurs marqueurs doivent être lus dans le même instantané PostgreSQL. */
-export async function readJournalReference(pool: Pool, includeInactive = false) {
+export async function readJournalReference(pool: Pool, includeInactive = false, enforceLegacyMode = false) {
  const active = includeInactive ? '' : ' AND c.active';
  const db=await pool.connect();
  try {
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  await db.query(enforceLegacyMode ? 'BEGIN ISOLATION LEVEL REPEATABLE READ' : 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  if(enforceLegacyMode) assertLegacyMode(await lockSyncMode(db));
   const clients=await db.query(`WITH latest AS (
     SELECT DISTINCT ON (sale_id) client_id,payload FROM demo_sale_events ORDER BY sale_id,version DESC
   ), sales AS (SELECT client_id,sum((payload->'sale'->>'total')::bigint-(payload->'sale'->>'paid')::bigint) AS balance FROM latest GROUP BY client_id),

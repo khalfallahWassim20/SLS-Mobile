@@ -40,6 +40,11 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       expected_version integer NOT NULL CHECK(expected_version>=0), result_version integer NOT NULL CHECK(result_version>0),
       occurred_at timestamptz NOT NULL
     );
+    -- Préparation d'une bascule exclusive ; aucun endpoint ne permet encore de changer ce mode.
+    CREATE TABLE IF NOT EXISTS tour_sync_mode (
+      id integer PRIMARY KEY CHECK(id=1), mode text NOT NULL CHECK(mode IN ('legacy','identified'))
+    );
+    INSERT INTO tour_sync_mode(id,mode) VALUES(1,'legacy') ON CONFLICT(id) DO NOTHING;
     CREATE TABLE IF NOT EXISTS articles (
       id uuid PRIMARY KEY, code text UNIQUE NOT NULL, barcode text NOT NULL DEFAULT '', name text NOT NULL,
       purchase_ttc bigint NOT NULL CHECK (purchase_ttc >= 0), sale_ttc bigint NOT NULL CHECK (sale_ttc >= 0),

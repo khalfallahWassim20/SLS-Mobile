@@ -11,6 +11,7 @@ import {changeTourClosure, ClosureConflict, readTourClosure, requestTourTransiti
 import {setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from '../src/identified-operations.js';
+import {lockSyncMode,LegacySyncDisabled} from '../src/tour-sync-mode.js';
 
 dotenv.config({path:'apps/api/.env'});
 test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma temporaire', async () => {
@@ -98,6 +99,20 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   assert.deepEqual(acks.map(x=>x.status).sort(),['duplicate','received']);
   assert.equal(acks[0].version,1);assert.equal(acks[1].version,1);
   assert.equal((await isolated.query('SELECT count(*)::int AS count FROM tour_closure_events WHERE commercial_id=$1 AND journal_date=$2::date',[commercialId,request.day])).rows[0].count,1);
+  // La future bascule ne doit pas dépasser une écriture partagée en cours.
+  const writer=await isolated.connect(),switcher=await isolated.connect();
+  try {
+   await writer.query('BEGIN');assert.equal(await lockSyncMode(writer),'legacy');
+   await switcher.query('BEGIN');await switcher.query("SET LOCAL lock_timeout = '150ms'");
+   await assert.rejects(switcher.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1"), (e:any)=>e.code==='55P03');
+   await switcher.query('ROLLBACK');await writer.query('COMMIT');
+   await switcher.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+   // Accusé perdu : les reprises identiques déjà reçues restent possibles.
+   assert.equal(await storeJournalSnapshot(isolated,first,'sync'),'duplicate');
+   const blocked={operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:'2026-11-12'},receipts:[]};
+   await assert.rejects(storeJournalSnapshot(isolated,blocked,'sync'),LegacySyncDisabled);
+  } finally {writer.release();switcher.release();}
+
 
 
 

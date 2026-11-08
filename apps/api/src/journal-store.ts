@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import {assertTourWritable} from '@sls/domain';
 import {lockTourClosure} from './tour-closure-store.js';
 import {verifyCommercialSession} from './commercial-session.js';
+import {lockSyncMode,assertLegacyMode} from './tour-sync-mode.js';
 import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition } from './journal-protocol.js';
 
 export class JournalConflict extends Error {}
@@ -14,6 +15,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
   const db = await pool.connect();
   try {
     await db.query('BEGIN');
+    const legacyMode=namespace==='sync' ? await lockSyncMode(db) : null;
     let commercialId:string|null=null;
     let closure:Awaited<ReturnType<typeof lockTourClosure>>|null=null;
     if(namespace==='identified') {
@@ -34,6 +36,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       if (existing.rows[0].payload_hash !== hash) throw new JournalConflict('Identifiant d’opération déjà utilisé avec d’autres données.');
       await db.query('COMMIT'); return 'duplicate';
     }
+    if(legacyMode) assertLegacyMode(legacyMode);
     if(namespace==='identified') {
       try {assertTourWritable(closure!);} catch(error) {throw new JournalConflict(error instanceof Error ? error.message : 'Journal clôturé.');}
     }
