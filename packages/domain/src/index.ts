@@ -163,3 +163,5 @@ export function canonicalJson(value: unknown): string {
 
 export { calculateFullCancellation } from './credit-note.ts';
 export type { FullCancellationInput, FullCreditChoice } from './credit-note.ts';
+export { prepareFullCreditNote } from './credit-note-command.ts';
+export type { CreditNoteActor, CreditNoteCommand, CreditNoteSource, CreditNoteEvent } from './credit-note-command.ts';
