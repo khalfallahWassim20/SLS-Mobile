@@ -119,6 +119,16 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
    const conflicting=await Promise.allSettled([storeIdentifiedSale(isolated,duplicateSale,guarded),storeIdentifiedSettlement(isolated,duplicateSettlement,guarded)]);
    assert.equal(conflicting.filter(x=>x.status==='fulfilled').length,1);
    const rejected=conflicting.find(x=>x.status==='rejected');assert.ok(rejected&&rejected.status==='rejected'&&rejected.reason instanceof IdentifiedOverlap);
+   // Deux modifications concurrentes d'une vente héritée ne peuvent créer qu'une version suivante.
+   const oldId=randomUUID(),oldOp=randomUUID(),oldAt='2026-11-14T08:00:00.000Z';
+   const oldSale={...concurrentSale.sale,syncSaleId:oldId,createdAt:oldAt};
+   const oldEvent={operationId:oldOp,saleId:oldId,version:1,sale:oldSale,refund:0};
+   await isolated.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,1,$3,$4::jsonb,$5)',[oldOp,oldId,clientId,JSON.stringify(oldEvent),'fixture']);
+   const nextSales=[1,2].map(()=>({operationId:randomUUID(),saleId:oldId,version:2,recordedAt:'2026-11-14T09:00:00.000Z',refund:0,sale:{...oldSale,syncVersion:2}}));
+   const continuations=await Promise.allSettled(nextSales.map(s=>storeIdentifiedSale(isolated!,s,guarded)));
+   assert.equal(continuations.filter(x=>x.status==='fulfilled').length,1);
+   const failed=continuations.find(x=>x.status==='rejected');assert.ok(failed&&failed.status==='rejected'&&failed.reason instanceof JournalConflict);
+
 
   } finally {writer.release();switcher.release();}
 

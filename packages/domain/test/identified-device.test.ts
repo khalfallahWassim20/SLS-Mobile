@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
-import {identifiedDeviceSchema,bindVerifiedDevice,getDeviceIdentity,recordDeviceOperation,assertKnownDeviceEntity,assertDeviceWritable} from '../../../apps/mobile/identified-device.js';
+import {identifiedDeviceSchema,bindVerifiedDevice,getDeviceIdentity,recordDeviceOperation,assertKnownDeviceEntity,assertDeviceWritable,saveVerifiedIdentifiedReference} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema,prepareTourClose} from '../../../apps/mobile/tour-close-queue.js';
 const id='a1000000-0000-4000-8000-000000000001',other='a1000000-0000-4000-8000-000000000002',op='a1000000-0000-4000-8000-000000000003',entity='a1000000-0000-4000-8000-000000000004',request='a1000000-0000-4000-8000-000000000005',day='2026-11-10',time='2026-11-10T12:00:00.000Z';
 test('liaison isolée : anciennes files préservées, identité immuable et opérations traçables',async()=>{
@@ -21,8 +21,17 @@ test('liaison isolée : anciennes files préservées, identité immuable et opé
   await assert.rejects(bindVerifiedDevice(tx,{...identity,commercialId:other}),/déjà lié/);
   await assert.rejects(bindVerifiedDevice(tx,{...identity,serverOrigin:'http://192.168.1.11:3001'}),/déjà lié/);
   await assert.rejects(assertKnownDeviceEntity(tx,identity,'sale',entity),/rapprochement/);
+  const previous={clientId:other,version:2,total:119000,paid:50000};
+  const reference={version:4,clients:[{id:other,name:'Fictif',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'69000'}],articles:[],saleStates:[{saleId:entity,clientId:other,version:2,total:'119000',paid:'50000'}],settlementStates:[],journalStates:[]};
+  await assert.rejects(saveVerifiedIdentifiedReference(tx,identity,{...identity,commercialId:other},reference),/Session/);
+  await assert.rejects(saveVerifiedIdentifiedReference(tx,identity,identity,{...reference,version:3}),/invalide/);
+  await saveVerifiedIdentifiedReference(tx,identity,identity,reference);
+  await assertKnownDeviceEntity(tx,identity,'sale',entity,previous);
+  await assert.rejects(assertKnownDeviceEntity(tx,identity,'sale',entity,{...previous,version:1}),/rapprochement/);
+  await assert.rejects(assertKnownDeviceEntity(tx,identity,'journal',entity),/rapprochement/);
+  // La suite vérifie que la date et l'identité sont enregistrées atomiquement.
   db.exec('BEGIN');await recordDeviceOperation(tx,identity,op,'sale',entity,time);db.exec('ROLLBACK');
-  await assert.rejects(assertKnownDeviceEntity(tx,identity,'sale',entity),/rapprochement/);
+  assert.equal(db.prepare('SELECT operation_id FROM identified_local_operations WHERE operation_id=?').get(op),undefined);
   await recordDeviceOperation(tx,identity,op,'sale',entity,time);
   await assertKnownDeviceEntity(tx,identity,'sale',entity);
   await assert.rejects(assertKnownDeviceEntity(tx,{...identity,commercialId:other},'sale',entity),/rapprochement/);

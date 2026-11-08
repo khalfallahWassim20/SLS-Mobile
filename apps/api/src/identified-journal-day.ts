@@ -17,7 +17,7 @@ export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day
    JOIN identified_journal_invoices i ON i.id=e.invoice_id WHERE i.commercial_id=$1 AND i.journal_date=$2::date
    ORDER BY e.invoice_id,e.version DESC`,[commercialId,day]);
   // La vente reste dans le journal de son créateur, même modifiée par un autre commercial.
-  const sales=await db.query(`WITH first AS (SELECT DISTINCT ON (sale_id) sale_id,commercial_id,journal_date FROM identified_sale_events ORDER BY sale_id,version ASC),
+  const sales=await db.query(`WITH first AS (SELECT DISTINCT ON (sale_id) sale_id,commercial_id,journal_date FROM identified_sale_events WHERE version=1 ORDER BY sale_id,version ASC),
    latest AS (SELECT DISTINCT ON (sale_id) sale_id,payload FROM identified_sale_events ORDER BY sale_id,version DESC)
    SELECT l.sale_id AS "saleId",l.payload->'sale' AS sale FROM latest l JOIN first f ON f.sale_id=l.sale_id
    WHERE f.commercial_id=$1 AND f.journal_date=$2::date`,[commercialId,day]);

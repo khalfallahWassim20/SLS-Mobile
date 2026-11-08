@@ -70,7 +70,7 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
     if (!row || JSON.stringify({ ...JSON.parse(row.payload), id: previous.id }) !== JSON.stringify(previous)) throw new Error('La vente a changé. Veuillez rouvrir son détail.');
     const recordedAt=new Date().toISOString(),identity=await getDeviceIdentity(tx);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(previous.createdAt)),tunisDay(new Date(recordedAt))]);
-    await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId);
+    await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion??0,total:previous.total,paid:previous.paid});
     const { id: _id, ...originalPayload } = updated;
     const payload = previous.syncSaleId ? { ...originalPayload, syncVersion: (previous.syncVersion ?? 1) + 1 } : originalPayload;
     const json = JSON.stringify(payload);
