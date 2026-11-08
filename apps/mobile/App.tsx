@@ -211,11 +211,15 @@ export default function App() {
     try {
       if (!await Sharing.isAvailableAsync()) throw Error('Le partage de fichiers n’est pas disponible sur cet appareil.');
       const data = { day:journalDate, commercial:individual?.name ?? 'Non disponible (session non connectée)', rows:journalRows, receipts:tourReceipts };
-      let uri: string;
-      if(format === 'pdf') uri=(await Print.printToFileAsync({html:journalHtml(data)})).uri;
-      else {
-        if(!FileSystem.cacheDirectory) throw Error('Stockage temporaire indisponible.');
-        uri=`${FileSystem.cacheDirectory}journal-${journalDate}-${Date.now()}.csv`;
+      if(!FileSystem.cacheDirectory) throw Error('Stockage temporaire indisponible.');
+      const uri=`${FileSystem.cacheDirectory}journal-${journalDate}-${Date.now()}.${format}`;
+      if(format === 'pdf') {
+        // Expo Go peut créer le PDF hors du dossier autorisé pour le partage.
+        // Le recopier via base64 dans le cache propre au projet, comme pour le CSV.
+        const result=await Print.printToFileAsync({html:journalHtml(data),base64:true});
+        if(!result.base64) throw Error('Le fichier PDF généré est vide ou indisponible.');
+        await FileSystem.writeAsStringAsync(uri,result.base64,{encoding:FileSystem.EncodingType.Base64});
+      } else {
         await FileSystem.writeAsStringAsync(uri,journalCsv(data),{encoding:FileSystem.EncodingType.UTF8});
       }
       await Sharing.shareAsync(uri,{mimeType:format==='pdf'?'application/pdf':'text/csv',dialogTitle:'Partager le journal local',UTI:format==='pdf'?'com.adobe.pdf':'public.comma-separated-values-text'});
