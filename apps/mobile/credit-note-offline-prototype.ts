@@ -1,4 +1,4 @@
-/** Préparation expérimentale : non créée par la base mobile et non utilisée par
+/** Préparation expérimentale : table créée au démarrage, mais non utilisée par
  * les écrans ou l'envoi actuel. Chaque appel doit être effectué dans la même
  * transaction SQLite exclusive que les futures modifications de facture. */
 import {calculatePreInvoiceCancellation,prepareFullCreditNote,canonicalJson,type CreditNoteCommand} from '@sls/domain';
@@ -10,7 +10,7 @@ type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
 type Kind='sale'|'preinvoice';
 export type Note={kind:Kind;commercialId:string;serverOrigin:string;command:CreditNoteCommand;source:unknown;balanceDelta:number;refund:number;retainedCredit:number};
-export const offlineCreditPrototypeSchema=`CREATE TABLE offline_credit_prototype (
+export const offlineCreditPrototypeSchema=`CREATE TABLE IF NOT EXISTS offline_credit_prototype (
  operation_id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('sale','preinvoice')),
  commercial_id TEXT NOT NULL, server_origin TEXT NOT NULL, payload TEXT NOT NULL, pending INTEGER NOT NULL CHECK(pending IN (0,1)),
  UNIQUE(invoice_id,kind)

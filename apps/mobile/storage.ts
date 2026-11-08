@@ -3,13 +3,16 @@ import { validatePreInvoiceReceipt } from '@sls/domain';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
 import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
-import {tourCloseQueueSchema,prepareTourClose,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,type Attempt} from './tour-close-queue';
+import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,type Attempt} from './tour-close-queue';
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from './identified-outbox';
 import type {IdentifiedEntry} from './identified-upload';
 import {identifiedDeviceSchema,getDeviceIdentity,bindVerifiedDevice,saveVerifiedIdentifiedReference,assertDeviceWritable,recordDeviceOperation,assertKnownDeviceEntity,type DeviceIdentity} from './identified-device';
 import {validateIdentifiedReference} from './identified-reference';
 import {tunisDay} from './journal';
 import {resetLocalTestOperations} from './reset-test-operations';
+import {offlineCreditPrototypeSchema} from './credit-note-offline-prototype';
+import {assertNoLocalCreditNote} from './credit-note-local-guard';
+import {preparePrototypeClose} from './credit-note-close-prototype';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -35,7 +38,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -71,6 +74,7 @@ export async function getRevisions(saleId: number): Promise<Revision[]> {
 export async function updateSale(previous: SavedSale, updated: SavedSale, refund: number): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
+    await assertNoLocalCreditNote(tx,'sale',previous.syncSaleId);
     const row = await tx.getFirstAsync<{payload: string}>('SELECT payload FROM sales WHERE id = ?', previous.id);
     if (!row || JSON.stringify({ ...JSON.parse(row.payload), id: previous.id }) !== JSON.stringify(previous)) throw new Error('La vente a changé. Veuillez rouvrir son détail.');
     const recordedAt=new Date().toISOString(),identity=await getDeviceIdentity(tx);
@@ -199,6 +203,7 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
  await database.withExclusiveTransactionAsync(async tx => {
    const identity=await getDeviceIdentity(tx);
    await assertDeviceWritable(tx,identity,[value.journalDate]);
+   await assertNoLocalCreditNote(tx,'preinvoice',value.preInvoiceId);
    const state = await tx.getFirstAsync<{version:number;payload:string}>('SELECT version,payload FROM journal_sync_state WHERE invoice_id=?', value.preInvoiceId);
    await assertKnownDeviceEntity(tx,identity,'journal',value.preInvoiceId,undefined,state ? {...state,digest:(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)} : undefined);
    const raw = await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE id=? AND client_id=? AND journal_date=?', value.preInvoiceId, value.clientId, value.journalDate);
@@ -267,7 +272,7 @@ export async function getLocalCloseAttempt(identity:DeviceIdentity,day:string):P
 }
 export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number):Promise<Attempt> {
  const database=await db();let result:Attempt|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);result=await prepareTourClose(tx,identity.commercialId,day,version,randomUUID);});return result!;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);});return result!;
 }
 export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
