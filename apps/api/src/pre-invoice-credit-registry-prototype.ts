@@ -53,6 +53,8 @@ export async function storePrototypePreInvoiceCredit(pool:Pool,raw:unknown,princ
    if(canonicalJson(event.command)!==canonicalJson(command)||canonicalJson(event.actor)!==canonicalJson(actor))throw new JournalConflict('Identifiant d’opération déjà utilisé avec un autre contenu ou acteur.');
    await db.query('COMMIT');return {status:'duplicate' as const,event};
   }
+  const used=await db.query('SELECT 1 FROM credit_note_prototype_operation_ids WHERE operation_id=$1',[command.operationId]);
+  if(used.rows.length)throw new JournalConflict('Identifiant d’opération déjà utilisé par un autre avoir.');
   const info=await db.query('SELECT client_id,commercial_id,journal_date::text AS day FROM identified_journal_invoices WHERE id=$1',[command.invoiceId]);
   const meta=info.rows[0];
   if(!meta||!meta.commercial_id)throw new IdentifiedOverlap('Facture préétablie non identifiée : rapprochement nécessaire.');
@@ -88,6 +90,7 @@ export async function storePrototypePreInvoiceCredit(pool:Pool,raw:unknown,princ
   if(!Number.isFinite(lastDate)||Date.parse(command.recordedAt)<lastDate)throw new JournalConflict('Date de l’avoir antérieure à la facture ou à un paiement.');
   const calculated=calculatePreInvoiceCancellation({balance:0,invoiceTotal:snapshot.invoice.amount,receipts:snapshot.receipts,alreadyCancelled:false,choice:command.choice??undefined});
   const event={command,actor,source:snapshot,clientId:meta.client_id,ownerId:meta.commercial_id,...calculated};
+  await db.query('INSERT INTO credit_note_prototype_operation_ids(operation_id) VALUES($1)',[command.operationId]);
   await db.query('INSERT INTO pre_invoice_credit_prototype_events(operation_id,invoice_id,event) VALUES($1,$2,$3::jsonb)',[command.operationId,command.invoiceId,JSON.stringify(event)]);
   // Retirer la contribution courante, puis enregistrer la sortie éventuelle.
   // Si la facture n'avait pas été déclarée elle ne contribue pas au solde.

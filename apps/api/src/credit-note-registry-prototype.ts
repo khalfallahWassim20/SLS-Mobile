@@ -11,7 +11,8 @@ import {lockIdentifiedOperation} from './identified-overlap.js';
 import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
 import {lockCreditNoteSale} from './credit-note-sale-lock.js';
 
-export const creditNotePrototypeSchema=`CREATE TABLE credit_note_prototype_events (
+export const creditNotePrototypeSchema=`CREATE TABLE credit_note_prototype_operation_ids (operation_id uuid PRIMARY KEY);
+CREATE TABLE credit_note_prototype_events (
  operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE,
  event jsonb NOT NULL, received_at timestamptz NOT NULL DEFAULT now()
 );
@@ -53,11 +54,14 @@ export async function storePrototypeCreditNote(pool:Pool,raw:unknown,principal:P
    const result=prepareFullCreditNote({actor,command,source:{invoiceId:command.invoiceId,version:command.expectedVersion,total:0,netPaid:0,cancelled:false},daysOpen:false,previous:existing.rows[0].event as CreditNoteEvent});
    await db.query('COMMIT');return result;
   }
+  const used=await db.query('SELECT 1 FROM credit_note_prototype_operation_ids WHERE operation_id=$1',[command.operationId]);
+  if(used.rows.length)throw new JournalConflict('Identifiant d’opération déjà utilisé par un autre avoir.');
   const source=await lockCreditNoteSale(db,actor,command);
   // Ce contrôle est effectué après acquisition du verrou partagé avec les ventes.
   const prior=await db.query('SELECT 1 FROM credit_note_prototype_events WHERE invoice_id=$1',[command.invoiceId]);
   if(prior.rows.length)throw new JournalConflict('Facture déjà annulée.');
   const result=prepareFullCreditNote({actor,command,source:{invoiceId:source.invoiceId,version:source.version,total:source.total,netPaid:source.netPaid,cancelled:false},daysOpen:true,previous:null});
+  await db.query('INSERT INTO credit_note_prototype_operation_ids(operation_id) VALUES($1)',[command.operationId]);
   await db.query('INSERT INTO credit_note_prototype_events(operation_id,invoice_id,event) VALUES($1,$2,$3::jsonb)',[command.operationId,command.invoiceId,JSON.stringify(result.event)]);
   // Ces mouvements ne sont pas raccordés aux soldes actifs. Leur somme est
   // le delta sur le solde client (positif = dette ; remboursement = sortie).
