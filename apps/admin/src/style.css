@@ -4,4 +4,56 @@
 select{font:inherit;width:100%;border:1px solid #dae4de;border-radius:8px;padding:11px;color:#1c302b;background:#fff}
 .export-actions{display:flex;gap:10px;flex-wrap:wrap;padding:0 22px}
 .sale-history{padding:22px;border-top:1px solid #e4ebe6}.sale-history .panel-head{padding:0}.history-version{border:1px solid #e4ebe6;border-radius:10px;margin:16px 0;padding:16px}.history-version h3{margin:0;color:#153f33}
+
+/* ===== Design amélioré : soldes, règlements, journaux ===== */
+.panel>.notice{margin:0 22px 18px}
+.panel>.pad,.panel>p.pad{padding:0 22px;margin:8px 0 16px}
+.panel>.empty{padding:40px 22px}
+.section-title{font-size:15px;color:#153f33;margin:26px 22px 12px;padding-left:10px;border-left:3px solid #ebbb53}
+.notice.ok{background:#e8f5ec;border-color:#c8e6d2;color:#278452}
+.notice.warn-box{background:#fff4e0;border-color:#f3d79b;color:#7a5b16}
+.notice.warn-box p{margin:8px 0 12px}
+.head-actions{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap}
+.head-actions label{margin:0}
+.filters{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:16px;padding:0 22px}
+.filters label{margin-bottom:6px}
+.toolbar{display:flex;justify-content:space-between;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 22px;margin:4px 0 6px;border-top:1px solid #edf1ee;border-bottom:1px solid #edf1ee;background:#fafcfb}
+.toolbar-state{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.toolbar .export-actions{padding:0}
+.toolbar .badge{font-weight:700;padding:6px 12px}
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;padding:6px 22px 22px}
+.kpis.three{grid-template-columns:repeat(auto-fit,minmax(200px,1fr))}
+.kpi{border:1px solid #e4ebe6;border-radius:12px;padding:16px 18px;background:#fff;display:flex;flex-direction:column;gap:5px;border-left:4px solid #c9d8cf}
+.kpi span{font-size:11px;font-weight:700;letter-spacing:.5px;color:#83958b;text-transform:uppercase}
+.kpi strong{font-size:22px;color:#153f33;font-variant-numeric:tabular-nums}
+.kpi small{color:#9aa9a1;font-size:12px}
+.kpi.good{border-left-color:#26a37a;background:#f4fbf7}
+.kpi.good strong{color:#197259}
+.kpi.bad{border-left-color:#d9534f;background:#fff6f5}
+.kpi.bad strong{color:#a33b31}
+th.num,td.num{text-align:right}
+td.strong{font-weight:700;color:#253c33}
+td.good-text,td.good-text .amt{color:#197259}
+tbody tr{transition:background .15s}
+tbody tr:hover{background:#f6faf7}
+tbody tr:nth-child(even){background:#fbfdfc}
+tbody tr:nth-child(even):hover{background:#f6faf7}
+.amt{font-variant-numeric:tabular-nums;white-space:nowrap}
+.amt i{font-style:normal;font-size:11px;color:#9aa9a1;margin-left:2px}
+.amt.pos{color:#a33b31}.amt.neg{color:#197259}.amt.zero{color:#83928b}
+.chip{display:inline-block;border-radius:20px;padding:4px 10px;font-size:11px;font-weight:700;white-space:nowrap}
+.chip.debt{background:#fdeceb;color:#a33b31}
+.chip.credit{background:#e8f5ec;color:#278452}
+.chip.zero{background:#eef2ef;color:#5f7469}
+.chip.warn{background:#fff3d6;color:#8a6a14;margin-left:8px}
+.credit{min-width:170px}
+.credit-top{display:flex;justify-content:space-between;gap:10px;font-size:12px;margin-bottom:5px;color:#5f7469}
+.credit-top small{font-weight:700;color:#83928b}
+.credit-top .over-text{color:#a33b31}
+.bar{height:7px;border-radius:6px;background:#e9efeb;overflow:hidden}
+.bar-fill{height:100%;border-radius:6px;background:#26a37a}
+.bar-fill.warn{background:#ebbb53}
+.bar-fill.over{background:#d9534f}
+@media(max-width:700px){.filters{grid-template-columns:1fr}.kpis{grid-template-columns:repeat(2,minmax(0,1fr));padding:6px 14px 18px}.kpi strong{font-size:18px}.toolbar{padding:12px 14px}.panel>.notice{margin:0 14px 16px}.head-actions{align-items:stretch}}
+
 .payment-history{padding:22px;border-top:1px solid #e4ebe6}
