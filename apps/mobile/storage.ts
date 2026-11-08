@@ -1,5 +1,5 @@
 import * as SQLite from 'expo-sqlite';
-import { validatePreInvoiceReceipt } from '@sls/domain';
+import { validatePreInvoiceReceipt,type FullCreditChoice } from '@sls/domain';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
 import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
@@ -10,7 +10,7 @@ import {identifiedDeviceSchema,getDeviceIdentity,bindVerifiedDevice,saveVerified
 import {validateIdentifiedReference} from './identified-reference';
 import {tunisDay} from './journal';
 import {resetLocalTestOperations} from './reset-test-operations';
-import {offlineCreditPrototypeSchema} from './credit-note-offline-prototype';
+import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readAllOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Kind,type Note} from './credit-note-offline-prototype';
 import {assertNoLocalCreditNote} from './credit-note-local-guard';
 import {preparePrototypeClose} from './credit-note-close-prototype';
 
@@ -276,6 +276,25 @@ export async function prepareLocalClose(identity:DeviceIdentity,day:string,versi
 }
 export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
+}
+
+/** Accès transactionnels préparatoires, non utilisés par les écrans ni l'envoi.
+ * L'activation exige d'abord le raccordement du solde et de la référence serveur. */
+export async function createLocalCreditPrototype(identity:DeviceIdentity,kind:Kind,invoiceId:string,expectedVersion:number,choice:FullCreditChoice|null):Promise<Note> {
+ const database=await db();let result:Note|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await prepareOfflineCreditPrototype(tx,identity,kind,{operationId:randomUUID(),invoiceId,expectedVersion,recordedAt:new Date().toISOString(),choice});});
+ return result!;
+}
+export async function getLocalCreditPrototypes(identity:DeviceIdentity):Promise<{note:Note;pending:boolean}[]> {
+ const database=await db();let result:{note:Note;pending:boolean}[]=[];
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readAllOfflineCreditPrototype(tx,identity);});return result;
+}
+export async function getReadyLocalCreditPrototypes(identity:DeviceIdentity):Promise<Note[]> {
+ const database=await db();let result:Note[]=[];
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readReadyOfflineCreditPrototype(tx,identity);});return result;
+}
+export async function acknowledgeLocalCreditPrototype(identity:DeviceIdentity,note:Note,response:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeOfflineCreditPrototype(tx,identity,note,response);});
 }
 
 /** Effacement explicite des données fictives de ce téléphone seulement. */

@@ -4,7 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
-import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
+import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readReadyOfflineCreditPrototype,readAllOfflineCreditPrototype,acknowledgeOfflineCreditPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
 
 test('avoir mobile isolé : file persistante, dépendances, identité, clôture et accusé',async()=>{
  const db=new DatabaseSync(':memory:');
@@ -30,6 +30,11 @@ test('avoir mobile isolé : file persistante, dépendances, identité, clôture 
   db.exec('BEGIN');await prepareOfflineCreditPrototype(tx,identity,'sale',cmd);db.exec('ROLLBACK');
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,0);
   const note=await prepareOfflineCreditPrototype(tx,identity,'sale',cmd);assert.equal(note.balanceDelta,-600000);assert.equal(note.retainedCredit,200000);
+  assert.equal((await readAllOfflineCreditPrototype(tx,identity))[0].pending,true);
+  db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify({...note,balanceDelta:0}));
+  await assert.rejects(readAllOfflineCreditPrototype(tx,identity),/Montants/);
+  await assert.rejects(acknowledgeOfflineCreditPrototype(tx,identity,{...note,balanceDelta:0},{status:'received',operationId}),/Montants/);
+  db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify(note));
   await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',{...cmd,operationId:randomUUID()}),/déjà annulée/);
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,0);
   db.prepare('DELETE FROM sales_outbox WHERE sale_id=?').run(id);
@@ -40,7 +45,7 @@ test('avoir mobile isolé : file persistante, dépendances, identité, clôture 
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,1);
   await acknowledgeOfflineCreditPrototype(tx,identity,note,{status:'duplicate',operationId});
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,0);
-  assert.equal(db.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,1);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,1);assert.equal((await readAllOfflineCreditPrototype(tx,identity))[0].pending,false);
  }finally{db.close();}
 });
 test('avoir préétabli isolé : n’annule pas le paiement d’ancienne dette',async()=>{
