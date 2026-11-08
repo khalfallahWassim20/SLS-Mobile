@@ -8,6 +8,7 @@ import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/com
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {storeJournalSnapshot} from '../../../apps/api/src/journal-store.js';
 import {changeTourClosure} from '../../../apps/api/src/tour-closure-store.js';
+import {readJournalPaymentHistory} from '../../../apps/api/src/journal-payment-history.js';
 
 test('journal identifié isolé : session, écriture et clôture atomiques',async()=>{
  const db=new PGlite(),secret='secret uniquement pour ce test local';
@@ -42,8 +43,17 @@ test('journal identifié isolé : session, écriture et clôture atomiques',asyn
   assert.equal((await db.query<{count:number}>('SELECT count(*)::int AS count FROM identified_journal_events')).rows[0].count,1);
   await changeTourClosure(pool,c.id,day,'reopen',{id:'admin',role:'admin'},1);
   assert.equal(await storeJournalSnapshot(pool,second,'identified',s),'received');
+  const receipt2={...receipt,id:randomUUID(),createdAt:'2026-11-08T11:00:00.000Z',prePaid:50000};
+  const third={operationId:randomUUID(),version:3,invoice,receipts:[receipt,receipt2]};
+  assert.equal(await storeJournalSnapshot(pool,third,'identified',s),'received');
+  assert.equal(await storeJournalSnapshot(pool,third,'identified',s),'duplicate');
+  const history=await readJournalPaymentHistory(pool,c.id,day);
+  assert.equal(history.truncated,false);assert.equal(history.entries.length,2);
+  assert.deepEqual(history.entries.map(x=>x.prePaid).sort((a,b)=>a-b),[50000,200000]);
+  assert.ok(history.entries.every(x=>x.commercialId===c.id && x.commercialName==='Fictif un' && !x.inherited));
+  assert.equal((await readJournalPaymentHistory(pool,other.id,day)).entries.length,0);
   const rows=await db.query('SELECT commercial_id FROM identified_journal_events');
-  assert.deepEqual(rows.rows.map((r:any)=>r.commercial_id),[c.id,c.id]);
+  assert.deepEqual(rows.rows.map((r:any)=>r.commercial_id),[c.id,c.id,c.id]);
   assert.equal((await db.query<{count:number}>('SELECT count(*)::int AS count FROM sync_journal_events')).rows[0].count,0);
   await saveCommercial(pool,'admin',{name:'Fictif un',active:false},c.id);
   await assert.rejects(storeJournalSnapshot(pool,second,'identified',s),/Session commerciale/);

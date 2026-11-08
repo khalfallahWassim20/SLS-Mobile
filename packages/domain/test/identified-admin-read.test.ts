@@ -27,6 +27,9 @@ test('lecture identifiée protégée par middleware admin et historique par jour
    assert.equal((await fetch(`${base}/bad/2026-11-10`,{headers})).status,400);
    assert.equal((await fetch(`${base}/${c.id}/2026-02-30`,{headers})).status,400);
    assert.equal((await fetch(`${base}/${randomUUID()}/2026-11-10`,{headers})).status,404);
+   assert.equal((await fetch(`${base}/${c.id}/2026-11-10/payments`)).status,401);
+   assert.equal((await fetch(`${base}/bad/2026-11-10/payments`,{headers})).status,400);
+   const paymentResponse=await fetch(`${base}/${c.id}/2026-11-10/payments`,{headers});assert.equal(paymentResponse.status,200);assert.equal(paymentResponse.headers.get('cache-control'),'no-store');assert.deepEqual((await paymentResponse.json()).entries,[]);
    const response=await fetch(`${base}/${c.id}/2026-11-10`,{headers});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');
    const data=await response.json();assert.equal(data.closure.status,'open');assert.equal(data.closure.version,2);
    assert.deepEqual(data.closureEvents.map((x:any)=>[x.action,x.actorRole,x.version]),[['reopen','admin',2],['close','commercial',1]]);

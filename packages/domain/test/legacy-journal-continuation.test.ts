@@ -11,6 +11,7 @@ import {storeJournalSnapshot} from '../../../apps/api/src/journal-store.js';
 import {readIdentifiedReference} from '../../../apps/api/src/identified-reference.js';
 import {readServerJournalDay} from '../../../apps/api/src/journal-day.js';
 import {readIdentifiedJournalDay} from '../../../apps/api/src/identified-journal-day.js';
+import {readJournalPaymentHistory} from '../../../apps/api/src/journal-payment-history.js';
 import {changeTourClosure} from '../../../apps/api/src/tour-closure-store.js';
 
 test('facture héritée : continuation sans double comptage ni attribution inventée',async()=>{
@@ -54,6 +55,9 @@ test('facture héritée : continuation sans double comptage ni attribution inven
   const fourth={...third,operationId:randomUUID(),version:4,receipts:[...third.receipts,{...nextReceipt,id:randomUUID(),prePaid:5000}]};
   assert.equal(await storeJournalSnapshot(pool,fourth,'identified',auth),'received');
   assert.equal((await readIdentifiedJournalDay(pool,c.id,day)).inheritedJournalTotal,105000);
+  const history=await readJournalPaymentHistory(pool,c.id,day), otherHistory=await readJournalPaymentHistory(pool,colleague.id,day);
+  assert.equal(history.entries.length,2);assert.deepEqual(history.entries.map(x=>x.prePaid).sort((a,b)=>a-b),[5000,100000]);assert.ok(history.entries.every(x=>x.inherited && x.commercialId===c.id));
+  assert.equal(otherHistory.entries.length,1);assert.equal(otherHistory.entries[0].prePaid,10000);assert.equal(otherHistory.entries[0].commercialId,colleague.id);
   const after=await readIdentifiedReference(pool);assert.equal(after.clients[0].serverBalance,'985000');
   const combined=await readServerJournalDay(pool,day,'combined');assert.equal(combined.rows.length,1);assert.equal(combined.rows[0].preInvoiceTotal,600000);assert.equal(combined.rows[0].preInvoicePaid,315000);assert.equal(combined.rows[0].oldDebtPaid,300000);
  } finally {await db.close();}
