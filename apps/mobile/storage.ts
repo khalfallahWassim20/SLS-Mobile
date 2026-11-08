@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { validatePreInvoiceReceipt } from '@sls/domain';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
 import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
@@ -194,7 +195,6 @@ export async function getTourReceipts(): Promise<TourJournalReceipt[]> {
  return rows.map(r => JSON.parse(r.payload));
 }
 export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, availableOldDebt: number): Promise<void> {
- const { validatePreInvoiceReceipt } = await import('@sls/domain');
  const database = await ensureJournalReceipts();
  await database.withExclusiveTransactionAsync(async tx => {
    const identity=await getDeviceIdentity(tx);
