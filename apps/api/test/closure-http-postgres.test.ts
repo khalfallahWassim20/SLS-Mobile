@@ -5,11 +5,14 @@ import {randomUUID} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {createServer} from 'node:net';
 import pg from 'pg';
+import dotenv from 'dotenv';
 import bcrypt from 'bcryptjs';
 import {schemaSql} from '../src/schema.js';
 
+dotenv.config({path:'apps/api/.env'});
+
 test('HTTP réel PostgreSQL : bascule, ventes, clôture et réouverture admin',async()=>{
- const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL manquante.');
+ const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL manquante dans apps/api/.env.');
  const schema='sls_http_'+randomUUID().replaceAll('-',''),root=new pg.Pool({connectionString:url});
  const port=await new Promise<number>((resolve,reject)=>{const s=createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const a=s.address();if(!a||typeof a==='string')return reject(Error('Port indisponible'));s.close(()=>resolve(a.port));});});
  let server:ReturnType<typeof spawn>|undefined,created=false,logs='';
