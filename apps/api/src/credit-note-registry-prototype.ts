@@ -14,6 +14,12 @@ import {lockCreditNoteSale} from './credit-note-sale-lock.js';
 export const creditNotePrototypeSchema=`CREATE TABLE credit_note_prototype_events (
  operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE,
  event jsonb NOT NULL, received_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE credit_note_prototype_movements (
+ operation_id uuid NOT NULL REFERENCES credit_note_prototype_events(operation_id),
+ kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')),
+ balance_delta bigint NOT NULL,
+ PRIMARY KEY(operation_id,kind)
 )`;
 const inputSchema=z.object({operationId:z.string().uuid(),invoiceId:z.string().uuid(),expectedVersion:z.number().int().min(1).max(999999),recordedAt:z.string().datetime({precision:3}),choice:z.enum(['refund','credit']).nullable()}).strict();
 type Principal={kind:'commercial';secret:string;token:string}|{kind:'admin';actorId:string};
@@ -53,6 +59,10 @@ export async function storePrototypeCreditNote(pool:Pool,raw:unknown,principal:P
   if(prior.rows.length)throw new JournalConflict('Facture déjà annulée.');
   const result=prepareFullCreditNote({actor,command,source:{invoiceId:source.invoiceId,version:source.version,total:source.total,netPaid:source.netPaid,cancelled:false},daysOpen:true,previous:null});
   await db.query('INSERT INTO credit_note_prototype_events(operation_id,invoice_id,event) VALUES($1,$2,$3::jsonb)',[command.operationId,command.invoiceId,JSON.stringify(result.event)]);
+  // Ces mouvements ne sont pas raccordés aux soldes actifs. Leur somme est
+  // le delta sur le solde client (positif = dette ; remboursement = sortie).
+  await db.query('INSERT INTO credit_note_prototype_movements(operation_id,kind,balance_delta) VALUES($1,$2,$3)',[command.operationId,'invoice_cancellation',-result.event.noteTotal]);
+  if(result.event.refund>0)await db.query('INSERT INTO credit_note_prototype_movements(operation_id,kind,balance_delta) VALUES($1,$2,$3)',[command.operationId,'refund',result.event.refund]);
   await db.query('COMMIT');return result;
  } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
 }

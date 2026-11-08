@@ -27,9 +27,17 @@ test('registre expérimental : reprise identique, refus du deuxième avoir et ro
   await assert.rejects(storePrototypeCreditNote(pool,cmd,{...principal,token:'invalide'}),/Session/);
   await assert.rejects(storePrototypeCreditNote(pool,{...cmd,choice:null},principal),/Choisissez/);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,0);
+  // Une erreur pendant l'écriture des mouvements annule aussi l'avoir.
+  await db.exec("ALTER TABLE credit_note_prototype_movements ADD CONSTRAINT fail_refund CHECK(kind <> 'refund')");
+  await assert.rejects(storePrototypeCreditNote(pool,cmd,principal));
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,0);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_movements')).rows[0].n,0);
+  await db.exec('ALTER TABLE credit_note_prototype_movements DROP CONSTRAINT fail_refund');
   const first=await storePrototypeCreditNote(pool,cmd,principal);assert.equal(first.status,'received');assert.equal(first.event.refund,50000);assert.equal(first.event.balanceDelta,-69000);
   await changeTourClosure(pool,c.id,'2026-11-07','close',{id:c.id,role:'commercial'},0);
   const duplicate=await storePrototypeCreditNote(pool,cmd,principal);assert.equal(duplicate.status,'duplicate');assert.deepEqual(duplicate.event,first.event);
+  const moves=await db.query<{kind:string;delta:string}>('SELECT kind,balance_delta::text AS delta FROM credit_note_prototype_movements ORDER BY kind');
+  assert.deepEqual(moves.rows.map(r=>[r.kind,r.delta]),[['invoice_cancellation','-119000'],['refund','50000']]);
   await assert.rejects(storePrototypeCreditNote(pool,{...cmd,choice:'credit'},principal),/déjà utilisé/);
   await assert.rejects(storePrototypeCreditNote(pool,cmd,{kind:'admin',actorId:'admin'}),/déjà utilisé/);
   await changeTourClosure(pool,c.id,'2026-11-07','reopen',{id:'admin',role:'admin'},1);

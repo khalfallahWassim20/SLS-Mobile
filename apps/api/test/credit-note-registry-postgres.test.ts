@@ -54,6 +54,8 @@ test('PostgreSQL : deux demandes et deux reprises simultanées dans le registre 
    const replayResults=await replays;assert.ok(replayResults.every(r=>r.status==='fulfilled'));
    const values=replayResults.map(r=>{if(r.status!=='fulfilled')throw r.reason;return r.value;});assert.deepEqual(values.map(v=>v.status).sort(),['duplicate','received']);assert.deepEqual(values[0].event,values[1].event);
    const count=await pool.query('SELECT count(*)::int AS n FROM credit_note_prototype_events');assert.equal(count.rows[0].n,2);
+   const moves=await pool.query('SELECT kind, count(*)::int AS n, sum(balance_delta)::text AS total FROM credit_note_prototype_movements GROUP BY kind ORDER BY kind');
+   assert.deepEqual(moves.rows,[{kind:'invoice_cancellation',n:2,total:'-238000'},{kind:'refund',n:2,total:'100000'}]);
   } finally {await blocker.query('ROLLBACK').catch(()=>{});blocker.release();}
  } finally {if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });
