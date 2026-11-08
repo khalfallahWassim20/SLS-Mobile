@@ -7,7 +7,7 @@ import dotenv from 'dotenv';
 import { schemaSql } from '../src/schema.js';
 import { storeJournalSnapshot, JournalConflict } from '../src/journal-store.js';
 import { readJournalReference } from '../src/journal-reference.js';
-import {changeTourClosure, ClosureConflict, readTourClosure} from '../src/tour-closure-store.js';
+import {changeTourClosure, ClosureConflict, readTourClosure, requestTourTransition} from '../src/tour-closure-store.js';
 import {setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from '../src/identified-operations.js';
@@ -91,6 +91,14 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   else await assert.rejects(storeIdentifiedSale(isolated,concurrentSale,signed),/clôturé/);
   if(paymentResult.status==='fulfilled') assert.equal(await storeIdentifiedSettlement(isolated,concurrentPayment,signed),'duplicate');
   else await assert.rejects(storeIdentifiedSettlement(isolated,concurrentPayment,signed),/clôturé/);
+  // Deux reprises simultanées de la même demande ne produisent qu'une transition.
+  const request={requestId:randomUUID(),day:'2026-11-11',expectedVersion:0};
+  const principal={kind:'commercial' as const,secret,token:session.token};
+  const acks=await Promise.all([requestTourTransition(isolated,request,principal),requestTourTransition(isolated,request,principal)]);
+  assert.deepEqual(acks.map(x=>x.status).sort(),['duplicate','received']);
+  assert.equal(acks[0].version,1);assert.equal(acks[1].version,1);
+  assert.equal((await isolated.query('SELECT count(*)::int AS count FROM tour_closure_events WHERE commercial_id=$1 AND journal_date=$2::date',[commercialId,request.day])).rows[0].count,1);
+
 
 
 

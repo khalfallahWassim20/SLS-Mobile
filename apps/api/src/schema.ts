@@ -32,6 +32,14 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       UNIQUE(commercial_id,journal_date,version),
       FOREIGN KEY(commercial_id,journal_date) REFERENCES tour_closures(commercial_id,journal_date)
     );
+    -- Reprises idempotentes des demandes de clôture/réouverture.
+    CREATE TABLE IF NOT EXISTS tour_closure_requests (
+      request_id uuid PRIMARY KEY, commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
+      action text NOT NULL CHECK(action IN ('close','reopen')), actor_id text NOT NULL,
+      actor_role text NOT NULL CHECK(actor_role IN ('commercial','admin')),
+      expected_version integer NOT NULL CHECK(expected_version>=0), result_version integer NOT NULL CHECK(result_version>0),
+      occurred_at timestamptz NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS articles (
       id uuid PRIMARY KEY, code text UNIQUE NOT NULL, barcode text NOT NULL DEFAULT '', name text NOT NULL,
       purchase_ttc bigint NOT NULL CHECK (purchase_ttc >= 0), sale_ttc bigint NOT NULL CHECK (sale_ttc >= 0),
