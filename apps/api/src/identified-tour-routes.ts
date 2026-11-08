@@ -7,18 +7,22 @@ import {verifyCommercialSession} from './commercial-session.js';
 import {ClosureAuthenticationError,ClosureConflict,readTourClosure,requestTourTransition} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,storeJournalSnapshot} from './journal-store.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from './identified-operations.js';
+import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
+import {readIdentifiedJournalDay} from './identified-journal-day.js';
 
 const input=z.object({requestId:z.string().uuid(),day:z.string(),expectedVersion:z.number().int().min(0)}).strict();
 const bearer=(value:string|undefined)=>value?.match(/^Bearer (.+)$/)?.[1]??'';
 function errorHandler(error:unknown,res:import('express').Response,next:import('express').NextFunction) {
  if(error instanceof ClosureAuthenticationError || error instanceof JournalAuthenticationError) {res.status(401).json({error:'Session invalide ou expirée.'});return;}
- if(error instanceof ClosureConflict || error instanceof JournalConflict) {res.status(409).json({error:error.message});return;}
+ if(error instanceof ClosureConflict || error instanceof JournalConflict || error instanceof ReferenceOverlap) {res.status(409).json({error:error.message});return;}
  if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données invalides.'});return;}
  next(error);
 }
 export function identifiedCommercialRoutes(pool:Pool,secret:string) {
  const r=Router();r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
  r.use(rateLimit({windowMs:15*60*1000,limit:500,standardHeaders:'draft-8',legacyHeaders:false}));
+ r.get('/reference',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(await readIdentifiedReference(pool));}catch(e){errorHandler(e,res,next);}});
+ r.get('/day/:day/details',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(await readIdentifiedJournalDay(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});
  r.post('/close',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))});res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
  for(const kind of ['journal','sales','settlements'] as const) r.post('/'+kind,async(req,res,next)=>{try{
