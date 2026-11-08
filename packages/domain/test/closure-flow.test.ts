@@ -43,11 +43,13 @@ test('parcours isolé : synchronisation, clôture, réponse perdue et réouvertu
    const invoiceId=randomUUID(),journalOp=randomUUID(),receiptId=randomUUID();
    const invoice={id:invoiceId,clientId,clientName:'Client fictif',journalDate:day,createdAt,sector:'',amount:600000};
    const receipt={id:receiptId,preInvoiceId:invoiceId,clientId,journalDate:day,createdAt,prePaid:200000,oldDebtPaid:300000,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1000000};
-   const journal={operationId:journalOp,version:1,invoice,receipts:[receipt]};
+   const journal={operationId:journalOp,version:1,invoice,receipts:[]};
+   const paidJournal={operationId:randomUUID(),version:2,invoice,receipts:[receipt]};
    const paymentId=randomUUID(),payment={operationId:paymentId,settlement:{syncOperationId:paymentId,createdAt,clientId,clientName:'Client fictif',amount:30000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}};
    const entries:IdentifiedEntry[]=[{operationId:saleOp,kind:'sale',entityId:saleId,commercialId:commercial.id,recordedAt:createdAt,payload:JSON.stringify(saleEvent)},
     {operationId:paymentId,kind:'settlement',entityId:paymentId,commercialId:commercial.id,recordedAt:createdAt,payload:JSON.stringify(payment)},
-    {operationId:journalOp,kind:'journal',entityId:invoiceId,commercialId:commercial.id,recordedAt:createdAt,payload:JSON.stringify(journal)}];
+    {operationId:journalOp,kind:'journal',entityId:invoiceId,commercialId:commercial.id,recordedAt:createdAt,payload:JSON.stringify(journal)},
+    {operationId:paidJournal.operationId,kind:'journal',entityId:invoiceId,commercialId:commercial.id,recordedAt:createdAt,payload:JSON.stringify(paidJournal)}];
    for(const e of entries)mobileDb.prepare(`INSERT INTO ${e.kind==='journal'?'journal_sync_outbox':'sales_outbox'} VALUES(?)`).run(e.operationId);
    await assert.rejects(prepareTourClose(tx,commercial.id,day,0,randomUUID),/attente/);
    const send=(path:string,payload:string)=>fetch(origin+'/mobile/'+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:payload});
@@ -55,7 +57,7 @@ test('parcours isolé : synchronisation, clôture, réponse perdue et réouvertu
    // La première réponse est perdue après réception ; la même opération est renvoyée.
    let lost=false;
    await assert.rejects(uploadIdentifiedOperations(entries,identity,identity,async(path,payload)=>{const result=await send(path,payload);if(!lost){lost=true;throw Error('coupure simulée');}return result},ack),/coupure/);
-   assert.equal(await uploadIdentifiedOperations(entries,identity,identity,send,ack),3);
+   assert.equal(await uploadIdentifiedOperations(entries,identity,identity,send,ack),4);
    const referenceResponse=await fetch(origin+'/mobile/reference',{headers:{Authorization:'Bearer '+token}});assert.equal(referenceResponse.status,200);
    const reference=validateIdentifiedReference(await referenceResponse.json());assert.equal(reference.clients[0].serverBalance,'1320000');
    const detail=await (await fetch(origin+`/mobile/day/${day}/details`,{headers:{Authorization:'Bearer '+token}})).json();
@@ -68,7 +70,7 @@ test('parcours isolé : synchronisation, clôture, réponse perdue et réouvertu
    await assert.rejects(sendPreparedTourClose(attempt,async body=>{assert.equal((await sendClose(body)).status,201);throw Error('réponse perdue')},closeAck),/perdue/);
    await sendPreparedTourClose(attempt,sendClose,closeAck);await assert.rejects(assertLocalTourWritable(tx,commercial.id,day),/clôturée/);
    assert.equal((await post('/mobile/journal',journal,token)).status,200);
-   const second={...journal,operationId:randomUUID(),version:2,receipts:[receipt,{...receipt,id:randomUUID(),prePaid:10000,oldDebtPaid:0}]};
+   const second={...journal,operationId:randomUUID(),version:3,receipts:[receipt,{...receipt,id:randomUUID(),prePaid:10000,oldDebtPaid:0}]};
    assert.equal((await post('/mobile/journal',second,token)).status,409);
    const reopen={requestId:randomUUID(),day,expectedVersion:1};
    assert.equal((await post(`/admin/${commercial.id}/reopen`,reopen,token)).status,401);

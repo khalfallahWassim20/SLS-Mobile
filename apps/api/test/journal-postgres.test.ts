@@ -13,6 +13,9 @@ import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from '../src/identified-operations.js';
 import {lockSyncMode,LegacySyncDisabled} from '../src/tour-sync-mode.js';
 import {IdentifiedOverlap} from '../src/identified-overlap.js';
+import {readIdentifiedReference} from '../src/identified-reference.js';
+import {readServerJournalDay} from '../src/journal-day.js';
+import {activateIdentifiedTours} from '../src/tour-activation.js';
 
 dotenv.config({path:'apps/api/.env'});
 test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma temporaire', async () => {
@@ -100,6 +103,11 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   assert.deepEqual(acks.map(x=>x.status).sort(),['duplicate','received']);
   assert.equal(acks[0].version,1);assert.equal(acks[1].version,1);
   assert.equal((await isolated.query('SELECT count(*)::int AS count FROM tour_closure_events WHERE commercial_id=$1 AND journal_date=$2::date',[commercialId,request.day])).rows[0].count,1);
+  // Une facture héritée est reçue avant la transition, avec un paiement déjà enregistré.
+  const oldInvoice={...invoice,id:randomUUID(),journalDate:'2026-11-15'};
+  const oldReceipt={...receipt(randomUUID(),100000),preInvoiceId:oldInvoice.id,journalDate:oldInvoice.journalDate};
+  const oldJournal={operationId:randomUUID(),version:1,invoice:oldInvoice,receipts:[oldReceipt]};
+  assert.equal(await storeJournalSnapshot(isolated,oldJournal,'sync'),'received');
   // La future bascule ne doit pas dépasser une écriture partagée en cours.
   const writer=await isolated.connect(),switcher=await isolated.connect();
   try {
@@ -107,7 +115,10 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
    await switcher.query('BEGIN');await switcher.query("SET LOCAL lock_timeout = '150ms'");
    await assert.rejects(switcher.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1"), (e:any)=>e.code==='55P03');
    await switcher.query('ROLLBACK');await writer.query('COMMIT');
-   await switcher.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+   await assert.rejects(activateIdentifiedTours(isolated,'admin','non'),/Confirmez/);
+   const activated=await Promise.all([activateIdentifiedTours(isolated,'admin','TOUS LES APPAREILS SONT SYNCHRONISÉS'),activateIdentifiedTours(isolated,'admin','TOUS LES APPAREILS SONT SYNCHRONISÉS')]);
+   assert.deepEqual(activated.map(x=>x.status).sort(),['activated','already-active']);
+   assert.equal((await isolated.query("SELECT count(*)::int AS count FROM audit_log WHERE action='activation' AND entity='synchronisation'")).rows[0].count,1);
    // Accusé perdu : les reprises identiques déjà reçues restent possibles.
    assert.equal(await storeJournalSnapshot(isolated,first,'sync'),'duplicate');
    const blocked={operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:'2026-11-12'},receipts:[]};
@@ -119,6 +130,16 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
    const conflicting=await Promise.allSettled([storeIdentifiedSale(isolated,duplicateSale,guarded),storeIdentifiedSettlement(isolated,duplicateSettlement,guarded)]);
    assert.equal(conflicting.filter(x=>x.status==='fulfilled').length,1);
    const rejected=conflicting.find(x=>x.status==='rejected');assert.ok(rejected&&rejected.status==='rejected'&&rejected.reason instanceof IdentifiedOverlap);
+   // Deux paiements concurrents sur une facture héritée : une seule version suivante.
+   const updatesOld=[1,2].map(()=>({operationId:randomUUID(),version:2,invoice:oldInvoice,receipts:[oldReceipt,{...oldReceipt,id:randomUUID(),prePaid:50000}]}));
+   const journalRace=await Promise.allSettled(updatesOld.map(item=>storeJournalSnapshot(isolated!,item,'identified',guarded)));
+   assert.equal(journalRace.filter(item=>item.status==='fulfilled').length,1);
+   const journalFailed=journalRace.find(item=>item.status==='rejected');assert.ok(journalFailed&&journalFailed.status==='rejected'&&journalFailed.reason instanceof JournalConflict);
+   const winner=updatesOld[journalRace.findIndex(item=>item.status==='fulfilled')];
+   assert.equal(await storeJournalSnapshot(isolated,winner,'identified',guarded),'duplicate');
+   const owner=await isolated.query('SELECT commercial_id FROM identified_journal_invoices WHERE id=$1',[oldInvoice.id]);assert.equal(owner.rows[0].commercial_id,null);
+   const projection=await readIdentifiedReference(isolated);assert.equal(projection.journalStates.filter(item=>item.id===oldInvoice.id).length,1);
+   const combined=await readServerJournalDay(isolated,oldInvoice.journalDate,'combined');assert.equal(combined.rows[0].preInvoiceTotal,600000);assert.equal(combined.rows[0].preInvoicePaid,150000);
    // Deux modifications concurrentes d'une vente héritée ne peuvent créer qu'une version suivante.
    const oldId=randomUUID(),oldOp=randomUUID(),oldAt='2026-11-14T08:00:00.000Z';
    const oldSale={...concurrentSale.sale,syncSaleId:oldId,createdAt:oldAt};

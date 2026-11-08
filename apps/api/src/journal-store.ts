@@ -44,24 +44,38 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
     if(namespace==='identified') {
       try {assertTourWritable(closure!);} catch(error) {throw new JournalConflict(error instanceof Error ? error.message : 'Journal clôturé.');}
     }
+    let legacyInvoiceExists=false;
     if(namespace==='identified') {
-      const legacy=await db.query('SELECT id FROM sync_journal_invoices WHERE id=$1 OR (client_id=$2 AND journal_date=$3::date)',[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);
-      if(legacy.rows.length) throw new IdentifiedOverlap('Facture existante dans l’ancien journal : rapprochement nécessaire.');
+      const legacy=await db.query('SELECT id,client_id,journal_date::text AS journal_date FROM sync_journal_invoices WHERE id=$1 OR (client_id=$2 AND journal_date=$3::date)',[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);
+      if(legacy.rows.some(r=>r.id!==event.invoice.id || r.client_id!==event.invoice.clientId || r.journal_date!==event.invoice.journalDate)) throw new IdentifiedOverlap('Une autre facture existe dans l’ancien journal : rapprochement nécessaire.');
+      legacyInvoiceExists=legacy.rows.length>0;
     }
     const invoice = await db.query(`SELECT id,client_id,journal_date::text AS journal_date${namespace==='identified'?',commercial_id':''} FROM ${prefix}_invoices WHERE id=$1 OR (client_id=$2 AND journal_date=$3::date)`,[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);
     if (invoice.rows.some(r => r.id !== event.invoice.id || r.client_id !== event.invoice.clientId || r.journal_date !== event.invoice.journalDate)) throw new JournalConflict('Une autre facture existe déjà pour ce client et cette date.');
-    if(namespace==='identified' && invoice.rows.some(r=>r.commercial_id!==commercialId)) throw new JournalConflict('Facture attribuée à un autre commercial.');
+    if(namespace==='identified' && invoice.rows.some(r=>r.commercial_id!==null && r.commercial_id!==commercialId)) throw new JournalConflict('Facture attribuée à un autre commercial.');
     const last = await db.query(`SELECT payload FROM ${prefix}_events WHERE invoice_id=$1 ORDER BY version DESC LIMIT 1`,[event.invoice.id]);
-    try { validateJournalTransition(last.rows.length ? parseJournalSnapshot(last.rows[0].payload) : null,event); }
+    const old=namespace==='identified' ? await db.query('SELECT payload FROM sync_journal_events WHERE invoice_id=$1 ORDER BY version DESC LIMIT 1',[event.invoice.id]) : null;
+    if(legacyInvoiceExists && !old?.rows.length) throw new IdentifiedOverlap('Historique de facture manquant : rapprochement nécessaire.');
+    const previous=last.rows.length ? parseJournalSnapshot(last.rows[0].payload) : old?.rows.length ? parseJournalSnapshot(old.rows[0].payload) : null;
+    if(namespace==='identified' && old?.rows.length && invoice.rows.length && invoice.rows[0].commercial_id!==null) throw new IdentifiedOverlap('Attribution historique incohérente.');
+    if(namespace==='identified' && !old?.rows.length && invoice.rows.length && invoice.rows[0].commercial_id===null) throw new IdentifiedOverlap('Historique initial manquant.');
+    if(namespace==='identified' && !previous && event.receipts.length) throw new JournalConflict('Une nouvelle facture identifiée doit débuter sans paiements historiques.');
+    try { validateJournalTransition(previous,event); }
     catch (error) { throw new JournalConflict(error instanceof Error ? error.message : 'Version du journal incohérente.'); }
     if (!invoice.rows.length) {
       const client = await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL',[event.invoice.clientId]);
       if (!client.rows.length) throw new JournalConflict('Client introuvable sur le serveur.');
-      if(namespace==='identified') await db.query(`INSERT INTO ${prefix}_invoices(id,client_id,journal_date,commercial_id) VALUES($1,$2,$3::date,$4)`,[event.invoice.id,event.invoice.clientId,event.invoice.journalDate,commercialId]);
+      if(namespace==='identified') await db.query(`INSERT INTO ${prefix}_invoices(id,client_id,journal_date,commercial_id) VALUES($1,$2,$3::date,$4)`,[event.invoice.id,event.invoice.clientId,event.invoice.journalDate,old?.rows.length?null:commercialId]);
       else await db.query(`INSERT INTO ${prefix}_invoices(id,client_id,journal_date) VALUES($1,$2,$3::date)`,[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);
     }
     for (const receipt of [...event.receipts].sort((a,b) => a.id.localeCompare(b.id))) {
-      if(namespace==='identified' && (await db.query('SELECT id FROM sync_journal_receipt_ids WHERE id=$1',[receipt.id])).rows.length) throw new IdentifiedOverlap('Règlement de journal déjà présent dans l’ancien espace.');
+      if(namespace==='identified') {
+        const oldOwner=await db.query('SELECT invoice_id FROM sync_journal_receipt_ids WHERE id=$1',[receipt.id]);
+        if(oldOwner.rows.length) {
+          if(oldOwner.rows[0].invoice_id!==event.invoice.id || !old?.rows.length || !parseJournalSnapshot(old.rows[0].payload).receipts.some(r=>r.id===receipt.id)) throw new IdentifiedOverlap('Règlement de journal déjà présent dans l’ancien espace.');
+          continue;
+        }
+      }
       await db.query(`INSERT INTO ${prefix}_receipt_ids(id,invoice_id) VALUES($1,$2) ON CONFLICT(id) DO NOTHING`,[receipt.id,event.invoice.id]);
       const owner = await db.query(`SELECT invoice_id FROM ${prefix}_receipt_ids WHERE id=$1`,[receipt.id]);
       if (owner.rows[0]?.invoice_id !== event.invoice.id) throw new JournalConflict('Identifiant de règlement déjà utilisé pour une autre facture.');

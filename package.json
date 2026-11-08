@@ -14,7 +14,7 @@
     "api": "npm run dev --workspace @sls/api",
     "admin": "npm run dev --workspace @sls/admin",
     "migrate": "npm run migrate --workspace @sls/api",
-    "test:journal-db": "tsx --test apps/api/test/journal-postgres.test.ts"
+    "test:journal-db": "tsx --test apps/api/test/*postgres.test.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.15",

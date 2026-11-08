@@ -57,7 +57,7 @@ test('projection v4 isolée : combine les soldes et refuse les doublons entre es
 
 test('référence mobile individuelle : valide la v4 et refuse une régression de cache',async()=>{
  const {validateIdentifiedReference,assertNoReferenceDowngrade}=await import('../../../apps/mobile/identified-reference.js');
- const value={version:4,clients:[{id:'client',name:'Fictif',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[],saleStates:[],settlementStates:[],journalStates:[{id:'facture',clientId:'client',journalDate:'2026-11-10',total:1000,receipts:[]}]};
+ const value={version:4,clients:[{id:'client',name:'Fictif',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[],saleStates:[],settlementStates:[],journalStates:[{id:'facture',clientId:'client',journalDate:'2026-11-10',total:1000,receipts:[]}],journalProofs:[{id:'facture',version:1,hash:'a'.repeat(64)}]};
  assert.equal(validateIdentifiedReference(value).version,4);
  assert.throws(()=>validateIdentifiedReference({...value,version:3}));
  assert.throws(()=>validateIdentifiedReference({...value,journalStates:[{...value.journalStates[0],journalDate:undefined}]}),/Dates/);

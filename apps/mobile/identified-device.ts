@@ -1,4 +1,5 @@
 /** Préparation du mode individuel ; n'enregistre ni mot de passe ni jeton. */
+import {canonicalJson} from '@sls/domain';
 import {assertLocalTourWritable} from './tour-close-queue';
 import {validateIdentifiedReference} from './identified-reference';
 type Bind=string|number|null;
@@ -40,7 +41,7 @@ export async function recordDeviceOperation(tx:Tx,identity:DeviceIdentity|null,o
  await tx.runAsync('INSERT INTO identified_local_operations(operation_id,commercial_id,operation_kind,entity_id,recorded_at) VALUES(?,?,?,?,?)',operationId,identity.commercialId,kind,entityId,recordedAt);
 }
 /** Ne jamais réattribuer silencieusement une ancienne vente ou facture à la nouvelle identité. */
-export async function assertKnownDeviceEntity(tx:Tx,identity:DeviceIdentity|null,kind:'sale'|'journal',entityId:string|undefined,previousSale?:{clientId:string;version:number;total:number;paid:number}):Promise<void> {
+export async function assertKnownDeviceEntity(tx:Tx,identity:DeviceIdentity|null,kind:'sale'|'journal',entityId:string|undefined,previousSale?:{clientId:string;version:number;total:number;paid:number},previousJournal?:{version:number;payload:string;digest:(text:string)=>Promise<string>}):Promise<void> {
  if(!identity)return;
  if(!entityId)throw Error('Ancienne opération sans identité : rapprochement nécessaire.');
  const row=await tx.getFirstAsync<{commercialId:string}>('SELECT commercial_id AS commercialId FROM identified_local_operations WHERE operation_kind=? AND entity_id=? LIMIT 1',kind,entityId);
@@ -52,6 +53,17 @@ export async function assertKnownDeviceEntity(tx:Tx,identity:DeviceIdentity|null
     const state=reference.saleStates?.find(s=>s.saleId===entityId);
     if(state && state.clientId===previousSale.clientId && state.version===previousSale.version && state.total===String(previousSale.total) && state.paid===String(previousSale.paid))return;
    } catch { /* cache incomplet ou illisible : échec prudent */ }
+  }
+ }
+ if(kind==='journal' && previousJournal) {
+  const cache=await tx.getFirstAsync<{commercialId:string;serverOrigin:string;payload:string}>('SELECT commercial_id AS commercialId,server_origin AS serverOrigin,payload FROM identified_reference_cache WHERE id=1');
+  if(cache && cache.commercialId===identity.commercialId && cache.serverOrigin===identity.serverOrigin) {
+   try {
+    const reference=validateIdentifiedReference(JSON.parse(cache.payload));
+    const proof=reference.journalProofs.find(p=>p.id===entityId);
+    const snapshot=JSON.parse(previousJournal.payload);
+    if(proof && proof.version===previousJournal.version && snapshot?.version===proof.version && snapshot?.invoice?.id===entityId && await previousJournal.digest(canonicalJson(snapshot))===proof.hash)return;
+   } catch { /* aucune preuve fiable : échec prudent */ }
   }
  }
  throw Error('Ancienne opération sans version serveur confirmée : rapprochement nécessaire.');

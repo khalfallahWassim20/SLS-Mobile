@@ -103,6 +103,8 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       commercial_id uuid NOT NULL REFERENCES commercials(id), created_at timestamptz NOT NULL DEFAULT now(),
       UNIQUE(client_id,journal_date)
     );
+    -- Une facture héritée n'a pas d'auteur commercial fiable.
+    ALTER TABLE identified_journal_invoices ALTER COLUMN commercial_id DROP NOT NULL;
     CREATE TABLE IF NOT EXISTS identified_journal_receipt_ids (
       id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES identified_journal_invoices(id)
     );

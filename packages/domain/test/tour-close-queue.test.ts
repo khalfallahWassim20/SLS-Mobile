@@ -58,3 +58,20 @@ test('envoi de clôture : coupure et accusé invalide préservent la demande',as
   await assert.rejects(assertLocalTourWritable(tx,id,day),/clôturée/);
  } finally {db.close();}
 });
+
+test('état serveur vérifié sur un autre téléphone : blocage et réouverture sans régression',async()=>{
+ const {observeVerifiedTourState}=await import('../../../apps/mobile/tour-close-queue.js');
+ const {db,tx}=setup();
+ try {
+  await observeVerifiedTourState(tx,id,day,{commercialId:id,day,status:'closed',version:1});
+  await assert.rejects(assertLocalTourWritable(tx,id,day),/clôturée/);
+  await assert.rejects(observeVerifiedTourState(tx,id,day,{commercialId:id,day,status:'open',version:0}),/périmé/);
+  await assert.rejects(observeVerifiedTourState(tx,id,day,{commercialId:id,day,status:'open',version:1}),/incohérent/);
+  await observeVerifiedTourState(tx,id,day,{commercialId:id,day,status:'open',version:2});
+  await assertLocalTourWritable(tx,id,day);
+  const attempt=await prepareTourClose(tx,id,day,2,()=>request);
+  await observeVerifiedTourState(tx,id,day,{commercialId:id,day,status:'open',version:4});
+  await assert.rejects(assertLocalTourWritable(tx,id,day),/attente/);
+  assert.equal(attempt.requestId,request);
+ } finally {db.close();}
+});

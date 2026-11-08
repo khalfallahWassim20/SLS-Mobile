@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {testCommercialLogin} from '../../../apps/mobile/commercial-login.js';
+import {testCommercialLogin,openCommercialSession} from '../../../apps/mobile/commercial-login.js';
 
 test('test mobile : identité vérifiée côté serveur sans conserver le jeton',async()=>{
  const calls:{url:string;options:any}[]=[];
@@ -18,4 +18,11 @@ test('test mobile : refuse serveur invalide, erreur de connexion ou réponse inv
  await assert.rejects(testCommercialLogin('http://192.168.1.10:3001','demo','fictif',invalid),/invalide/);
  let count=0;const revoked=async()=>({ok:++count===1,status:401,json:async()=>({token:'temp'})});
  await assert.rejects(testCommercialLogin('http://192.168.1.10:3001','demo','fictif',revoked),/refusée/);
+});
+
+test('session commerciale : origine et jeton restent disponibles seulement en mémoire après vérification',async()=>{
+ let calls=0;
+ const send=async()=>({ok:true,status:200,json:async()=>++calls===1?{token:'session-fictive'}:{commercial:{id:'a1000000-0000-4000-8000-000000000001',name:'Fictif'}}});
+ const result=await openCommercialSession('http://192.168.1.10:3001/','demo','fictif',send);
+ assert.deepEqual(result,{id:'a1000000-0000-4000-8000-000000000001',name:'Fictif',serverOrigin:'http://192.168.1.10:3001',token:'session-fictive'});
 });

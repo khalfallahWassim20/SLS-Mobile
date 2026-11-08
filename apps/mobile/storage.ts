@@ -1,9 +1,12 @@
 import * as SQLite from 'expo-sqlite';
-import { randomUUID } from 'expo-crypto';
+import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
 import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
-import {tourCloseQueueSchema} from './tour-close-queue';
-import {identifiedDeviceSchema,getDeviceIdentity,assertDeviceWritable,recordDeviceOperation,assertKnownDeviceEntity} from './identified-device';
+import {tourCloseQueueSchema,prepareTourClose,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,type Attempt} from './tour-close-queue';
+import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from './identified-outbox';
+import type {IdentifiedEntry} from './identified-upload';
+import {identifiedDeviceSchema,getDeviceIdentity,bindVerifiedDevice,saveVerifiedIdentifiedReference,assertDeviceWritable,recordDeviceOperation,assertKnownDeviceEntity,type DeviceIdentity} from './identified-device';
+import {validateIdentifiedReference} from './identified-reference';
 import {tunisDay} from './journal';
 
 export type SavedSale = {
@@ -195,7 +198,8 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
  await database.withExclusiveTransactionAsync(async tx => {
    const identity=await getDeviceIdentity(tx);
    await assertDeviceWritable(tx,identity,[value.journalDate]);
-   await assertKnownDeviceEntity(tx,identity,'journal',value.preInvoiceId);
+   const state = await tx.getFirstAsync<{version:number;payload:string}>('SELECT version,payload FROM journal_sync_state WHERE invoice_id=?', value.preInvoiceId);
+   await assertKnownDeviceEntity(tx,identity,'journal',value.preInvoiceId,undefined,state ? {...state,digest:(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)} : undefined);
    const raw = await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE id=? AND client_id=? AND journal_date=?', value.preInvoiceId, value.clientId, value.journalDate);
    if (!raw) throw new Error('Facture préétablie introuvable.');
    const invoice: TourPreInvoice = JSON.parse(raw.payload);
@@ -208,7 +212,6 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
    if (!['Espèces','Chèque','Virement'].includes(value.mode)) throw new Error('Mode de paiement invalide.');
    if (value.mode === 'Chèque' && (value.prePaid || value.oldDebtPaid) && (!value.chequeNumber.trim() || !value.chequeBank.trim() || !value.chequeDue.trim())) throw new Error('Renseignez le numéro, la banque et l’échéance du chèque.');
    validatePreInvoiceReceipt(invoice.amount, previous, value, bound);
-   const state = await tx.getFirstAsync<{version:number}>('SELECT version FROM journal_sync_state WHERE invoice_id=?', value.preInvoiceId);
    if (!state && identity) throw new Error('Historique identifié incomplet : rapprochement nécessaire.');
    if (!state) await queueJournalSnapshot(tx,value.preInvoiceId,randomUUID);
    const id = randomUUID();
@@ -230,15 +233,41 @@ export async function acknowledgeJournalOutbox(operationId:string): Promise<void
 /** Tant que l'envoi individuel n'est pas activé, ne pas envoyer une file liée via le jeton partagé. */
 export async function isIdentifiedDeviceBound():Promise<boolean> {return !!(await getDeviceIdentity(await db()));}
 
-/** Extrait la file avec son identité locale, sans attribuer les anciennes opérations manquantes. */
-export async function getIdentifiedOutbox():Promise<import('./identified-upload').IdentifiedEntry[]> {
- const database=await db();
- const sales=await database.getAllAsync<{operationId:string;entityId:string;payload:string;commercialId:string|null;kind:string|null;recordedAt:string|null;ownerEntityId:string|null}>(`SELECT o.operation_id AS operationId,o.sale_id AS entityId,o.payload,m.entity_id AS ownerEntityId,m.commercial_id AS commercialId,m.operation_kind AS kind,m.recorded_at AS recordedAt
- FROM sales_outbox o LEFT JOIN identified_local_operations m ON m.operation_id=o.operation_id ORDER BY o.sequence`);
- const journals=await database.getAllAsync<{operationId:string;entityId:string;payload:string;commercialId:string|null;kind:string|null;recordedAt:string|null;ownerEntityId:string|null}>(`SELECT o.operation_id AS operationId,o.invoice_id AS entityId,o.payload,m.entity_id AS ownerEntityId,m.commercial_id AS commercialId,m.operation_kind AS kind,m.recorded_at AS recordedAt
- FROM journal_sync_outbox o LEFT JOIN identified_local_operations m ON m.operation_id=o.operation_id ORDER BY o.sequence`);
- return [...sales,...journals].map(item=>{
-  if(!item.commercialId||!item.recordedAt||item.ownerEntityId!==item.entityId||!['sale','settlement','journal'].includes(item.kind??''))throw Error('Opération ancienne sans identité : rapprochement nécessaire.');
-  return {...item,commercialId:item.commercialId,recordedAt:item.recordedAt,kind:item.kind as 'sale'|'settlement'|'journal'};
+/** La session et la référence sont vérifiées en ligne par l'appelant. La liaison et les
+ * deux caches sont enregistrés ensemble ou pas du tout. */
+export async function bindAndCacheIdentified(identity:DeviceIdentity,reference:unknown):Promise<void> {
+ const parsed=validateIdentifiedReference(reference),database=await db();
+ await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
+ await database.withExclusiveTransactionAsync(async tx=>{
+  await bindVerifiedDevice(tx,identity);
+  await saveVerifiedIdentifiedReference(tx,identity,identity,parsed);
+  const snapshot={...parsed,version:3,syncedAt:new Date().toISOString()};
+  await tx.runAsync('INSERT INTO reference_snapshot(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',JSON.stringify(snapshot));
  });
+}
+export async function getBoundIdentity():Promise<DeviceIdentity|null> {return getDeviceIdentity(await db());}
+export async function getIdentifiedOutbox(identity:DeviceIdentity):Promise<IdentifiedEntry[]> {
+ const database=await db();let entries:IdentifiedEntry[]=[];
+ await database.withExclusiveTransactionAsync(async tx=>{entries=await readIdentifiedOutbox(tx,identity);});return entries;
+}
+export async function acknowledgeIdentifiedEntry(identity:DeviceIdentity,entry:IdentifiedEntry):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeIdentifiedOutbox(tx,identity,entry);});
+}
+async function checkIdentity(tx:SQLite.SQLiteDatabase,identity:DeviceIdentity):Promise<void> {
+ const current=await getDeviceIdentity(tx);
+ if(!current||current.commercialId!==identity.commercialId||current.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur du téléphone incohérent.');
+}
+export async function observeIdentifiedTour(identity:DeviceIdentity,day:string,state:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await observeVerifiedTourState(tx,identity.commercialId,day,state);});
+}
+export async function getLocalCloseAttempt(identity:DeviceIdentity,day:string):Promise<Attempt|null> {
+ const database=await db();let result:Attempt|null=null;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);result=await findTourCloseAttempt(tx,identity.commercialId,day);});return result;
+}
+export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number):Promise<Attempt> {
+ const database=await db();let result:Attempt|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);result=await prepareTourClose(tx,identity.commercialId,day,version,randomUUID);});return result!;
+}
+export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
 }

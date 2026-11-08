@@ -14,7 +14,10 @@ import { JournalConflict, storeJournalSnapshot } from './journal-store.js';
 import { listCommercials, saveCommercial, setCommercialCredentials } from './commercials.js';
 import { loginCommercial, verifyCommercialSession } from './commercial-session.js';
 import { identifiedAdminReadRoutes } from './identified-admin-read.js';
-import {lockSyncMode,assertLegacyMode,LegacySyncDisabled} from './tour-sync-mode.js';
+import {identifiedCommercialRoutes,identifiedAdminRoutes} from './identified-tour-routes.js';
+import {lockSyncMode,assertLegacyMode,LegacySyncDisabled,readSyncMode} from './tour-sync-mode.js';
+import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
+import {activateIdentifiedTours,TourActivationConflict} from './tour-activation.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -159,11 +162,21 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
     next(error);
   }
 });
+// Routes individuelles protégées par session commerciale et garde de mode transactionnelle.
+// Tant que la transition n'est pas autorisée, elles refusent toute écriture.
+app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret));
 app.use('/api', auth);
+app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username));
+app.get('/api/tour-sync-mode',async(_req,res)=>{res.set('Cache-Control','no-store').json({mode:await readSyncMode(pool)});});
+app.post('/api/tour-sync-mode/activate',async(req,res,next)=>{
+ try {const data=z.object({confirmation:z.string()}).strict().parse(req.body);res.json(await activateIdentifiedTours(pool,username,data.confirmation));}
+ catch(error){if(error instanceof TourActivationConflict||error instanceof ReferenceOverlap){res.status(409).json({error:error.message});return;}if(error instanceof ZodError){res.status(400).json({error:'Confirmation invalide.'});return;}next(error);}
+});
+
 // Vue admin en lecture seule : l'espace expérimental ne reflète pas le journal mobile actuel.
 app.use('/api/identified-tour', identifiedAdminReadRoutes(pool));
 // Endpoint réservé aux essais administrateur : désactivé par défaut, hors soldes et hors synchronisation mobile.
-app.use('/api/experimental/journal', experimentalJournalRoutes(pool, process.env.JOURNAL_EXPERIMENTAL === '1'));
+app.use('/api/experimental/journal',async(_req,res,next)=>{if(await readSyncMode(pool)!=='legacy'){res.status(409).json({error:'Journal expérimental désactivé après transition.'});return;}next();}, experimentalJournalRoutes(pool, process.env.JOURNAL_EXPERIMENTAL === '1'));
 const text = (max: number) => z.string().trim().max(max);
 const clientSchema = z.object({ name: text(200).min(1), sector: text(100), address: text(300), taxId: text(100), phone: text(50), openingBalance: z.number().int().safe(), creditLimit: z.number().int().safe().min(0), active: z.boolean() }).strict();
 const articleSchema = z.object({ name: text(200).min(1), barcode: text(100), purchaseTtc: z.number().int().safe().min(0), saleTtc: z.number().int().safe().min(0), vatRate: z.number().int().min(0).max(10000), unitsPerCarton: z.number().int().min(1).max(1000000), active: z.boolean() }).strict();
@@ -205,18 +218,22 @@ async function changeWithAudit(entity: 'clients' | 'articles', action: 'créatio
   finally { db.release(); }
 }
 app.get('/api/demo-balances', async (_req,res) => {
- const reference=await readJournalReference(pool,true);
+ const reference=await readSyncMode(pool)==='identified'?await readIdentifiedReference(pool,true):await readJournalReference(pool,true);
  res.json(reference.clients.map(c=>({id:c.id,name:c.name,openingBalance:c.openingBalance,creditLimit:c.creditLimit,balance:c.serverBalance})));
 });
 app.get('/api/demo-tour-journal/:date', async (req,res) => {
- const result=await readServerJournalDay(pool,req.params.date,'sync');
+ const mode=await readSyncMode(pool);
+ if(mode==='identified')await readIdentifiedReference(pool,true); // refuse les historiques ambigus avant agrégation
+ const result=await readServerJournalDay(pool,req.params.date,mode==='identified'?'combined':'sync');
  res.set('Cache-Control','no-store').json(result);
 });
 app.get('/api/demo-settlements', async (_req,res) => {
- const r=await pool.query(`SELECT operation_id AS "operationId",payload->'settlement' AS settlement,received_at AS "receivedAt" FROM demo_settlements ORDER BY received_at DESC LIMIT 1000`); res.json(r.rows);
+ const mode=await readSyncMode(pool);
+ const r=await pool.query(`SELECT operation_id AS "operationId",payload->'settlement' AS settlement,received_at AS "receivedAt" FROM (SELECT operation_id,payload,received_at FROM demo_settlements ${mode==='identified'?'UNION ALL SELECT operation_id,payload,received_at FROM identified_settlements':''}) payments ORDER BY received_at DESC LIMIT 1000`); res.json(r.rows);
 });
 app.get('/api/demo-sales', async (_req, res) => {
- const r = await pool.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM demo_sale_events ORDER BY sale_id,version DESC`);
+ const mode=await readSyncMode(pool);
+ const r = await pool.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM (SELECT sale_id,version,payload,received_at FROM demo_sale_events ${mode==='identified'?'UNION ALL SELECT sale_id,version,payload,received_at FROM identified_sale_events':''}) sales ORDER BY sale_id,version DESC`);
  res.json(r.rows);
 });
 app.get('/api/overview', async (_req, res) => {

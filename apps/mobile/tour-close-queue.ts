@@ -2,36 +2,45 @@
  * Toutes les fonctions doivent être appelées dans une transaction exclusive SQLite. */
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
-type Attempt={commercialId:string;day:string;requestId:string;expectedVersion:number;status:'closing'|'closed';closedVersion:number|null};
+export type Attempt={commercialId:string;day:string;requestId:string;expectedVersion:number;status:'closing'|'closed';closedVersion:number|null};
 export const tourCloseQueueSchema=`CREATE TABLE IF NOT EXISTS tour_close_attempts (
  commercial_id TEXT NOT NULL, journal_date TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
  expected_version INTEGER NOT NULL CHECK(expected_version>=0), status TEXT NOT NULL CHECK(status IN ('closing','closed')),
  closed_version INTEGER, PRIMARY KEY(commercial_id,journal_date),
  CHECK((status='closing' AND closed_version IS NULL) OR (status='closed' AND closed_version=expected_version+1))
+);
+CREATE TABLE IF NOT EXISTS tour_known_server_states (
+ commercial_id TEXT NOT NULL, journal_date TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('open','closed')),
+ version INTEGER NOT NULL CHECK(version>=0), PRIMARY KEY(commercial_id,journal_date)
 );`;
 const isUuid=(x:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
 function valid(commercialId:string,day:string) {
  const parsed=new Date(`${day}T00:00:00.000Z`);
  if(!isUuid(commercialId)||!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==day)throw Error('Commercial ou date invalide.');
 }
-async function find(tx:Tx,commercialId:string,day:string):Promise<Attempt|null> {
+export async function findTourCloseAttempt(tx:Tx,commercialId:string,day:string):Promise<Attempt|null> {
+ valid(commercialId,day);
  return tx.getFirstAsync<Attempt>(`SELECT commercial_id AS commercialId,journal_date AS day,request_id AS requestId,
  expected_version AS expectedVersion,status,closed_version AS closedVersion FROM tour_close_attempts WHERE commercial_id=? AND journal_date=?`,commercialId,day);
 }
 /** Verrou de précaution local, pas un substitut au contrôle serveur. */
 export async function assertLocalTourWritable(tx:Tx,commercialId:string,day:string) {
- valid(commercialId,day);const attempt=await find(tx,commercialId,day);
+ valid(commercialId,day);const attempt=await findTourCloseAttempt(tx,commercialId,day);
  if(attempt) throw Error(attempt.status==='closing'?'Clôture en attente de réponse du serveur.':'Journée clôturée : réouverture administrateur nécessaire.');
+ const known=await tx.getFirstAsync<{status:string}>('SELECT status FROM tour_known_server_states WHERE commercial_id=? AND journal_date=?',commercialId,day);
+ if(known?.status==='closed')throw Error('Journée clôturée : réouverture administrateur nécessaire.');
 }
 /** Ne jamais clôturer pendant une file locale incomplète ou une donnée historique sans preuve de synchronisation. */
 export async function prepareTourClose(tx:Tx,commercialId:string,day:string,expectedVersion:number,uuid:()=>string):Promise<Attempt> {
  valid(commercialId,day);
  if(!Number.isSafeInteger(expectedVersion)||expectedVersion<0||expectedVersion>=2147483647) throw Error('Version de clôture invalide.');
- const previous=await find(tx,commercialId,day);
+ const previous=await findTourCloseAttempt(tx,commercialId,day);
  if(previous) {
   if(previous.status==='closing' && previous.expectedVersion===expectedVersion)return previous;
   throw Error('Une clôture existe déjà pour cette journée.');
  }
+ const known=await tx.getFirstAsync<{status:string;version:number}>('SELECT status,version FROM tour_known_server_states WHERE commercial_id=? AND journal_date=?',commercialId,day);
+ if(known && (known.status!=='open'||known.version!==expectedVersion))throw Error('État de clôture périmé ou déjà clôturé : actualisez la journée.');
  // Conservateur sur toutes les journées : on ne sait pas encore attribuer les anciennes files.
  const pending=await tx.getFirstAsync<{pending:number}>(`SELECT
   EXISTS(SELECT 1 FROM sales_outbox) OR EXISTS(SELECT 1 FROM journal_sync_outbox)
@@ -45,7 +54,7 @@ export async function prepareTourClose(tx:Tx,commercialId:string,day:string,expe
 }
 /** Vérifie tous les champs avant de conserver l'accusé ; une réponse douteuse ne libère pas les écritures. */
 export async function acknowledgeTourClose(tx:Tx,commercialId:string,day:string,response:unknown):Promise<void> {
- valid(commercialId,day);const attempt=await find(tx,commercialId,day);
+ valid(commercialId,day);const attempt=await findTourCloseAttempt(tx,commercialId,day);
  if(!attempt || attempt.status!=='closing')throw Error('Aucune clôture en attente.');
  if(typeof response!=='object'||response===null||Array.isArray(response))throw Error('Accusé de clôture invalide.');
  const r=response as Record<string,unknown>;
@@ -54,7 +63,7 @@ export async function acknowledgeTourClose(tx:Tx,commercialId:string,day:string,
 }
 /** Appeler uniquement après lecture authentifiée de l'état serveur ; jamais sur une simple erreur réseau. */
 export async function applyReopenedServerState(tx:Tx,commercialId:string,day:string,state:unknown):Promise<boolean> {
- valid(commercialId,day);const attempt=await find(tx,commercialId,day);
+ valid(commercialId,day);const attempt=await findTourCloseAttempt(tx,commercialId,day);
  if(!attempt || attempt.status!=='closed')return false;
  if(typeof state!=='object'||state===null||Array.isArray(state))throw Error('État serveur invalide.');
  const s=state as Record<string,unknown>;
@@ -75,4 +84,21 @@ export async function sendPreparedTourClose(attempt:Attempt,
   throw Error(typeof data?.error==='string'&&data.error?data.error.slice(0,300):`Erreur clôture (${response.status}).`);
  }
  await acknowledge(body);
+}
+
+/** Conserver un état serveur authentifié et refuser toute régression ou changement sans nouvelle version.
+ * N'autorise jamais une tentative dont l'accusé reste incertain à être effacée. */
+export async function observeVerifiedTourState(tx:Tx,commercialId:string,day:string,state:unknown):Promise<void> {
+ valid(commercialId,day);
+ if(typeof state!=='object'||state===null||Array.isArray(state))throw Error('État serveur invalide.');
+ const s=state as Record<string,unknown>;
+ if(s.commercialId!==commercialId||s.day!==day||(s.status!=='open'&&s.status!=='closed')||!Number.isSafeInteger(s.version)||(s.version as number)<0||(s.version as number)>2147483647)throw Error('État serveur invalide.');
+ const known=await tx.getFirstAsync<{status:string;version:number}>('SELECT status,version FROM tour_known_server_states WHERE commercial_id=? AND journal_date=?',commercialId,day);
+ if(known && ((s.version as number)<known.version || (s.version===known.version && s.status!==known.status)))throw Error('État serveur périmé ou incohérent.');
+ await tx.runAsync(`INSERT INTO tour_known_server_states(commercial_id,journal_date,status,version) VALUES(?,?,?,?)
+ ON CONFLICT(commercial_id,journal_date) DO UPDATE SET status=excluded.status,version=excluded.version`,commercialId,day,s.status,s.version as number);
+ if(s.status==='open') {
+  const attempt=await findTourCloseAttempt(tx,commercialId,day);
+  if(attempt?.status==='closed' && (s.version as number)>attempt.closedVersion!)await applyReopenedServerState(tx,commercialId,day,state);
+ }
 }
