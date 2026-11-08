@@ -14,6 +14,7 @@
     "api": "npm run dev --workspace @sls/api",
     "admin": "npm run dev --workspace @sls/admin",
     "migrate": "npm run migrate --workspace @sls/api",
+    "reset:test-operations": "tsx apps/api/src/reset-test-operations-cli.ts",
     "test:journal-db": "tsx --test apps/api/test/*postgres.test.ts"
   },
   "devDependencies": {

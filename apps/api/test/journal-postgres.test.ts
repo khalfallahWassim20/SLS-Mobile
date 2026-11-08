@@ -16,6 +16,7 @@ import {IdentifiedOverlap} from '../src/identified-overlap.js';
 import {readIdentifiedReference} from '../src/identified-reference.js';
 import {readServerJournalDay} from '../src/journal-day.js';
 import {activateIdentifiedTours} from '../src/tour-activation.js';
+import {resetTestOperations} from '../src/reset-test-operations.js';
 
 dotenv.config({path:'apps/api/.env'});
 test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma temporaire', async () => {
@@ -149,6 +150,12 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
    const continuations=await Promise.allSettled(nextSales.map(s=>storeIdentifiedSale(isolated!,s,guarded)));
    assert.equal(continuations.filter(x=>x.status==='fulfilled').length,1);
    const failed=continuations.find(x=>x.status==='rejected');assert.ok(failed&&failed.status==='rejected'&&failed.reason instanceof JournalConflict);
+   await resetTestOperations(isolated);
+   for(const table of ['tour_closures','identified_journal_events','sync_journal_events','demo_sale_events','identified_sale_events','identified_settlements']) assert.equal((await isolated.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n,0);
+   const customer=await isolated.query('SELECT opening_balance::text AS balance FROM clients WHERE id=$1',[clientId]);assert.equal(customer.rows[0].balance,'1000000');
+   assert.equal((await isolated.query('SELECT count(*)::int AS n FROM commercial_credentials WHERE commercial_id=$1',[commercialId])).rows[0].n,1);
+   assert.equal((await isolated.query('SELECT mode FROM tour_sync_mode')).rows[0].mode,'identified');
+
 
 
   } finally {writer.release();switcher.release();}

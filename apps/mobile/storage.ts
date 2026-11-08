@@ -8,6 +8,7 @@ import type {IdentifiedEntry} from './identified-upload';
 import {identifiedDeviceSchema,getDeviceIdentity,bindVerifiedDevice,saveVerifiedIdentifiedReference,assertDeviceWritable,recordDeviceOperation,assertKnownDeviceEntity,type DeviceIdentity} from './identified-device';
 import {validateIdentifiedReference} from './identified-reference';
 import {tunisDay} from './journal';
+import {resetLocalTestOperations} from './reset-test-operations';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -33,7 +34,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -270,4 +271,9 @@ export async function prepareLocalClose(identity:DeviceIdentity,day:string,versi
 }
 export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
+}
+
+/** Effacement explicite des données fictives de ce téléphone seulement. */
+export async function clearLocalTestOperations():Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await resetLocalTestOperations(tx);});
 }
