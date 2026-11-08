@@ -8,6 +8,8 @@ import { schemaSql } from '../src/schema.js';
 import { storeJournalSnapshot, JournalConflict } from '../src/journal-store.js';
 import { readJournalReference } from '../src/journal-reference.js';
 import {changeTourClosure, ClosureConflict, readTourClosure} from '../src/tour-closure-store.js';
+import {setCommercialCredentials} from '../src/commercials.js';
+import {loginCommercial} from '../src/commercial-session.js';
 
 dotenv.config({path:'apps/api/.env'});
 test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma temporaire', async () => {
@@ -54,6 +56,24 @@ test('PostgreSQL : doublons et versions concurrentes, isolés dans un schéma te
   assert.ok(closureFailure && closureFailure.status==='rejected' && closureFailure.reason instanceof ClosureConflict);
   assert.equal((await readTourClosure(isolated,commercialId,'2026-11-07')).version,1);
   assert.equal((await isolated.query('SELECT count(*)::int AS count FROM tour_closure_events')).rows[0].count,1);
+  // Une écriture et une clôture simultanées se sérialisent sur le même verrou de journée.
+  const secret='secret fictif pour le test de concurrence';
+  await setCommercialCredentials(isolated,'admin',commercialId,{login:'test.concurrent',password:'mot de passe fictif'});
+  const session=await loginCommercial(isolated,secret,{login:'test.concurrent',password:'mot de passe fictif'});
+  assert.ok(session);
+  const signed={secret,token:session.token},raceDay='2026-11-09';
+  const concurrentInvoice={operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:raceDay},receipts:[]};
+  const [write,close]=await Promise.allSettled([
+   storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),
+   changeTourClosure(isolated,commercialId,raceDay,'close',actor,0)
+  ]);
+  assert.equal(close.status,'fulfilled');
+  if(write.status==='rejected') assert.ok(write.reason instanceof JournalConflict);
+  const eventCount=(await isolated.query('SELECT count(*)::int AS count FROM identified_journal_events')).rows[0].count;
+  assert.equal(eventCount,write.status==='fulfilled'?1:0);
+  if(write.status==='fulfilled') assert.equal(await storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),'duplicate');
+  else await assert.rejects(storeJournalSnapshot(isolated,concurrentInvoice,'identified',signed),/clôturé/);
+
 
  } finally {
   if (isolated) await isolated.end();

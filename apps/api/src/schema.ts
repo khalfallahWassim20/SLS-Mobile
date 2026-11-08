@@ -83,4 +83,20 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       version integer NOT NULL CHECK (version > 0), payload jsonb NOT NULL, payload_hash text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(invoice_id,version)
     );
-    CREATE INDEX IF NOT EXISTS sync_journal_events_latest_idx ON sync_journal_events(invoice_id,version DESC);`;
+    CREATE INDEX IF NOT EXISTS sync_journal_events_latest_idx ON sync_journal_events(invoice_id,version DESC);
+    -- Espace isolé pour la future synchronisation authentifiée ; non compris dans les soldes.
+    CREATE TABLE IF NOT EXISTS identified_journal_invoices (
+      id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id), journal_date date NOT NULL,
+      commercial_id uuid NOT NULL REFERENCES commercials(id), created_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(client_id,journal_date)
+    );
+    CREATE TABLE IF NOT EXISTS identified_journal_receipt_ids (
+      id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES identified_journal_invoices(id)
+    );
+    CREATE TABLE IF NOT EXISTS identified_journal_events (
+      operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL REFERENCES identified_journal_invoices(id),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), version integer NOT NULL CHECK(version>0),
+      payload jsonb NOT NULL, payload_hash text NOT NULL, received_at timestamptz NOT NULL DEFAULT now(),
+      UNIQUE(invoice_id,version)
+    );
+    CREATE INDEX IF NOT EXISTS identified_journal_events_latest_idx ON identified_journal_events(invoice_id,version DESC);`;

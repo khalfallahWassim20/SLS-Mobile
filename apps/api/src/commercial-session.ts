@@ -1,7 +1,7 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import {z} from 'zod';
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 
 // Le hash fictif assure un travail bcrypt même si l'identifiant est inconnu.
 const DUMMY_HASH='$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxjFBCyh/4O8XQ4O.S5j1HkQwkG';
@@ -26,7 +26,7 @@ export async function loginCommercial(pool:Pool,secret:string,input:unknown) {
 }
 
 /** Vérifie la signature puis l'état actuel ; changement de mot de passe ou statut révoque la session. */
-export async function verifyCommercialSession(pool:Pool,secret:string,token:string) {
+export async function verifyCommercialSession(pool:Pool|PoolClient,secret:string,token:string,lock=false) {
  let claims:jwt.JwtPayload;
  try {
   const decoded=jwt.verify(token,secret,{algorithms:['HS256'],audience});
@@ -34,6 +34,6 @@ export async function verifyCommercialSession(pool:Pool,secret:string,token:stri
   claims=decoded;
  } catch {return null;}
  const result=await pool.query(`SELECT c.id,c.name FROM commercials c JOIN commercial_credentials cc ON cc.commercial_id=c.id
-  WHERE c.id=$1 AND c.active AND c.deleted_at IS NULL AND cc.session_version=$2::bigint`,[claims.sub,claims.version]);
+  WHERE c.id=$1 AND c.active AND c.deleted_at IS NULL AND cc.session_version=$2::bigint${lock ? ' FOR SHARE OF c,cc' : ''}`,[claims.sub,claims.version]);
  return result.rows[0] ?? null;
 }
