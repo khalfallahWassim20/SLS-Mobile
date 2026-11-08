@@ -1,4 +1,4 @@
-/** Réservé aux tests : aucun montage HTTP, aucune migration active. Ne modifie
+/** Réservé aux tests : aucun montage HTTP. La migration crée des tables vides. Ne modifie
  * ni les soldes, ni les opérations de journal utilisées par l'application. */
 import type {Pool} from 'pg';
 import {z} from 'zod';
@@ -10,11 +10,11 @@ import {lockTourClosure} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {parseJournalSnapshot,validateJournalTransition,type JournalSnapshot} from './journal-protocol.js';
 
-export const preInvoiceCreditPrototypeSchema=`CREATE TABLE pre_invoice_credit_prototype_events (
+export const preInvoiceCreditPrototypeSchema=`CREATE TABLE IF NOT EXISTS pre_invoice_credit_prototype_events (
  operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE, event jsonb NOT NULL,
  received_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE pre_invoice_credit_prototype_movements (
+CREATE TABLE IF NOT EXISTS pre_invoice_credit_prototype_movements (
  operation_id uuid NOT NULL REFERENCES pre_invoice_credit_prototype_events(operation_id),
  kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')),
  balance_delta bigint NOT NULL, PRIMARY KEY(operation_id,kind)

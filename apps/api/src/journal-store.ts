@@ -5,6 +5,7 @@ import {lockTourClosure} from './tour-closure-store.js';
 import {verifyCommercialSession} from './commercial-session.js';
 import {lockSyncMode,assertLegacyMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
+import {assertCreditOperationAvailable,assertInvoiceNotCredited} from './credit-note-active-guards.js';
 import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition,type JournalSnapshot } from './journal-protocol.js';
 
 export class JournalConflict extends Error {}
@@ -31,6 +32,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       if(!actor) throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
       commercialId=actor.id;
       await lockIdentifiedOperation(db,event.operationId);
+      await assertCreditOperationAvailable(db,event.operationId);
       await assertOperationUnambiguous(db,event.operationId,'journal');
       // Même verrou que la clôture, conservé jusqu'au commit de l'écriture.
       closure=await lockTourClosure(db,commercialId!,event.invoice.journalDate);
@@ -50,6 +52,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       if(closure!.status==='closed') throw new TourDayClosed(closure!.day,closure!.commercialId);
       assertTourWritable(closure!);
     }
+    if(namespace==='identified')await assertInvoiceNotCredited(db,'preinvoice',event.invoice.id);
     // Crochet réservé à l'essai isolé. Jamais activé par les routes actuelles.
     if(testGuard)await testGuard(db,event);
     let legacyInvoiceExists=false;

@@ -8,6 +8,7 @@ import {lockTourClosure} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
+import {assertCreditOperationAvailable,assertInvoiceNotCredited} from './credit-note-active-guards.js';
 
 const uuid=z.string().uuid(), money=z.number().int().safe().nonnegative();
 const saleSchema=z.object({createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().min(1).max(200),syncSaleId:uuid,syncVersion:z.number().int().min(1).max(1000000),
@@ -44,6 +45,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   const actor=await verifyCommercialSession(db,session.secret,session.token,true);
   if(!actor) throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
   await lockIdentifiedOperation(db,event.operationId);
+  await assertCreditOperationAvailable(db,event.operationId);
   await assertOperationUnambiguous(db,event.operationId,'sale');
   // La vente est verrouillée avant la lecture de son propriétaire initial.
   // Un verrou sur l'opération et un sur la vente assurent l'idempotence et l'ordre des versions.
@@ -54,6 +56,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    await db.query('COMMIT');return 'duplicate';
   }
+  await assertInvoiceNotCredited(db,'sale',event.saleId);
   // Crochet uniquement pour les tests du registre d’avoir non exposé.
   if(testGuard)await testGuard(db,event);
   const legacy=await db.query('SELECT version,payload,client_id FROM demo_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1',[event.saleId]);
@@ -88,6 +91,7 @@ export async function storeIdentifiedSettlement(pool:Pool,input:unknown,session:
   const actor=await verifyCommercialSession(db,session.secret,session.token,true);
   if(!actor) throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
   await lockIdentifiedOperation(db,event.operationId);
+  await assertCreditOperationAvailable(db,event.operationId);
   await assertOperationUnambiguous(db,event.operationId,'settlement');
   const closure=await lockTourClosure(db,actor.id,day);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['identified-settlement',event.operationId]);

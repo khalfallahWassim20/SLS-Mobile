@@ -46,8 +46,8 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   await assert.rejects(readPrototypeCreditReference(pool),/Mouvements/);
   await db.query("UPDATE pre_invoice_credit_prototype_movements SET balance_delta=-600000 WHERE operation_id=$1 AND kind='invoice_cancellation'",[preCommand.operationId]);
   const r3={...r2,id:randomUUID(),createdAt:'2026-11-08T13:00:00.000Z',prePaid:10000,oldDebtPaid:0};
-  // Les routes actives ne connaissent pas le prototype ; cela doit échouer en lecture.
-  await storeJournalSnapshot(pool,{operationId:randomUUID(),version:4,invoice,receipts:[r1,r2,r3]},'identified',auth);
+  // Simule une corruption directe en base, sans passer par le chemin protégé.
+  await db.query('INSERT INTO identified_journal_events(operation_id,invoice_id,commercial_id,version,payload,payload_hash) VALUES($1,$2,$3,4,$4::jsonb,$5)',[randomUUID(),invoiceId,c.id,JSON.stringify({operationId:randomUUID(),version:4,invoice,receipts:[r1,r2,r3]}),'corruption']);
   await assert.rejects(readPrototypeCreditReference(pool),/modifiée après avoir/);
  }finally{await db.close();}
 });

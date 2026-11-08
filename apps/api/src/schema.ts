@@ -128,4 +128,24 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       operation_id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id),
       commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
       payload jsonb NOT NULL, payload_hash text NOT NULL, received_at timestamptz NOT NULL DEFAULT now()
+    );
+    -- Réservées aux tests : routes et soldes d'avoir non activés.
+    CREATE TABLE IF NOT EXISTS credit_note_prototype_operation_ids (operation_id uuid PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS credit_note_prototype_events (
+      operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE, event jsonb NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS credit_note_prototype_movements (
+      operation_id uuid NOT NULL REFERENCES credit_note_prototype_events(operation_id),
+      kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')), balance_delta bigint NOT NULL,
+      PRIMARY KEY(operation_id,kind)
+    );
+    CREATE TABLE IF NOT EXISTS pre_invoice_credit_prototype_events (
+      operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE, event jsonb NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS pre_invoice_credit_prototype_movements (
+      operation_id uuid NOT NULL REFERENCES pre_invoice_credit_prototype_events(operation_id),
+      kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')), balance_delta bigint NOT NULL,
+      PRIMARY KEY(operation_id,kind)
     );`;

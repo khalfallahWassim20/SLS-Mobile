@@ -10,7 +10,6 @@ import {saveCommercial,setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale} from '../src/identified-operations.js';
 import {lockIdentifiedOperation} from '../src/identified-overlap.js';
-import {storePrototypeGuardedSale} from '../src/credit-note-sale-guard-prototype.js';
 
 dotenv.config({path:'apps/api/.env'});
 async function waitForTwoBlocked(pool:pg.Pool,pid:number) {
@@ -77,14 +76,14 @@ test('PostgreSQL : deux demandes et deux reprises simultanées dans le registre 
    await blocker.query('BEGIN');await blocker.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",['identified-sale',cancelled.invoiceId]);
    const pendingNote=storePrototypeCreditNote(pool,cancelled,principal).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
    await waitForBlocked(pool,blocker.processID);
-   const pendingEdit=storePrototypeGuardedSale(pool,change.next,auth).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
+   const pendingEdit=storeIdentifiedSale(pool,change.next,{...auth,enforceMode:true}).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
    await blocker.query('COMMIT');
    assert.equal((await pendingNote).value?.status,'received');assert.match(String((await pendingEdit).error),/annulée/);
-   assert.equal(await storePrototypeGuardedSale(pool,change.first,auth),'duplicate');
+   assert.equal(await storeIdentifiedSale(pool,change.first,{...auth,enforceMode:true}),'duplicate');
    // Modification d'abord : l'avoir avec l'ancienne version doit être refusé.
    const modified=await makeSale(),change2=await modification(modified);
    await blocker.query('BEGIN');await blocker.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",['identified-sale',modified.invoiceId]);
-   const pendingEdit2=storePrototypeGuardedSale(pool,change2.next,auth).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
+   const pendingEdit2=storeIdentifiedSale(pool,change2.next,{...auth,enforceMode:true}).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
    await waitForBlocked(pool,blocker.processID);
    const pendingNote2=storePrototypeCreditNote(pool,modified,principal).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
    await blocker.query('COMMIT');

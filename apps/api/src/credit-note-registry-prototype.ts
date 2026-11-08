@@ -1,6 +1,6 @@
 /** EXPÉRIMENTAL : ce registre ne modifie pas les soldes ni la facture.
- * Aucune route ne doit l'appeler. Son schéma n'est PAS dans la migration de
- * l'application : il est réservé aux bases de test isolées. Avant activation,
+ * Aucune route ne doit l'appeler. Ses tables sont créées vides par la migration ; seule une base de test
+ * isolée peut utiliser les fonctions de ce module. Avant activation,
  * intégrer ce registre aux projections et à TOUS les chemins d'écriture. */
 import type {Pool} from 'pg';
 import {z} from 'zod';
@@ -11,12 +11,12 @@ import {lockIdentifiedOperation} from './identified-overlap.js';
 import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
 import {lockCreditNoteSale} from './credit-note-sale-lock.js';
 
-export const creditNotePrototypeSchema=`CREATE TABLE credit_note_prototype_operation_ids (operation_id uuid PRIMARY KEY);
-CREATE TABLE credit_note_prototype_events (
+export const creditNotePrototypeSchema=`CREATE TABLE IF NOT EXISTS credit_note_prototype_operation_ids (operation_id uuid PRIMARY KEY);
+CREATE TABLE IF NOT EXISTS credit_note_prototype_events (
  operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE,
  event jsonb NOT NULL, received_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE credit_note_prototype_movements (
+CREATE TABLE IF NOT EXISTS credit_note_prototype_movements (
  operation_id uuid NOT NULL REFERENCES credit_note_prototype_events(operation_id),
  kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')),
  balance_delta bigint NOT NULL,

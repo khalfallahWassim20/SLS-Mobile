@@ -10,6 +10,11 @@ export async function resetTestOperations(pool:Pool):Promise<void> {
   await db.query("SET LOCAL lock_timeout = '5s'");
   // Verrou exclusif aussi utilisé par la bascule ; ne remplace pas l'arrêt de l'API.
   await db.query('SELECT mode FROM tour_sync_mode WHERE id=1 FOR UPDATE');
+  const creditNames=['credit_note_prototype_movements','credit_note_prototype_events','pre_invoice_credit_prototype_movements','pre_invoice_credit_prototype_events','credit_note_prototype_operation_ids'];
+  const creditTables=await db.query('SELECT to_regclass(name) IS NOT NULL AS present FROM unnest($1::text[]) AS name',[creditNames]);
+  const present=creditTables.rows.map(r=>r.present);
+  if(present.length!==creditNames.length||present.some(v=>typeof v!=='boolean')||(present.some(Boolean)&&!present.every(Boolean)))throw Error('Migration des avoirs incomplète : nettoyage refusé.');
+  if(present.every(Boolean))for(const table of creditNames)await db.query(`DELETE FROM ${table}`);
   for(const table of [
    'tour_closure_requests','tour_closure_events','tour_closures',
    'identified_journal_events','identified_journal_receipt_ids','identified_journal_invoices',
