@@ -1,11 +1,11 @@
 /** Stockage transactionnel isolé, réservé aux tests administrateur expérimentaux. */
-import type { Pool } from 'pg';
+import type { Pool,PoolClient } from 'pg';
 import {assertTourWritable} from '@sls/domain';
 import {lockTourClosure} from './tour-closure-store.js';
 import {verifyCommercialSession} from './commercial-session.js';
 import {lockSyncMode,assertLegacyMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
-import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition } from './journal-protocol.js';
+import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition,type JournalSnapshot } from './journal-protocol.js';
 
 export class JournalConflict extends Error {}
 /** Uniquement après lecture verrouillée d’une journée effectivement clôturée. */
@@ -13,7 +13,8 @@ export class TourDayClosed extends JournalConflict {
  constructor(readonly day:string,readonly commercialId:string) { super('Journal clôturé : seule une réouverture par l’administrateur permet une correction.'); }
 }
 export class JournalAuthenticationError extends Error {}
-export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string;enforceMode?:boolean}): Promise<'received' | 'duplicate'> {
+export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string;enforceMode?:boolean}, testGuard?: (db:PoolClient,event:JournalSnapshot)=>Promise<void>): Promise<'received' | 'duplicate'> {
+  if(testGuard && namespace!=='identified')throw new RangeError('Garde expérimentale réservée au journal identifié.');
   const prefix = namespace === 'sync' ? 'sync_journal' : namespace === 'identified' ? 'identified_journal' : 'demo_journal';
   const event = parseJournalSnapshot(input);
   const hash = journalSnapshotHash(event);
@@ -49,6 +50,8 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       if(closure!.status==='closed') throw new TourDayClosed(closure!.day,closure!.commercialId);
       assertTourWritable(closure!);
     }
+    // Crochet réservé à l'essai isolé. Jamais activé par les routes actuelles.
+    if(testGuard)await testGuard(db,event);
     let legacyInvoiceExists=false;
     if(namespace==='identified') {
       const legacy=await db.query('SELECT id,client_id,journal_date::text AS journal_date FROM sync_journal_invoices WHERE id=$1 OR (client_id=$2 AND journal_date=$3::date)',[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);

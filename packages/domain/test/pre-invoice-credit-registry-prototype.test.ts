@@ -10,6 +10,7 @@ import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/com
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {storeJournalSnapshot} from '../../../apps/api/src/journal-store.js';
 import {changeTourClosure} from '../../../apps/api/src/tour-closure-store.js';
+import {storePrototypeGuardedJournal} from '../../../apps/api/src/pre-invoice-credit-journal-prototype.js';
 
 test('préétablie : registre isolé, paiement facture distinct de la dette ancienne',async()=>{
  const db=new PGlite();
@@ -41,6 +42,10 @@ test('préétablie : registre isolé, paiement facture distinct de la dette anci
   const first=await storePrototypePreInvoiceCredit(pool,cmd,principal);assert.equal(first.status,'received');assert.equal(first.event.refund,250000);assert.equal(first.event.oldDebtPaid,400000);assert.equal(first.event.balanceDelta,-350000);
   const moves=await db.query<{kind:string;delta:string}>('SELECT kind,balance_delta::text AS delta FROM pre_invoice_credit_prototype_movements ORDER BY kind');
   assert.deepEqual(moves.rows.map(r=>[r.kind,r.delta]),[['invoice_cancellation','-600000'],['refund','250000']]);
+  const pending={operationId:randomUUID(),version:4,invoice,receipts:[r1,r2,{...r2,id:randomUUID(),prePaid:10000,oldDebtPaid:0,createdAt:'2026-11-08T13:00:00.000Z'}]};
+  await assert.rejects(storePrototypeGuardedJournal(pool,pending,auth),/annulée/);
+  const receivedBefore={operationId:randomUUID(),version:1,invoice:{...invoice,id:randomUUID(),journalDate:'2026-11-09'},receipts:[]};
+  await assert.rejects(storePrototypeGuardedJournal(pool,{...receivedBefore,operationId:cmd.operationId},auth),/déjà utilisé/);
   await changeTourClosure(pool,c.id,day,'close',{id:c.id,role:'commercial'},0);
   const duplicate=await storePrototypePreInvoiceCredit(pool,cmd,principal);assert.equal(duplicate.status,'duplicate');assert.deepEqual(duplicate.event,first.event);
   await assert.rejects(storePrototypePreInvoiceCredit(pool,{...cmd,choice:'credit'},principal),/déjà utilisé/);

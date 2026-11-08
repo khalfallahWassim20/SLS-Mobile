@@ -12,6 +12,7 @@ import {loginCommercial} from '../src/commercial-session.js';
 import {storeJournalSnapshot} from '../src/journal-store.js';
 import {lockTourClosure} from '../src/tour-closure-store.js';
 import {lockIdentifiedOperation} from '../src/identified-overlap.js';
+import {storePrototypeGuardedJournal} from '../src/pre-invoice-credit-journal-prototype.js';
 
 dotenv.config({path:'apps/api/.env'});
 async function waitBlocked(pool:pg.Pool,pid:number) {
@@ -58,6 +59,32 @@ test('préétablie : demandes et reprises concurrentes sur PostgreSQL réel',asy
    const rows=await pool.query('SELECT count(*)::int AS n,COALESCE(sum(balance_delta),0)::text AS amount FROM pre_invoice_credit_prototype_movements');
    // Les deux factures n'avaient pas encore été déclarées dans le solde.
    assert.deepEqual(rows.rows[0],{n:2,amount:'0'});
+   async function paymentFor(command:{invoiceId:string}) {
+    const result=await pool!.query('SELECT payload FROM identified_journal_events WHERE invoice_id=$1 ORDER BY version DESC LIMIT 1',[command.invoiceId]);
+    const first=result.rows[0].payload,invoice=first.invoice;
+    const receipt={id:randomUUID(),preInvoiceId:invoice.id,clientId:invoice.clientId,journalDate:invoice.journalDate,createdAt:`${invoice.journalDate}T09:30:00.000Z`,prePaid:100000,oldDebtPaid:0,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:0};
+    return {first,next:{operationId:randomUUID(),version:2,invoice,receipts:[receipt]}};
+   }
+   // L'avoir passe d'abord : le paiement attend, puis reste refusé.
+   const cancelled=await makeInvoice('2026-11-10'),payment=await paymentFor(cancelled);
+   await blocker.query('BEGIN');await blocker.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",['journal-invoice',cancelled.invoiceId]);
+   const noteFirst=storePrototypePreInvoiceCredit(pool,cancelled,principal);
+   // Attacher un gestionnaire immédiatement pour éviter un rejet non observé.
+   const settledNote=noteFirst.then(value=>({value,error:null as unknown}),error=>({value:null,error}));
+   await waitBlocked(pool,blocker.processID);
+   const settledPayment=storePrototypeGuardedJournal(pool,payment.next,auth).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
+   await blocker.query('COMMIT');
+   assert.equal((await settledNote).value?.status,'received');assert.match(String((await settledPayment).error),/annulée/);
+   assert.equal(await storePrototypeGuardedJournal(pool,payment.first,auth),'duplicate');
+   // Le paiement passe d'abord : la demande d'avoir sur l'ancienne version échoue.
+   const paidFirst=await makeInvoice('2026-11-11'),payment2=await paymentFor(paidFirst);
+   await blocker.query('BEGIN');await blocker.query("SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))",['journal-invoice',paidFirst.invoiceId]);
+   const settledPayment2=storePrototypeGuardedJournal(pool,payment2.next,auth).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
+   await waitBlocked(pool,blocker.processID);
+   const settledNote2=storePrototypePreInvoiceCredit(pool,paidFirst,principal).then(value=>({value,error:null as unknown}),error=>({value:null,error}));
+   await blocker.query('COMMIT');
+   assert.equal((await settledPayment2).value,'received');assert.match(String((await settledNote2).error),/périmée/);
+   const saved=await pool.query('SELECT count(*)::int AS n FROM pre_invoice_credit_prototype_events WHERE invoice_id=$1',[paidFirst.invoiceId]);assert.equal(saved.rows[0].n,0);
   }finally{await blocker.query('ROLLBACK').catch(()=>{});blocker.release();}
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });
