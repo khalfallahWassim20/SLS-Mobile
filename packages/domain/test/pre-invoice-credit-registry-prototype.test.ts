@@ -1,0 +1,53 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {PGlite} from '@electric-sql/pglite';
+import type {Pool} from 'pg';
+import {schemaSql} from '../../../apps/api/src/schema.js';
+import {creditNotePrototypeSchema} from '../../../apps/api/src/credit-note-registry-prototype.js';
+import {preInvoiceCreditPrototypeSchema,storePrototypePreInvoiceCredit} from '../../../apps/api/src/pre-invoice-credit-registry-prototype.js';
+import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
+import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
+import {storeJournalSnapshot} from '../../../apps/api/src/journal-store.js';
+import {changeTourClosure} from '../../../apps/api/src/tour-closure-store.js';
+
+test('préétablie : registre isolé, paiement facture distinct de la dette ancienne',async()=>{
+ const db=new PGlite();
+ try {
+  await db.exec(schemaSql);await db.exec(creditNotePrototypeSchema);await db.exec(preInvoiceCreditPrototypeSchema);await db.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+  const conn={query:(sql:string,params?:unknown[])=>sql.startsWith('SELECT pg_advisory_xact_lock')?Promise.resolve({rows:[]}):db.query(sql,params),release:()=>{}};
+  const pool={connect:async()=>conn,query:(sql:string,params?:unknown[])=>db.query(sql,params)} as unknown as Pool;
+  const c=await saveCommercial(pool,'admin',{name:'Fictif',active:true}),secret='secret fictif assez long pour ce test';
+  await setCommercialCredentials(pool,'admin',c.id,{login:'credit.test',password:'mot de passe fictif'});
+  const session=await loginCommercial(pool,secret,{login:'credit.test',password:'mot de passe fictif'});assert.ok(session);
+  const clientId=randomUUID(),invoiceId=randomUUID(),day='2026-11-08',at='2026-11-08T09:00:00.000Z';
+  await db.query('INSERT INTO clients(id,name) VALUES($1,$2)',[clientId,'Client fictif']);
+  const invoice={id:invoiceId,clientId,clientName:'Client fictif',journalDate:day,createdAt:at,sector:'',amount:600000};
+  const auth={secret,token:session.token};
+  await storeJournalSnapshot(pool,{operationId:randomUUID(),version:1,invoice,receipts:[]},'identified',auth);
+  const r1={id:randomUUID(),preInvoiceId:invoiceId,clientId,journalDate:day,createdAt:'2026-11-08T10:00:00.000Z',prePaid:200000,oldDebtPaid:300000,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1000000};
+  const r2={...r1,id:randomUUID(),createdAt:'2026-11-08T11:00:00.000Z',prePaid:50000,oldDebtPaid:100000};
+  await storeJournalSnapshot(pool,{operationId:randomUUID(),version:2,invoice,receipts:[r1]},'identified',auth);
+  await storeJournalSnapshot(pool,{operationId:randomUUID(),version:3,invoice,receipts:[r1,r2]},'identified',auth);
+  const cmd={operationId:randomUUID(),invoiceId,expectedVersion:3,recordedAt:'2026-11-08T12:00:00.000Z',choice:'refund'},principal={kind:'commercial' as const,...auth};
+  await assert.rejects(storePrototypePreInvoiceCredit(pool,cmd,{...principal,token:'invalide'}),/Session/);
+  await assert.rejects(storePrototypePreInvoiceCredit(pool,{...cmd,expectedVersion:2},principal),/périmée/);
+  await assert.rejects(storePrototypePreInvoiceCredit(pool,{...cmd,recordedAt:'2026-11-08T10:30:00.000Z'},principal),/antérieure/);
+  await db.exec("ALTER TABLE pre_invoice_credit_prototype_movements ADD CONSTRAINT fail_refund CHECK(kind <> 'refund')");
+  await assert.rejects(storePrototypePreInvoiceCredit(pool,cmd,principal));
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM pre_invoice_credit_prototype_events')).rows[0].n,0);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM pre_invoice_credit_prototype_movements')).rows[0].n,0);
+  await db.exec('ALTER TABLE pre_invoice_credit_prototype_movements DROP CONSTRAINT fail_refund');
+  const first=await storePrototypePreInvoiceCredit(pool,cmd,principal);assert.equal(first.status,'received');assert.equal(first.event.refund,250000);assert.equal(first.event.oldDebtPaid,400000);assert.equal(first.event.balanceDelta,-350000);
+  const moves=await db.query<{kind:string;delta:string}>('SELECT kind,balance_delta::text AS delta FROM pre_invoice_credit_prototype_movements ORDER BY kind');
+  assert.deepEqual(moves.rows.map(r=>[r.kind,r.delta]),[['invoice_cancellation','-600000'],['refund','250000']]);
+  await changeTourClosure(pool,c.id,day,'close',{id:c.id,role:'commercial'},0);
+  const duplicate=await storePrototypePreInvoiceCredit(pool,cmd,principal);assert.equal(duplicate.status,'duplicate');assert.deepEqual(duplicate.event,first.event);
+  await assert.rejects(storePrototypePreInvoiceCredit(pool,{...cmd,choice:'credit'},principal),/déjà utilisé/);
+  await assert.rejects(storePrototypePreInvoiceCredit(pool,cmd,{kind:'admin',actorId:'admin'}),/déjà utilisé/);
+  await assert.rejects(storePrototypePreInvoiceCredit(pool,{...cmd,operationId:randomUUID()},principal),/clôturé/);
+  await changeTourClosure(pool,c.id,day,'reopen',{id:'admin',role:'admin'},1);
+  await assert.rejects(storePrototypePreInvoiceCredit(pool,{...cmd,operationId:randomUUID()},principal),/déjà annulée/);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_journal_events')).rows[0].n,3);
+ }finally{await db.close();}
+});
