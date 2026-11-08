@@ -5,6 +5,7 @@ import { getAllPreInvoices, getTourReceipts, saveTourReceipt, getJournalOutbox, 
 import { validateReference, preInvoiceAvailability, hasJournalDayConflict, formatMillimes, unitPriceExcludingVat, ReferenceData, RefClient } from './reference';
 import { tunisDay, buildJournal, journalTotal } from './journal';
 import { uploadJournalQueue } from './journal-upload';
+import { isIdentifiedDeviceBound } from './storage';
 import { testCommercialLogin } from './commercial-login';
 
 // Données de démonstration uniquement. Aucun prix ou client réel n'est enregistré.
@@ -164,6 +165,7 @@ export default function App() {
     if (syncRef.current) return;
     syncRef.current = true; setSyncBusy(true); setReferenceError('');
     try {
+      if(await isIdentifiedDeviceBound()) throw Error('Téléphone lié à un commercial : synchronisation individuelle non encore disponible.');
       const url = new URL(serverUrl.trim());
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash || url.hostname === 'localhost' || url.hostname === '127.0.0.1') throw Error('Saisissez l’adresse réseau de l’API, par exemple http://192.168.1.10:3001.');
       if (!syncToken.trim()) throw Error('Saisissez le jeton de démonstration mobile.');
@@ -183,6 +185,7 @@ export default function App() {
     syncRef.current = true; setSyncBusy(true); setReferenceError('');
     let current: OutboxEntry | undefined;
     try {
+      if(await isIdentifiedDeviceBound()) throw Error('Téléphone lié à un commercial : synchronisation individuelle non encore disponible.');
       const url = new URL(serverUrl.trim());
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash || url.hostname === 'localhost' || url.hostname === '127.0.0.1') throw Error('Saisissez l’adresse réseau de l’API, par exemple http://192.168.1.10:3001.');
       if (!syncToken.trim()) throw Error('Saisissez le jeton de démonstration mobile.');

@@ -19,7 +19,7 @@ export const journalQueueSchema = `
 
 type Snapshot = { operationId:string; version:number; invoice:TourPreInvoice; receipts:TourJournalReceipt[] };
 /** Exécuter à l'intérieur de la même transaction que l'écriture de la facture/du règlement. */
-export async function queueJournalSnapshot(tx: QueueTransaction, invoiceId: string, uuid: () => string): Promise<void> {
+export async function queueJournalSnapshot(tx: QueueTransaction, invoiceId: string, uuid: () => string): Promise<string> {
   const invoiceRow = await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE id=?',invoiceId);
   if (!invoiceRow) throw new Error('Facture introuvable pour la file du journal.');
   const invoice: TourPreInvoice = JSON.parse(invoiceRow.payload);
@@ -36,6 +36,7 @@ export async function queueJournalSnapshot(tx: QueueTransaction, invoiceId: stri
   const payload=JSON.stringify(snapshot);
   await tx.runAsync('INSERT INTO journal_sync_outbox(operation_id,invoice_id,version,payload) VALUES(?,?,?,?)',operationId,invoiceId,version,payload);
   await tx.runAsync('INSERT INTO journal_sync_state(invoice_id,version,payload) VALUES(?,?,?) ON CONFLICT(invoice_id) DO UPDATE SET version=excluded.version,payload=excluded.payload',invoiceId,version,payload);
+  return operationId;
 }
 /** Prépare une première version de chaque facture créée avant la file, sans effacer l'historique.
  * À exécuter en transaction ; relançable et sans doublon. */

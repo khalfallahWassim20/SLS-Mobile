@@ -54,3 +54,13 @@ test('projection v4 isolée : combine les soldes et refuse les doublons entre es
   await assert.rejects(readIdentifiedReference(pool),/Opération/);
  } finally {await db.close();}
 });
+
+test('référence mobile individuelle : valide la v4 et refuse une régression de cache',async()=>{
+ const {validateIdentifiedReference,assertNoReferenceDowngrade}=await import('../../../apps/mobile/identified-reference.js');
+ const value={version:4,clients:[{id:'client',name:'Fictif',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[],saleStates:[],settlementStates:[],journalStates:[{id:'facture',clientId:'client',journalDate:'2026-11-10',total:1000,receipts:[]}]};
+ assert.equal(validateIdentifiedReference(value).version,4);
+ assert.throws(()=>validateIdentifiedReference({...value,version:3}));
+ assert.throws(()=>validateIdentifiedReference({...value,journalStates:[{...value.journalStates[0],journalDate:undefined}]}),/Dates/);
+ assert.throws(()=>validateIdentifiedReference({...value,journalStates:[value.journalStates[0],{...value.journalStates[0],id:'autre'}]}),/dupliquée/);
+ assertNoReferenceDowngrade(3,4);assertNoReferenceDowngrade(4,4);assert.throws(()=>assertNoReferenceDowngrade(4,3),/ancienne/);
+});
