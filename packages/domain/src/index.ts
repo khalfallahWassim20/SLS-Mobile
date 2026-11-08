@@ -160,3 +160,6 @@ export function canonicalJson(value: unknown): string {
  }
  throw new TypeError('Valeur JSON invalide.');
 }
+
+export { calculateFullCancellation } from './credit-note.ts';
+export type { FullCancellationInput, FullCreditChoice } from './credit-note.ts';
