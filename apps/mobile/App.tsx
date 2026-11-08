@@ -12,7 +12,7 @@ import { uploadJournalQueue } from './journal-upload';
 import { isIdentifiedDeviceBound } from './storage';
 import { testCommercialLogin,openCommercialSession } from './commercial-login';
 import { clearLocalTestOperations,bindAndCacheIdentified,getBoundIdentity,getIdentifiedOutbox,acknowledgeIdentifiedEntry,observeIdentifiedTour,getLocalCloseAttempt,prepareLocalClose,acknowledgeLocalClose } from './storage';
-import { uploadIdentifiedOperations } from './identified-upload';
+import { uploadIdentifiedOperations, ClosedDaySyncError } from './identified-upload';
 import { sendPreparedTourClose } from './tour-close-queue';
 import { validateIdentifiedReference } from './identified-reference';
 
@@ -115,7 +115,13 @@ export default function App() {
       const count=await uploadIdentifiedOperations(entries,identity,identity,(path,payload)=>fetch(`${individual.serverOrigin}/api/mobile/identified/${path}`,{method:'POST',headers:{Authorization:`Bearer ${individual.token}`,'Content-Type':'application/json'},body:payload}),async(id)=>{const entry=byId.get(id);if(!entry)throw Error('Opération introuvable.');await acknowledgeIdentifiedEntry(identity,entry);});
       await refreshIndividual(individual);await updateIndividualDay(individual);await loadSales();await loadJournal(journalDate);
       Alert.alert('Synchronisation terminée',`${count} opération(s) envoyée(s).`);
-    }catch(error){Alert.alert('Synchronisation impossible',error instanceof Error?error.message:'Erreur de synchronisation.');await loadSales();await loadJournal(journalDate);}
+    }catch(error){
+      if(error instanceof ClosedDaySyncError) {
+        const owner=error.commercialId===individual.id ? `commercial ${individual.name}` : `autre commercial (identifiant ${error.commercialId})`;
+        Alert.alert('Journée clôturée', `L’opération refusée reste en attente sur ce téléphone. La journée du ${error.day} est clôturée pour ${owner}. Demandez à l’administrateur de vérifier et rouvrir cette journée, puis réessayez la synchronisation. Ne nettoyez pas ce téléphone. Les opérations déjà acceptées restent synchronisées.`);
+      } else Alert.alert('Synchronisation impossible',error instanceof Error?error.message:'Erreur de synchronisation.');
+      await loadSales();await loadJournal(journalDate);
+    }
     finally{syncRef.current=false;setSyncBusy(false);}
   };
   const closeIndividual=async()=>{

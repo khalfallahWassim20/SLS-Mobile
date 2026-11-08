@@ -8,6 +8,10 @@ import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} fr
 import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition } from './journal-protocol.js';
 
 export class JournalConflict extends Error {}
+/** Uniquement après lecture verrouillée d’une journée effectivement clôturée. */
+export class TourDayClosed extends JournalConflict {
+ constructor(readonly day:string,readonly commercialId:string) { super('Journal clôturé : seule une réouverture par l’administrateur permet une correction.'); }
+}
 export class JournalAuthenticationError extends Error {}
 export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string;enforceMode?:boolean}): Promise<'received' | 'duplicate'> {
   const prefix = namespace === 'sync' ? 'sync_journal' : namespace === 'identified' ? 'identified_journal' : 'demo_journal';
@@ -42,7 +46,8 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
     }
     if(legacyMode) assertLegacyMode(legacyMode);
     if(namespace==='identified') {
-      try {assertTourWritable(closure!);} catch(error) {throw new JournalConflict(error instanceof Error ? error.message : 'Journal clôturé.');}
+      if(closure!.status==='closed') throw new TourDayClosed(closure!.day,closure!.commercialId);
+      assertTourWritable(closure!);
     }
     let legacyInvoiceExists=false;
     if(namespace==='identified') {
