@@ -1,0 +1,55 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import express from 'express';
+import {PGlite} from '@electric-sql/pglite';
+import type {Pool} from 'pg';
+import {schemaSql} from '../../../apps/api/src/schema.js';
+import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
+import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
+import {identifiedCommercialRoutes,identifiedAdminRoutes} from '../../../apps/api/src/identified-tour-routes.js';
+
+test('administrateur v5 isolé : aperçu, solde vérifié, reprise et préétablie',async()=>{
+ const db=new PGlite();let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
+ try{
+  await db.exec(schemaSql);await db.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+  const conn={query:(sql:string,args?:unknown[])=>sql.startsWith('SELECT pg_advisory_xact_lock')?Promise.resolve({rows:[]}):db.query(sql,args),release:()=>{}};
+  const pool={connect:async()=>conn,query:conn.query} as unknown as Pool,secret='secret fictif assez long pour les tests';
+  const rep=await saveCommercial(pool,'admin',{name:'Fictif',active:true});await setCommercialCredentials(pool,'admin',rep.id,{login:'review.test',password:'mot de passe fictif'});
+  const session=await loginCommercial(pool,secret,{login:'review.test',password:'mot de passe fictif'});assert.ok(session);
+  const clientId=randomUUID();await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,1000000)',[clientId,'Client fictif']);
+  const app=express();app.use(express.json());const auth:express.RequestHandler=(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();};
+  app.use('/mobile',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));app.use('/admin',identifiedAdminRoutes(pool,auth,'admin',{allowCreditProtocol:true}));app.use('/old',identifiedAdminRoutes(pool,auth,'admin'));
+  server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server!.once('listening',r));const addr=server.address();assert.ok(addr&&typeof addr!=='string');const base=`http://127.0.0.1:${addr.port}`;
+  const admin={Authorization:'Bearer admin-test','Content-Type':'application/json','X-SLS-Reference-Version':'5'},mobile={...admin,Authorization:`Bearer ${session.token}`};
+  const get=(p:string,h=admin)=>fetch(base+p,{headers:h}),post=(p:string,v:unknown,h=admin)=>fetch(base+p,{method:'POST',headers:h,body:JSON.stringify(v)});
+  const now=new Date().toISOString(),saleId=randomUUID(),sale={createdAt:now,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
+  assert.equal((await post('/mobile/sales',{operationId:randomUUID(),saleId,version:1,recordedAt:now,sale,refund:0},mobile)).status,201);
+  const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:now,choice:'refund'},input={clientId,kind:'sale',command};
+  assert.equal((await get(`/admin/credit-notes/sources/${clientId}`,{...admin,Authorization:'Bearer invalide'})).status,401);
+  assert.equal((await get(`/old/credit-notes/sources/${clientId}`)).status,404);
+  assert.equal((await get(`/admin/credit-notes/sources/${clientId}`,{...admin,'X-SLS-Reference-Version':'4'})).status,409);
+  const sources=await (await get(`/admin/credit-notes/sources/${clientId}`)).json() as any;assert.equal(sources.items[0].invoiceId,saleId);assert.equal(sources.items[0].source.purchaseTtc,undefined);
+  const preview=await (await post('/admin/credit-notes/preview',input)).json() as any;assert.equal(preview.invoiceTotal,119000);assert.equal(preview.invoicePaid,50000);assert.equal(preview.balanceBefore,1069000);assert.equal(preview.balanceAfter,1000000);assert.equal(preview.refund,50000);
+  assert.equal((await post('/admin/credit-notes/reviewed/sales',{command,review:{...preview,balanceAfter:0}})).status,409);
+  await db.query('UPDATE clients SET opening_balance=opening_balance+1000 WHERE id=$1',[clientId]);
+  assert.equal((await post('/admin/credit-notes/reviewed/sales',{command,review:preview})).status,409);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int n FROM credit_note_prototype_events')).rows[0].n,0);
+  const reviewed=await (await post('/admin/credit-notes/preview',input)).json() as any;assert.equal(reviewed.balanceBefore,1070000);assert.equal(reviewed.balanceAfter,1001000);
+  assert.equal((await post('/admin/credit-notes/reviewed/sales',{command,review:reviewed})).status,201);
+  assert.equal((await post('/admin/credit-notes/reviewed/sales',{command,review:reviewed})).status,200);
+  assert.equal((await post('/admin/credit-notes/reviewed/sales',{command,review:{...reviewed,kind:'preinvoice'}})).status,409);
+  assert.equal((await post('/admin/credit-notes/reviewed/sales',{command,review:{...reviewed,command:{...command,operationId:randomUUID()}}})).status,409);
+  assert.equal((await post('/admin/credit-notes/preview',input)).status,409);
+  const day=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+  const invoice={id:randomUUID(),clientId,clientName:'Client fictif',journalDate:day,createdAt:now,sector:'',amount:600000};
+  assert.equal((await post('/mobile/journal',{operationId:randomUUID(),version:1,invoice,receipts:[]},mobile)).status,201);
+  const receipt={id:randomUUID(),preInvoiceId:invoice.id,clientId,journalDate:day,createdAt:now,prePaid:250000,oldDebtPaid:400000,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1001000};
+  assert.equal((await post('/mobile/journal',{operationId:randomUUID(),version:2,invoice,receipts:[receipt]},mobile)).status,201);
+  const preCommand={operationId:randomUUID(),invoiceId:invoice.id,expectedVersion:2,recordedAt:now,choice:'credit'},preInput={clientId,kind:'preinvoice',command:preCommand};
+  const pre=await (await post('/admin/credit-notes/preview',preInput)).json() as any;assert.equal(pre.invoicePaid,250000);assert.equal(pre.oldDebtPaid,400000);assert.equal(pre.balanceBefore,951000);assert.equal(pre.balanceAfter,351000);assert.equal(pre.retainedCredit,250000);
+  assert.equal((await post('/admin/credit-notes/reviewed/preinvoices',{command:preCommand,review:pre})).status,201);
+  assert.equal((await post('/admin/credit-notes/reviewed/preinvoices',{command:preCommand,review:pre})).status,200);
+  const bad={...preCommand,operationId:randomUUID()};assert.equal((await post('/admin/credit-notes/reviewed/preinvoices',{command:bad,review:pre})).status,409);
+ }finally{if(server)await new Promise<void>(r=>server!.close(()=>r()));await db.close();}
+});

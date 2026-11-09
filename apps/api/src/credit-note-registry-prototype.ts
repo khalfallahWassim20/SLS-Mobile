@@ -2,9 +2,9 @@
  * Aucune route ne doit l'appeler. Ses tables sont créées vides par la migration ; seule une base de test
  * isolée peut utiliser les fonctions de ce module. Avant activation,
  * intégrer ce registre aux projections et à TOUS les chemins d'écriture. */
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
-import {prepareFullCreditNote,type CreditNoteActor,type CreditNoteEvent} from '@sls/domain';
+import {prepareFullCreditNote,type CreditNoteActor,type CreditNoteEvent,type CreditNoteCommand} from '@sls/domain';
 import {verifyCommercialSession} from './commercial-session.js';
 import {JournalAuthenticationError,JournalConflict} from './journal-store.js';
 import {lockIdentifiedOperation} from './identified-overlap.js';
@@ -26,7 +26,7 @@ const inputSchema=z.object({operationId:z.string().uuid(),invoiceId:z.string().u
 type Principal={kind:'commercial';secret:string;token:string}|{kind:'admin';actorId:string};
 /** Le principal admin est supposé fourni par un middleware vérifié, jamais par
  * un corps HTTP. La vérification du commercial a lieu dans la transaction. */
-export async function storePrototypeCreditNote(pool:Pool,raw:unknown,principal:Principal) {
+export async function storePrototypeCreditNote(pool:Pool,raw:unknown,principal:Principal,reviewGuard?:(db:PoolClient,command:CreditNoteCommand,clientId:string)=>Promise<void>) {
  const command=inputSchema.parse(raw),db=await pool.connect();
  try {
   await db.query('BEGIN');
@@ -60,6 +60,7 @@ export async function storePrototypeCreditNote(pool:Pool,raw:unknown,principal:P
   // Ce contrôle est effectué après acquisition du verrou partagé avec les ventes.
   const prior=await db.query('SELECT 1 FROM credit_note_prototype_events WHERE invoice_id=$1',[command.invoiceId]);
   if(prior.rows.length)throw new JournalConflict('Facture déjà annulée.');
+  if(reviewGuard){if(actor.role!=='admin')throw new JournalAuthenticationError('Administrateur requis.');await reviewGuard(db,command,source.clientId);}
   const result=prepareFullCreditNote({actor,command,source:{invoiceId:source.invoiceId,version:source.version,total:source.total,netPaid:source.netPaid,cancelled:false},daysOpen:true,previous:null});
   await db.query('INSERT INTO credit_note_prototype_operation_ids(operation_id) VALUES($1)',[command.operationId]);
   await db.query('INSERT INTO credit_note_prototype_events(operation_id,invoice_id,event) VALUES($1,$2,$3::jsonb)',[command.operationId,command.invoiceId,JSON.stringify(result.event)]);

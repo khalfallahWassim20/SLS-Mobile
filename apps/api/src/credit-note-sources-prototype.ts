@@ -1,5 +1,5 @@
 /** Consultation v5 expérimentale. Ne pas activer dans le serveur courant. */
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
 import {createHash} from 'node:crypto';
 import {canonicalJson} from '@sls/domain';
@@ -11,14 +11,10 @@ const hash=(v:unknown)=>createHash('sha256').update(canonicalJson(v)).digest('he
 /** Le serveur transmet uniquement les dernières sources identifiées actives
  * reconnues par sa référence v5. Les données et les preuves proviennent d'un
  * même instantané. Les sources historiques non attribuées sont exclues. */
-export async function readPrototypeCreditSources(pool:Pool,clientId:string) {
+export async function readPrototypeCreditSourcesInTransaction(db:PoolClient,clientId:string,reference:Awaited<ReturnType<typeof readPrototypeCreditReferenceInTransaction>>) {
  z.string().uuid().parse(clientId);
- const db=await pool.connect();
- try {
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
-  const reference=await readPrototypeCreditReferenceInTransaction(db);
   const client=reference.clients.find(c=>c.id===clientId);
-  if(!client){await db.query('COMMIT');return null;}
+  if(!client)return null;
   const saleStates=new Map(reference.saleStates.filter(s=>s.clientId===clientId&&!s.cancelled).map(s=>[s.saleId,s]));
   const saleProofs=new Map(reference.eligibleSaleProofs.filter(p=>saleStates.has(p.saleId)).map(p=>[p.saleId,p]));
   const journalStates=new Map(reference.journalStates.filter(s=>s.clientId===clientId&&!s.creditNote&&reference.eligibleJournalIds.includes(s.id)).map(s=>[s.id,s]));
@@ -43,6 +39,10 @@ export async function readPrototypeCreditSources(pool:Pool,clientId:string) {
   // existe d'autres factures : le client doit demander une sélection plus fine.
   items.sort((a,b)=>a.invoiceId.localeCompare(b.invoiceId)||a.kind.localeCompare(b.kind));
   const truncated=items.length>200;
-  await db.query('COMMIT');return {version:5 as const,clientId,active:client.active,truncated,items:items.slice(0,200)};
- }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+  return {version:5 as const,clientId,active:client.active,truncated,items:items.slice(0,200)};
+}
+export async function readPrototypeCreditSources(pool:Pool,clientId:string) {
+ const db=await pool.connect();
+ try {await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));const reference=await readPrototypeCreditReferenceInTransaction(db);const result=await readPrototypeCreditSourcesInTransaction(db,clientId,reference);await db.query('COMMIT');return result;}
+ catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

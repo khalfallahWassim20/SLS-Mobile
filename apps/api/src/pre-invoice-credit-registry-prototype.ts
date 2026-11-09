@@ -1,8 +1,8 @@
 /** Réservé aux tests : aucun montage HTTP. La migration crée des tables vides. Ne modifie
  * ni les soldes, ni les opérations de journal utilisées par l'application. */
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
-import {calculatePreInvoiceCancellation,canonicalJson,type CreditNoteActor} from '@sls/domain';
+import {calculatePreInvoiceCancellation,canonicalJson,type CreditNoteActor,type CreditNoteCommand} from '@sls/domain';
 import {verifyCommercialSession} from './commercial-session.js';
 import {assertIdentifiedMode,lockSyncModeExclusive} from './tour-sync-mode.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
@@ -28,7 +28,7 @@ function tunisDay(iso:string) {
 /** L'identité admin vient impérativement d'un middleware authentifié. Les
  * règles de contrôle après annulation dans les autres flux ne sont pas encore
  * raccordées : ce prototype ne doit en aucun cas être exposé en production. */
-export async function storePrototypePreInvoiceCredit(pool:Pool,raw:unknown,principal:Principal) {
+export async function storePrototypePreInvoiceCredit(pool:Pool,raw:unknown,principal:Principal,reviewGuard?:(db:PoolClient,command:CreditNoteCommand,clientId:string)=>Promise<void>) {
  const command=inputSchema.parse(raw);
  if(new Date(command.recordedAt).toISOString()!==command.recordedAt)throw new RangeError('Date invalide.');
  const db=await pool.connect();
@@ -88,6 +88,7 @@ export async function storePrototypePreInvoiceCredit(pool:Pool,raw:unknown,princ
   if(snapshot.invoice.id!==command.invoiceId||snapshot.invoice.clientId!==meta.client_id||snapshot.invoice.journalDate!==meta.day)throw new JournalConflict('Facture incohérente.');
   const lastDate=Math.max(Date.parse(snapshot.invoice.createdAt),...snapshot.receipts.map(r=>Date.parse(r.createdAt)));
   if(!Number.isFinite(lastDate)||Date.parse(command.recordedAt)<lastDate)throw new JournalConflict('Date de l’avoir antérieure à la facture ou à un paiement.');
+  if(reviewGuard){if(actor.role!=='admin')throw new JournalAuthenticationError('Administrateur requis.');await reviewGuard(db,command,meta.client_id);}
   const calculated=calculatePreInvoiceCancellation({balance:0,invoiceTotal:snapshot.invoice.amount,receipts:snapshot.receipts,alreadyCancelled:false,choice:command.choice??undefined});
   const event={command,actor,source:snapshot,clientId:meta.client_id,ownerId:meta.commercial_id,...calculated};
   await db.query('INSERT INTO credit_note_prototype_operation_ids(operation_id) VALUES($1)',[command.operationId]);

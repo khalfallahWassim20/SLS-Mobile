@@ -1,13 +1,16 @@
 /** Routeurs pour tests isolés uniquement : ne pas monter dans server.ts.
  * Les registres expérimentaux n'alimentent pas les soldes de l'application. */
 import {Router,type RequestHandler,type NextFunction,type Response} from 'express';
-import {ZodError} from 'zod';
+import {ZodError,z} from 'zod';
 import type {Pool} from 'pg';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {IdentifiedOverlap} from './identified-overlap.js';
 import {IdentifiedSyncDisabled} from './tour-sync-mode.js';
 import {storePrototypeCreditNote} from './credit-note-registry-prototype.js';
 import {storePrototypePreInvoiceCredit} from './pre-invoice-credit-registry-prototype.js';
+import {adminCreditCommandSchema,adminCreditReviewSchema,previewAdminCredit,assertAdminCreditReview} from './credit-note-admin-review-prototype.js';
+import {readPrototypeCreditSources} from './credit-note-sources-prototype.js';
+import {canonicalJson} from '@sls/domain';
 
 type Principal={kind:'commercial';secret:string;token:string}|{kind:'admin';actorId:string};
 function fail(error:unknown,res:Response,next:NextFunction) {
@@ -32,5 +35,16 @@ export function prototypeCommercialCreditRoutes(pool:Pool,secret:string) {
 }
 /** Le middleware et le nom doivent provenir de la configuration serveur fiable. */
 export function prototypeAdminCreditRoutes(pool:Pool,authenticateAdmin:RequestHandler,adminName:string) {
- const r=Router();r.use(authenticateAdmin);r.use(routes(pool,()=>({kind:'admin',actorId:adminName})));return r;
+ const r=Router();r.use(authenticateAdmin);r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
+ r.get('/sources/:clientId',async(req,res,next)=>{try{const data=await readPrototypeCreditSources(pool,req.params.clientId);if(!data){res.status(404).json({error:'Client introuvable.'});return;}res.json(data);}catch(e){fail(e,res,next);}});
+ r.post('/preview',async(req,res,next)=>{try{res.json(await previewAdminCredit(pool,req.body));}catch(e){fail(e,res,next);}});
+ const reviewed=z.object({command:adminCreditCommandSchema,review:adminCreditReviewSchema}).strict();
+ for(const [path,kind] of [['sales','sale'],['preinvoices','preinvoice']] as const)r.post('/reviewed/'+path,async(req,res,next)=>{try{
+  const {command,review}=reviewed.parse(req.body),principal={kind:'admin' as const,actorId:adminName};
+  if(review.kind!==kind||canonicalJson(review.command)!==canonicalJson(command))throw new JournalConflict('Aperçu différent de la demande.');
+  const guard:Parameters<typeof storePrototypeCreditNote>[3]=(db,cmd,clientId)=>assertAdminCreditReview(db,cmd,clientId,kind,review);
+  const result=kind==='sale'?await storePrototypeCreditNote(pool,command,principal,guard):await storePrototypePreInvoiceCredit(pool,command,principal,guard);
+  res.status(result.status==='received'?201:200).json({status:result.status,operationId:command.operationId});
+ }catch(e){fail(e,res,next);}});
+ r.use(routes(pool,()=>({kind:'admin',actorId:adminName})));return r;
 }
