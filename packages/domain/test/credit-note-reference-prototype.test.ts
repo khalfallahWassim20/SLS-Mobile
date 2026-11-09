@@ -24,6 +24,8 @@ import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototyp
 import {prototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-prototype.js';
 import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
+import {describeCreditReview} from '../../../apps/mobile/credit-note-review-display.js';
+import {previewLocalCredit,confirmLocalCreditReview} from '../../../apps/mobile/credit-note-review-prototype.js';
 import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
 import {assertNoRemoteCreditNote} from '../../../apps/mobile/credit-note-local-guard.js';
 import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync-reference.js';
@@ -145,11 +147,36 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    // sont calculés et enregistrés dans la même transaction que leurs soldes.
    localDb.exec('BEGIN');await assert.rejects(prepareBalancedLocalCredit(tx,identity,otherClient,'sale',saleCommand),/Client/);localDb.exec('ROLLBACK');
    assert.equal(localDb.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,0);
-   localDb.exec('BEGIN');const createdSale=await prepareBalancedLocalCredit(tx,identity,clientId,'sale',saleCommand);assert.equal(createdSale.balance,950000);localDb.exec('COMMIT');
-   localDb.exec('BEGIN');const createdPre=await prepareBalancedLocalCredit(tx,identity,clientId,'preinvoice',preCommand);assert.equal(createdPre.balance,350000);localDb.exec('COMMIT');
+   const sha=async(value:string)=>createHash('sha256').update(value).digest('hex');
+   // Les aperçus appliquent les mêmes règles sans écrire d'avoir : deux choix
+   // affichent bien les effets distincts et la dette ancienne reste intacte.
+   localDb.exec('BEGIN');
+   await assert.rejects(previewLocalCredit(tx,identity,clientId,'sale',{...saleCommand,operationId:randomUUID(),choice:null},sha),/Choisissez/);
+   assert.equal(localDb.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,0);
+   const saleReview=await previewLocalCredit(tx,identity,clientId,'sale',{...saleCommand,operationId:randomUUID()},sha);
+   const saleCreditReview=await previewLocalCredit(tx,identity,clientId,'sale',{...saleCommand,operationId:randomUUID(),choice:'credit'},sha);
+   assert.equal(saleReview.beforeBalance,1019000);assert.equal(saleReview.afterBalance,950000);assert.equal(saleReview.refund,50000);
+   assert.equal(describeCreditReview(saleReview).clientName,'Client fictif');assert.equal(describeCreditReview(saleReview).oldDebtPaid,0);
+   assert.throws(()=>describeCreditReview({...saleReview,afterBalance:0}),/incohérent/);
+   assert.equal(saleCreditReview.afterBalance,900000);assert.equal(saleCreditReview.retainedCredit,50000);
+   assert.equal(localDb.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,0);localDb.exec('COMMIT');
+   // La modification d'une source ou du solde après l'aperçu invalide la
+   // confirmation : la transaction ne conserve aucun avoir.
+   localDb.exec('BEGIN');localDb.prepare('UPDATE sales SET payload=? WHERE id=1').run(JSON.stringify({...sale,lines:[{...sale.lines[0],name:'Changement'}]}));
+   await assert.rejects(confirmLocalCreditReview(tx,identity,saleReview,saleCommand,sha),/modifié/);localDb.exec('ROLLBACK');
+   assert.equal(localDb.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,0);
+   localDb.exec('BEGIN');localDb.prepare('INSERT INTO settlements VALUES(1,?,?)').run(clientId,JSON.stringify({clientId,amount:100}));
+   await assert.rejects(confirmLocalCreditReview(tx,identity,saleReview,saleCommand,sha),/modifié/);localDb.exec('ROLLBACK');
+   localDb.exec('BEGIN');await assert.rejects(confirmLocalCreditReview(tx,identity,saleReview,{...saleCommand,recordedAt:'2026-11-09T12:00:00.000Z'},sha),/périmé/);localDb.exec('ROLLBACK');
+   localDb.exec('BEGIN');await assert.rejects(confirmLocalCreditReview(tx,identity,saleReview,{...saleCommand,choice:'credit'},sha),/périmé/);localDb.exec('ROLLBACK');
+   localDb.exec('BEGIN');const createdSale=await confirmLocalCreditReview(tx,identity,saleReview,saleCommand,sha);assert.equal(createdSale.balance,950000);localDb.exec('COMMIT');
+   localDb.exec('BEGIN');const preReview=await previewLocalCredit(tx,identity,clientId,'preinvoice',{...preCommand,operationId:randomUUID()},sha);
+   assert.equal(preReview.afterBalance,350000);assert.equal(preReview.retainedCredit,250000);assert.equal((preReview.source as any).receipts[1].oldDebtPaid,100000);
+   const display=describeCreditReview(preReview);assert.equal(display.paid,250000);assert.equal(display.oldDebtPaid,400000);assert.equal(display.retainedCredit,250000);
+   assert.equal(localDb.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,1);
+   const createdPre=await confirmLocalCreditReview(tx,identity,preReview,preCommand,sha);assert.equal(createdPre.balance,350000);localDb.exec('COMMIT');
    assert.deepEqual(createdSale.note,localSale);assert.deepEqual(createdPre.note,localPre);
    localDb.exec('BEGIN');assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId),{balance:350000,conflict:false});localDb.exec('COMMIT');
-   const sha=async(value:string)=>createHash('sha256').update(value).digest('hex');
    // Une référence d'avant l'accusé ne doit pas effacer les preuves déjà reçues.
    localDb.prepare('UPDATE offline_credit_prototype SET pending=0').run();
    await assert.rejects(saveVerifiedCreditReference(tx,identity,identity,before,sha),/déjà confirmé/);

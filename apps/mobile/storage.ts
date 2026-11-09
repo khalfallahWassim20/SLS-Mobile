@@ -18,6 +18,7 @@ import {syncCreditPrototype} from './credit-note-sync-prototype';
 import {saveAndVerifyFinalCreditReference} from './credit-note-sync-final-prototype';
 import {preparePrototypeClose} from './credit-note-close-prototype';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from './credit-note-balance-storage-prototype';
+import {previewLocalCredit,confirmLocalCreditReview,type CreditReview} from './credit-note-review-prototype';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -332,6 +333,18 @@ export async function createBalancedLocalCreditPrototype(identity:DeviceIdentity
  const database=await db();
  let result:Awaited<ReturnType<typeof prepareBalancedLocalCredit>>|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{result=await prepareBalancedLocalCredit(tx,identity,clientId,kind,{operationId:randomUUID(),invoiceId,expectedVersion,recordedAt:new Date().toISOString(),choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
+ return result!;
+}
+
+/** Aperçu et confirmation préparatoires. Aucun écran ne les appelle encore. */
+export async function previewCreditReviewPrototype(identity:DeviceIdentity,clientId:string,kind:Kind,invoiceId:string,expectedVersion:number,choice:FullCreditChoice|null) {
+ const database=await db();let result:CreditReview|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await previewLocalCredit(tx,identity,clientId,kind,{operationId:randomUUID(),invoiceId,expectedVersion,recordedAt:new Date().toISOString(),choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
+ return result!;
+}
+export async function confirmCreditReviewPrototype(identity:DeviceIdentity,preview:CreditReview) {
+ const database=await db();let result:Awaited<ReturnType<typeof confirmLocalCreditReview>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmLocalCreditReview(tx,identity,preview,{operationId:randomUUID(),invoiceId:preview.invoiceId,expectedVersion:preview.expectedVersion,recordedAt:new Date().toISOString(),choice:preview.choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
  return result!;
 }
 
