@@ -66,3 +66,32 @@ test('PostgreSQL : statuts client versionnés, migration répétée et changemen
   }finally{await a.query('ROLLBACK').catch(()=>{});a.release();}
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });
+
+test('PostgreSQL : lecture admin et avoir concurrent gardent un instantané cohérent',async()=>{
+ const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL manquante');
+ const root=new pg.Pool({connectionString:url}),schema='sls_snapshot_'+randomUUID().replaceAll('-','');let pool:pg.Pool|undefined,created=false;
+ try {
+  await root.query(`CREATE SCHEMA "${schema}"`);created=true;pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`,max:8});
+  await pool.query(schemaSql);await pool.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+  const c=await saveCommercial(pool,'admin',{name:'Commercial fictif',active:true}),secret='secret fictif assez long pour les tests';
+  await setCommercialCredentials(pool,'admin',c.id,{login:'snapshot.test',password:'mot de passe fictif'});
+  const session=await loginCommercial(pool,secret,{login:'snapshot.test',password:'mot de passe fictif'});assert.ok(session);
+  const clientId=randomUUID();await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,1000000)',[clientId,'Client fictif']);
+  const saleId=randomUUID(),at='2026-11-08T09:00:00.000Z',sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
+  await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0},{secret,token:session.token,enforceMode:true,creditAware:true});
+  const conn=await pool.connect();let resume!:()=>void,ready!:()=>void;
+  const paused=new Promise<void>(r=>resume=r),snapshotReady=new Promise<void>(r=>ready=r);
+  const wrapped={connect:async()=>({query:async(sql:string,args?:unknown[])=>{if(sql.startsWith('SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,client_id')){ready();await paused;}return conn.query(sql,args as any);},release:()=>{}})} as unknown as pg.Pool;
+  try {
+   const {readPrototypeAdminCreditSnapshot,readPrototypeAdminCreditSaleHistory}=await import('../src/credit-note-admin-snapshot-prototype.js');
+   const reading=readPrototypeAdminCreditSnapshot(wrapped);await snapshotReady;
+   const note={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'refund' as const};
+   const writing=storePrototypeCreditNote(pool,note,{kind:'admin',actorId:'admin'});
+   await waitBlocked(pool,conn.processID);resume();
+   const before=await reading;assert.equal(before.balances[0].balance,'1069000');assert.equal(before.sales[0].cancelled,false);
+   assert.equal((await writing).status,'received');
+   const after=await readPrototypeAdminCreditSnapshot(pool);assert.equal(after.balances[0].balance,'1000000');assert.equal(after.sales[0].cancelled,true);assert.equal(after.sales[0].sale.total,119000);
+   const history=await readPrototypeAdminCreditSaleHistory(pool,saleId);assert.equal(history?.cancelled,true);assert.equal(history?.creditNote?.refund,50000);
+  }finally{resume();await conn.query('ROLLBACK').catch(()=>{});conn.release();}
+ }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
+});

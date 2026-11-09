@@ -25,6 +25,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   assert.throws(()=>identifiedCommercialRoutes(pool,secret,{enforceMode:false,allowCreditProtocol:true}),/exige/);
   const app=express();app.use(express.json());app.use('/old',identifiedCommercialRoutes(pool,secret));app.use('/new',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));
   app.use('/admin-old',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin'));
+  app.use('/admin-read-old',(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},identifiedAdminReadRoutes(pool));
   app.use('/admin-read',(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},identifiedAdminReadRoutes(pool,{allowCreditProtocol:true}));
   app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin',{allowCreditProtocol:true}));
   server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
@@ -81,6 +82,20 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   assert.equal((await post('/admin/credit-notes/preinvoices',adminPre,adminHeaders)).status,200);
   const adminPreDay=await (await get(`/admin-read/${c.id}/2026-11-09`,adminHeaders)).json() as any;
   assert.equal(adminPreDay.creditEvents.length,2);assert.equal(adminPreDay.creditRetainedTotal,300000);assert.equal(adminPreDay.rows[0].oldDebtPaid,400000);assert.equal(adminPreDay.rows[0].preInvoiceCancelled,true);
+  assert.equal((await get('/admin-read-old/credit-snapshot',adminHeaders)).status,404);
+  assert.equal((await get('/admin-read/credit-snapshot')).status,401);
+  assert.equal((await get('/admin-read/credit-snapshot',{...adminHeaders,'X-SLS-Reference-Version':'4'})).status,409);
+  const snapshotResponse=await get('/admin-read/credit-snapshot',adminHeaders);assert.equal(snapshotResponse.status,200);assert.match(snapshotResponse.headers.get('cache-control')??'',/no-store/);
+  const snapshot=await snapshotResponse.json() as any;
+  assert.equal(snapshot.version,5);assert.equal(snapshot.balances.find((x:any)=>x.id===clientId).balance,'290000');
+  assert.equal(snapshot.balances.find((x:any)=>x.id===inactive).active,false);
+  assert.equal(snapshot.sales.length,2);assert.equal(snapshot.sales.find((x:any)=>x.saleId===saleId).cancelled,true);assert.equal(snapshot.sales.find((x:any)=>x.saleId===saleId).sale.total,119000);
+  assert.equal(snapshot.sales.find((x:any)=>x.saleId===otherId).creditNote.actor.role,'admin');
+  assert.equal((await get(`/admin-read/credit-sales/${saleId}/history`)).status,401);
+  assert.equal((await get(`/admin-read/credit-sales/${saleId}/history`,{...adminHeaders,'X-SLS-Reference-Version':'4'})).status,409);
+  assert.equal((await get(`/admin-read/credit-sales/${randomUUID()}/history`,adminHeaders)).status,404);
+  const saleHistory=await (await get(`/admin-read/credit-sales/${saleId}/history`,adminHeaders)).json() as any;
+  assert.equal(saleHistory.cancelled,true);assert.equal(saleHistory.creditNote.refund,50000);assert.equal(saleHistory.versions[0].sale.total,119000);assert.equal(saleHistory.versions[0].commercialId,c.id);
   const result=validatePrototypeCreditReference(await (await get('/new/reference')).json());
   assert.equal(result.clients.find(x=>x.id===clientId)?.serverBalance,'290000');assert.equal(result.saleStates.find(s=>s.saleId===saleId)?.cancelled,true);assert.ok(result.journalStates.find(j=>j.id===invoice.id)?.creditNote);
   assert.equal((await post('/new/close',{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0})).status,201);
