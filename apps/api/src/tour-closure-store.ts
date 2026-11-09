@@ -52,7 +52,7 @@ export async function changeTourClosure(pool:Pool,commercialId:string,day:string
 /** Service expérimental uniquement : une session commerciale ne peut clôturer que sa propre journée.
  * L'admin est fourni uniquement par un middleware serveur, jamais par le corps de la requête. */
 export async function requestTourTransition(pool:Pool, input:{requestId:string;day:string;expectedVersion:number}, principal:
- {kind:'commercial';token:string;secret:string}|{kind:'admin';actorId:string;commercialId:string}, enforceMode=false) {
+ {kind:'commercial';token:string;secret:string}|{kind:'admin';actorId:string;commercialId:string}, enforceMode=false, creditAware=false) {
  const {requestId,day,expectedVersion}=z.object({requestId:identifier,day:journalDateSchema,expectedVersion:z.number().int().min(0).max(2147483646)}).strict().parse(input);
  const db=await pool.connect();
  try {
@@ -80,7 +80,7 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
    if(old.commercial_id!==commercialId || old.day!==day || old.action!==action || old.actor_id!==actor.id || old.actor_role!==actor.role || old.expected_version!==expectedVersion) throw new ClosureConflict('Identifiant de demande déjà utilisé.');
    await db.query('COMMIT');return {status:'duplicate' as const,requestId,commercialId,day,action,version:old.result_version,at:new Date(old.occurred_at).toISOString()};
   }
-  if(enforceMode)await assertOldCreditProtocolSafe(db);
+  if(enforceMode&&!creditAware)await assertOldCreditProtocolSafe(db);
   const state=await lockTourClosure(db,commercialId,day);
   let next;
   try {next=transitionTourClosure(state,action,actor,new Date().toISOString(),expectedVersion);}

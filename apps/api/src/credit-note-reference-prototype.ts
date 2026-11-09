@@ -89,11 +89,18 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
   if(preById.size!==journalStates.filter(s=>s.creditNote).length)throw new RangeError('Préétablie annulée introuvable.');
   return {experimental:true as const,version:5 as const,clients:[...clients.values()],articles:base.articles,saleStates,saleProofs,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
 }
-export async function readPrototypeCreditReference(pool:Pool) {
+export async function readPrototypeCreditReference(pool:Pool,includeInactive=true) {
  const db=await pool.connect();
  try {
   await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
   const result=await readPrototypeCreditReferenceInTransaction(db);
+  if(!includeInactive){
+   const active=new Set((await db.query('SELECT id FROM clients WHERE active AND deleted_at IS NULL')).rows.map(r=>r.id));
+   const clients=result.clients.filter(c=>active.has(c.id)),saleStates=result.saleStates.filter(s=>active.has(s.clientId)),journalStates=result.journalStates.filter(j=>active.has(j.clientId));
+   const sales=new Set(saleStates.map(s=>s.saleId)),journals=new Set(journalStates.map(j=>j.id));
+   const filtered={...result,clients,saleStates,journalStates,saleProofs:result.saleProofs.filter(p=>sales.has(p.saleId)),journalProofs:result.journalProofs.filter(p=>journals.has(p.id)),settlementStates:result.settlementStates.filter(p=>active.has(p.clientId))};
+   await db.query('COMMIT');return filtered;
+  }
   await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

@@ -14,7 +14,7 @@ export class TourDayClosed extends JournalConflict {
  constructor(readonly day:string,readonly commercialId:string) { super('Journal clôturé : seule une réouverture par l’administrateur permet une correction.'); }
 }
 export class JournalAuthenticationError extends Error {}
-export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string;enforceMode?:boolean}, testGuard?: (db:PoolClient,event:JournalSnapshot)=>Promise<void>): Promise<'received' | 'duplicate'> {
+export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string;enforceMode?:boolean;creditAware?:boolean}, testGuard?: (db:PoolClient,event:JournalSnapshot)=>Promise<void>): Promise<'received' | 'duplicate'> {
   if(testGuard && namespace!=='identified')throw new RangeError('Garde expérimentale réservée au journal identifié.');
   const prefix = namespace === 'sync' ? 'sync_journal' : namespace === 'identified' ? 'identified_journal' : 'demo_journal';
   const event = parseJournalSnapshot(input);
@@ -48,7 +48,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       await db.query('COMMIT'); return 'duplicate';
     }
     if(legacyMode) assertLegacyMode(legacyMode);
-    if(namespace==='identified' && session?.enforceMode)await assertOldCreditProtocolSafe(db);
+    if(namespace==='identified' && session?.enforceMode && !session.creditAware)await assertOldCreditProtocolSafe(db);
     if(namespace==='identified') {
       if(closure!.status==='closed') throw new TourDayClosed(closure!.day,closure!.commercialId);
       assertTourWritable(closure!);

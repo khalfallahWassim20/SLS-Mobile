@@ -11,6 +11,8 @@ import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.j
 import {readIdentifiedJournalDay} from './identified-journal-day.js';
 import {IdentifiedOverlap} from './identified-overlap.js';
 import {CreditProtocolUpgradeRequired} from './credit-note-active-guards.js';
+import {readPrototypeCreditReference} from './credit-note-reference-prototype.js';
+import {prototypeCommercialCreditRoutes} from './credit-note-routes-prototype.js';
 import {IdentifiedSyncDisabled,assertIdentifiedMode,readSyncMode} from './tour-sync-mode.js';
 
 const input=z.object({requestId:z.string().uuid(),day:z.string(),expectedVersion:z.number().int().min(0)}).strict();
@@ -22,25 +24,31 @@ function errorHandler(error:unknown,res:import('express').Response,next:import('
  if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données invalides.'});return;}
  next(error);
 }
-export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enforceMode?:boolean}={}) {
+export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enforceMode?:boolean;allowCreditProtocol?:boolean}={}) {
  const enforceMode=options.enforceMode!==false;
+ if(options.allowCreditProtocol&&!enforceMode)throw Error('Le protocole d’avoirs exige le mode individuel.');
  const r=Router();r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
  r.use(rateLimit({windowMs:15*60*1000,limit:500,standardHeaders:'draft-8',legacyHeaders:false}));
- r.get('/reference',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(await readIdentifiedReference(pool,false,enforceMode));}catch(e){errorHandler(e,res,next);}});
+ const supportsCredit=(req:import('express').Request)=>options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5';
+ r.get('/reference',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(supportsCredit(req)?await readPrototypeCreditReference(pool,false):await readIdentifiedReference(pool,false,enforceMode));}catch(e){errorHandler(e,res,next);}});
+ // Expérimental uniquement : cette option ne doit pas être activée par server.ts
+ // avant le raccordement complet des écrans, soldes, historiques et exports.
+ if(options.allowCreditProtocol===true)r.use('/credit-notes',(req,res,next)=>{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}next();},prototypeCommercialCreditRoutes(pool,secret));
  r.get('/day/:day/details',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}const {closureEvents:_adminHistory,...details}=await readIdentifiedJournalDay(pool,actor.id,req.params.day,enforceMode);res.json(details);}catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}if(enforceMode)assertIdentifiedMode(await readSyncMode(pool));res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});
- r.post('/close',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))},enforceMode);res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
+ r.post('/close',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))},enforceMode,supportsCredit(req));res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
  for(const kind of ['journal','sales','settlements'] as const) r.post('/'+kind,async(req,res,next)=>{try{
-  const session={secret,token:bearer(req.get('Authorization')),enforceMode};
+  const session={secret,token:bearer(req.get('Authorization')),enforceMode,creditAware:supportsCredit(req)};
   const status=kind==='journal'?await storeJournalSnapshot(pool,req.body,'identified',session):kind==='sales'?await storeIdentifiedSale(pool,req.body,session):await storeIdentifiedSettlement(pool,req.body,session);
   res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});
  }catch(e){errorHandler(e,res,next);}});
  return r;
 }
 /** Le middleware admin doit vérifier réellement la session. Le nom de l'admin est configuré côté serveur. */
-export function identifiedAdminRoutes(pool:Pool,authenticateAdmin:RequestHandler,adminName:string,options:{enforceMode?:boolean}={}) {
+export function identifiedAdminRoutes(pool:Pool,authenticateAdmin:RequestHandler,adminName:string,options:{enforceMode?:boolean;allowCreditProtocol?:boolean}={}) {
  const enforceMode=options.enforceMode!==false;
+ if(options.allowCreditProtocol&&!enforceMode)throw Error('Le protocole d’avoirs exige le mode individuel.');
  const r=Router();r.use(authenticateAdmin);r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
- r.post('/:commercialId/reopen',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'admin',actorId:adminName,commercialId:req.params.commercialId},enforceMode);res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
+ r.post('/:commercialId/reopen',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'admin',actorId:adminName,commercialId:req.params.commercialId},enforceMode,options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5');res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
  return r;
 }

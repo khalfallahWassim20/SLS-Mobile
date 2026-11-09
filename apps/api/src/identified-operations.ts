@@ -16,7 +16,7 @@ const saleSchema=z.object({createdAt:z.string().datetime(),clientId:uuid,clientN
  total:money,paid:money,remaining:money,paymentMode:z.enum(['Espèces','Chèque','Virement','Crédit']),chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100)}).strict();
 const saleEventSchema=z.object({operationId:uuid,saleId:uuid,version:z.number().int().min(1).max(1000000),recordedAt:z.string().datetime(),sale:saleSchema,refund:money}).strict();
 const settlementSchema=z.object({operationId:uuid,settlement:z.object({syncOperationId:uuid,createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().trim().min(1).max(200),amount:money.positive(),mode:z.enum(['Espèces','Chèque','Virement']),chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100)}).strict()}).strict();
-type Session={token:string;secret:string;enforceMode?:boolean};
+type Session={token:string;secret:string;enforceMode?:boolean;creditAware?:boolean};
 function tunisDay(iso:string):string {
  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(iso));
  const get=(name:string)=>parts.find(p=>p.type===name)?.value;
@@ -56,7 +56,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    await db.query('COMMIT');return 'duplicate';
   }
-  if(session.enforceMode)await assertOldCreditProtocolSafe(db);
+  if(session.enforceMode&&!session.creditAware)await assertOldCreditProtocolSafe(db);
   await assertInvoiceNotCredited(db,'sale',event.saleId);
   // Crochet uniquement pour les tests du registre d’avoir non exposé.
   if(testGuard)await testGuard(db,event);
@@ -101,7 +101,7 @@ export async function storeIdentifiedSettlement(pool:Pool,input:unknown,session:
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    await db.query('COMMIT');return 'duplicate';
   }
-  if(session.enforceMode)await assertOldCreditProtocolSafe(db);
+  if(session.enforceMode&&!session.creditAware)await assertOldCreditProtocolSafe(db);
   assertOpen(closure);await clientExists(db,p.clientId);
   await db.query('INSERT INTO identified_settlements(operation_id,client_id,commercial_id,journal_date,payload,payload_hash) VALUES($1,$2,$3,$4::date,$5::jsonb,$6)',[event.operationId,p.clientId,actor.id,day,payload,hash]);
   await db.query('COMMIT');return 'received';
