@@ -74,6 +74,10 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    const identity={commercialId:c.id,serverOrigin:'https://example.test'};
    cache.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(c.id,identity.serverOrigin);
    const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>cache.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{cache.prepare(sql).run(...args)}};
+   // Deuxième appareil : la transition vers une annulation distante est
+   // acceptée, mais une source modifiée à version identique est refusée.
+   await savePrototypeCreditReference(tx,identity,identity,before);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalProofs:result.journalProofs.map(p=>p.id===invoiceId?{...p,hash:'0'.repeat(64)}:p)}),/Preuve de préétablie/);
    await savePrototypeCreditReference(tx,identity,identity,result);
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
    await assert.rejects(savePrototypeCreditReference(tx,identity,{...identity,serverOrigin:'https://other.test'},result),/Session/);
@@ -81,7 +85,16 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleStates:[previousSale],saleProofs:[]}),/périmée/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalStates:[{...result.journalStates[0],creditNote:null}]}),/périmée/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleProofs:[{...result.saleProofs[0],hash:'0'.repeat(64)}]}),/Preuve/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalProofs:result.journalProofs.map(p=>p.id===invoiceId?{...p,hash:'0'.repeat(64)}:p)}),/Preuve de préétablie/);
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
+   // Un client désactivé ne peut pas faire disparaître silencieusement les
+   // preuves déjà reçues. En attendant une migration dédiée, on bloque.
+   await db.query('UPDATE clients SET active=false WHERE id=$1',[clientId]);
+   const withoutInactive=await readPrototypeCreditReference(pool,false);
+   assert.ok(!withoutInactive.clients.some(x=>x.id===clientId));
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,withoutInactive),/périmée/);
+   assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
+   await db.query('UPDATE clients SET active=true WHERE id=$1',[clientId]);
   } finally {cache.close();}
   const mobile=validatePrototypeCreditReference(result);assert.equal(mobile.clients[0].serverBalance,'350000');
   const origin='https://example.test';

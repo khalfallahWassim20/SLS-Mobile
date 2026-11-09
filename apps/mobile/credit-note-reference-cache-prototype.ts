@@ -32,6 +32,14 @@ export async function savePrototypeCreditReference(tx:Tx,identity:DeviceIdentity
    const updated=nextJournals.get(journal.id);
    if(!updated||updated.clientId!==journal.clientId||updated.journalDate!==journal.journalDate||updated.total!==journal.total||updated.version<journal.version||updated.version-journal.version!==updated.receipts.length-journal.receipts.length||journal.receipts.some((r,i)=>canonicalJson(r)!==canonicalJson(updated.receipts[i]))|| (journal.creditNote&&(!updated.creditNote||canonicalJson(updated.creditNote)!==canonicalJson(journal.creditNote))))throw Error('Référence du journal périmée ou incohérente.');
   }
+  // À version identique, le contenu complet de la préétablie est immuable,
+  // y compris lorsque son avoir vient d'être créé (il ne change pas la source).
+  // Une version supérieure peut ajouter un reçu et produit une nouvelle preuve.
+  const nextJournalProofs=new Map(next.journalProofs.map(p=>[p.id,p]));
+  for(const p of old.journalProofs){
+   const updated=nextJournalProofs.get(p.id);
+   if(!updated||updated.version<p.version||(updated.version===p.version&&canonicalJson(updated)!==canonicalJson(p)))throw Error('Preuve de préétablie périmée ou incohérente.');
+  }
   const settlements=new Map(next.settlementStates?.map(s=>[s.operationId,s.clientId])??[]);
   if(old.settlementStates?.some(s=>settlements.get(s.operationId)!==s.clientId))throw Error('Référence des règlements périmée.');
  }
