@@ -20,6 +20,11 @@ export async function savePrototypeCreditReference(tx:Tx,identity:DeviceIdentity
  if(previous) {
   if(previous.commercialId!==identity.commercialId||previous.serverOrigin!==identity.serverOrigin)throw Error('Cache lié à une autre identité.');
   const old=validatePrototypeCreditReference(JSON.parse(previous.payload));
+  const nextClients=new Map(next.clients.map(c=>[c.id,c]));
+  for(const client of old.clients){
+   const updated=nextClients.get(client.id);
+   if(!updated||BigInt(updated.statusRevision)<BigInt(client.statusRevision)||(updated.statusRevision===client.statusRevision&&updated.active!==client.active))throw Error('Statut client périmé ou incohérent.');
+  }
   const nextSales=new Map(next.saleStates.map(s=>[s.saleId,s]));
   for(const sale of old.saleStates) {
    const updated=nextSales.get(sale.saleId);

@@ -87,20 +87,24 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    return {...s,version:proof.version,creditNote:item?{operationId:item.command.operationId,expectedVersion:item.version,choice:item.command.choice,recordedAt:item.command.recordedAt,actor:item.actor}:null};
   });
   if(preById.size!==journalStates.filter(s=>s.creditNote).length)throw new RangeError('Préétablie annulée introuvable.');
-  return {experimental:true as const,version:5 as const,clients:[...clients.values()],articles:base.articles,saleStates,saleProofs,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
+  // Garder les clients inactifs et leur historique pour rapprocher les
+  // opérations hors ligne ; seul le sélecteur mobile doit les masquer.
+  const statuses=await db.query('SELECT id,active,status_revision::text AS "statusRevision" FROM clients WHERE deleted_at IS NULL');
+  const statusById=new Map(statuses.rows.map(r=>[r.id,r]));
+  const allClients=[...clients.values()].map(c=>{
+   const status=statusById.get(c.id);
+   if(!status||typeof status.active!=='boolean'||typeof status.statusRevision!=='string'||!/^\d+$/.test(status.statusRevision)||BigInt(status.statusRevision)<1n)throw new RangeError('Statut client indisponible.');
+   return {...c,active:status.active,statusRevision:status.statusRevision as string};
+  });
+  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
 }
-export async function readPrototypeCreditReference(pool:Pool,includeInactive=true) {
+/** En v5 les inactifs sont conservés pour le rapprochement, jamais pour la
+ * sélection de nouveaux clients. La différence active/inactive est explicite. */
+export async function readPrototypeCreditReference(pool:Pool,_includeInactive=true) {
  const db=await pool.connect();
  try {
   await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
   const result=await readPrototypeCreditReferenceInTransaction(db);
-  if(!includeInactive){
-   const active=new Set((await db.query('SELECT id FROM clients WHERE active AND deleted_at IS NULL')).rows.map(r=>r.id));
-   const clients=result.clients.filter(c=>active.has(c.id)),saleStates=result.saleStates.filter(s=>active.has(s.clientId)),journalStates=result.journalStates.filter(j=>active.has(j.clientId));
-   const sales=new Set(saleStates.map(s=>s.saleId)),journals=new Set(journalStates.map(j=>j.id));
-   const filtered={...result,clients,saleStates,journalStates,saleProofs:result.saleProofs.filter(p=>sales.has(p.saleId)),journalProofs:result.journalProofs.filter(p=>journals.has(p.id)),settlementStates:result.settlementStates.filter(p=>active.has(p.clientId))};
-   await db.query('COMMIT');return filtered;
-  }
   await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

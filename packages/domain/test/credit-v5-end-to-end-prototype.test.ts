@@ -16,6 +16,8 @@ import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-r
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from '../../../apps/mobile/identified-outbox.js';
 import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync-reference.js';
 import {prepareBalancedLocalCredit,readPrototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
+import {assertPrototypeClientActive} from '../../../apps/mobile/credit-note-local-guard.js';
+import {activePrototypeClients,validatePrototypeCreditReference} from '../../../apps/mobile/credit-note-reference-prototype.js';
 import {saveAndVerifyFinalCreditReference} from '../../../apps/mobile/credit-note-sync-final-prototype.js';
 import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
 
@@ -92,6 +94,19 @@ test('parcours v5 isolé : vente hors ligne, avoir, perte de réponse et reprise
   await assert.rejects(transaction(()=>saveAndVerifyFinalCreditReference(tx,identity,identity,reference,digest)),/modifiée après avoir/);
   mobile.prepare('UPDATE sales SET payload=? WHERE id=1').run(JSON.stringify(sale));
   await transaction(()=>saveAndVerifyFinalCreditReference(tx,identity,identity,reference,digest));
+  // Un client désactivé avec des opérations et un avoir acquitté reste
+  // rapprochable, mais ne peut plus être choisi pour une nouvelle vente.
+  await db.query('UPDATE clients SET active=false WHERE id=$1',[clientId]);
+  const inactive=await getReference(),parsed=validatePrototypeCreditReference(inactive);
+  assert.equal(activePrototypeClients(parsed).length,0);
+  await transaction(()=>saveAndVerifyFinalCreditReference(tx,identity,identity,inactive,digest));
+  assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:1000000,conflict:false});
+  await assert.rejects(transaction(()=>assertPrototypeClientActive(tx,identity,clientId)),/désactivé/);
+  await assert.rejects(transaction(()=>saveAndVerifyFinalCreditReference(tx,identity,identity,reference,digest)),/Statut client périmé/);
+  await db.query('UPDATE clients SET active=true WHERE id=$1',[clientId]);
+  const reactivated=await getReference();
+  await transaction(()=>saveAndVerifyFinalCreditReference(tx,identity,identity,reactivated,digest));
+  await transaction(()=>assertPrototypeClientActive(tx,identity,clientId));
 
  }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));mobile.close();await db.close();}
 });

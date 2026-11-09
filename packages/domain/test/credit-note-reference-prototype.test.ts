@@ -17,7 +17,7 @@ import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/com
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {storeIdentifiedSale} from '../../../apps/api/src/identified-operations.js';
 import {storeJournalSnapshot} from '../../../apps/api/src/journal-store.js';
-import {validatePrototypeCreditReference} from '../../../apps/mobile/credit-note-reference-prototype.js';
+import {validatePrototypeCreditReference,activePrototypeClients} from '../../../apps/mobile/credit-note-reference-prototype.js';
 import {validateIdentifiedReference} from '../../../apps/mobile/identified-reference.js';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
@@ -87,14 +87,23 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleProofs:[{...result.saleProofs[0],hash:'0'.repeat(64)}]}),/Preuve/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalProofs:result.journalProofs.map(p=>p.id===invoiceId?{...p,hash:'0'.repeat(64)}:p)}),/Preuve de préétablie/);
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
-   // Un client désactivé ne peut pas faire disparaître silencieusement les
-   // preuves déjà reçues. En attendant une migration dédiée, on bloque.
+   // Les clients désactivés restent dans le référentiel pour réconcilier les
+   // opérations et preuves, mais ne sont plus proposés pour une nouvelle vente.
    await db.query('UPDATE clients SET active=false WHERE id=$1',[clientId]);
-   const withoutInactive=await readPrototypeCreditReference(pool,false);
-   assert.ok(!withoutInactive.clients.some(x=>x.id===clientId));
-   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,withoutInactive),/périmée/);
+   const inactive=validatePrototypeCreditReference(await readPrototypeCreditReference(pool,false));
+   assert.equal(inactive.clients.find(x=>x.id===clientId)?.active,false);
+   assert.equal(inactive.clients.find(x=>x.id===clientId)?.statusRevision,'2');
+   assert.ok(!activePrototypeClients(inactive).some(x=>x.id===clientId));
+   await savePrototypeCreditReference(tx,identity,identity,inactive);
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,result),/Statut client périmé/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...inactive,clients:inactive.clients.map(c=>c.id===clientId?{...c,active:true}:c)}),/Statut client périmé/);
    await db.query('UPDATE clients SET active=true WHERE id=$1',[clientId]);
+   const activeAgain=validatePrototypeCreditReference(await readPrototypeCreditReference(pool,false));
+   assert.equal(activeAgain.clients.find(x=>x.id===clientId)?.statusRevision,'3');
+   assert.ok(activePrototypeClients(activeAgain).some(x=>x.id===clientId));
+   await savePrototypeCreditReference(tx,identity,identity,activeAgain);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,inactive),/Statut client périmé/);
   } finally {cache.close();}
   const mobile=validatePrototypeCreditReference(result);assert.equal(mobile.clients[0].serverBalance,'350000');
   const origin='https://example.test';

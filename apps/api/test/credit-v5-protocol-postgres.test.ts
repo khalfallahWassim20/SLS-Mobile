@@ -43,3 +43,26 @@ test('PostgreSQL : protocole v5 et ancien protocole concurrent avec un avoir',as
   }finally{await lock.query('ROLLBACK').catch(()=>{});lock.release();creditConn.release();}
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });
+
+test('PostgreSQL : statuts client versionnés, migration répétée et changements concurrents',async()=>{
+ const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL manquante');
+ const root=new pg.Pool({connectionString:url}),schema='sls_status_'+randomUUID().replaceAll('-','');let pool:pg.Pool|undefined,created=false;
+ try{
+  await root.query(`CREATE SCHEMA "${schema}"`);created=true;pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`,max:5});
+  await pool.query(schemaSql);await pool.query(schemaSql);await pool.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+  const id=randomUUID();await pool.query('INSERT INTO clients(id,name) VALUES($1,$2)',[id,'Client fictif']);
+  const a=await pool.connect();
+  try{
+   await a.query('BEGIN');await a.query('UPDATE clients SET active=false WHERE id=$1',[id]);
+   const pending=pool.query('UPDATE clients SET active=true WHERE id=$1 RETURNING status_revision::text AS revision',[id]);
+   await waitBlocked(pool,a.processID);await a.query('COMMIT');
+   assert.equal((await pending).rows[0].revision,'3');
+   await pool.query('UPDATE clients SET name=$2,status_revision=99 WHERE id=$1',[id,'Nom fictif']);
+   const reference=validatePrototypeCreditReference(await readPrototypeCreditReference(pool,false));
+   assert.equal(reference.clients[0].active,true);assert.equal(reference.clients[0].statusRevision,'3');
+   await pool.query(schemaSql);
+   await pool.query('UPDATE clients SET active=false WHERE id=$1',[id]);
+   assert.equal((await readPrototypeCreditReference(pool,false)).clients[0].statusRevision,'4');
+  }finally{await a.query('ROLLBACK').catch(()=>{});a.release();}
+ }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
+});

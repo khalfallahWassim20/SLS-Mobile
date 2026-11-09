@@ -20,3 +20,14 @@ export async function assertNoRemoteCreditNote(tx:Tx & {runAsync(sql:string,...p
  const cancelled=kind==='sale'?reference.saleStates.some(s=>s.saleId===invoiceId&&s.creditNote!==null):reference.journalStates.some(s=>s.id===invoiceId&&s.creditNote!==null);
  if(cancelled)throw Error('Facture annulée sur le serveur : modification ou paiement refusé.');
 }
+
+/** Garde préparatoire pour les NOUVELLES ventes/préétablies v5 : une fiche
+ * inactive reste dans le cache pour rapprocher son historique, mais ne doit
+ * pas être proposée comme client actif. Les écritures déjà enregistrées hors
+ * ligne et les annulations nécessitent un traitement distinct. */
+export async function assertPrototypeClientActive(tx:Tx & {runAsync(sql:string,...params:(string|number|null)[]):Promise<unknown>},identity:DeviceIdentity,clientId:string):Promise<void> {
+ const reference=await readPrototypeCreditReferenceCache(tx,identity);
+ const client=reference?.clients.find(c=>c.id===clientId);
+ if(!client)throw Error('Client inconnu : actualisez les données avant une nouvelle opération.');
+ if(!client.active)throw Error('Client désactivé : nouvelle vente ou facture refusée.');
+}

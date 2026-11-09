@@ -9,7 +9,7 @@ import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/com
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {identifiedCommercialRoutes,identifiedAdminRoutes} from '../../../apps/api/src/identified-tour-routes.js';
 import {identifiedAdminReadRoutes} from '../../../apps/api/src/identified-admin-read.js';
-import {validatePrototypeCreditReference} from '../../../apps/mobile/credit-note-reference-prototype.js';
+import {validatePrototypeCreditReference,activePrototypeClients} from '../../../apps/mobile/credit-note-reference-prototype.js';
 
 test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et sources annulées protégées',async()=>{
  const db=new PGlite();let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
@@ -37,7 +37,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   const sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
   const first={operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0};
   assert.equal((await post('/new/sales',first)).status,201);
-  const before=validatePrototypeCreditReference(await (await get('/new/reference')).json());assert.equal(before.clients.length,1);assert.equal(before.clients[0].serverBalance,'1069000');
+  const before=validatePrototypeCreditReference(await (await get('/new/reference')).json());assert.equal(before.clients.length,2);assert.equal(activePrototypeClients(before).length,1);assert.equal(before.clients.find(x=>x.id===clientId)?.serverBalance,'1069000');assert.equal(before.clients.find(x=>x.id===inactive)?.active,false);
   const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'refund'};
   assert.equal((await post('/new/credit-notes/sales',command)).status,201);assert.equal((await post('/new/credit-notes/sales',command)).status,200);
   assert.equal((await get('/old/reference')).status,409);assert.equal((await get('/new/reference',{...headers,'X-SLS-Reference-Version':'4'})).status,409);
@@ -62,7 +62,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   assert.equal((await get(`/admin-read/${c.id}/2026-11-08`,{...adminHeaders,'X-SLS-Reference-Version':'4'})).status,409);
   const adminDay=await (await get(`/admin-read/${c.id}/2026-11-08`,adminHeaders)).json() as any;assert.equal(adminDay.creditEvents.length,2);assert.ok(Array.isArray(adminDay.closureEvents));
   const result=validatePrototypeCreditReference(await (await get('/new/reference')).json());
-  assert.equal(result.clients[0].serverBalance,'1059000');assert.equal(result.saleStates.find(s=>s.saleId===saleId)?.cancelled,true);assert.ok(result.journalStates.find(j=>j.id===invoice.id)?.creditNote);
+  assert.equal(result.clients.find(x=>x.id===clientId)?.serverBalance,'1059000');assert.equal(result.saleStates.find(s=>s.saleId===saleId)?.cancelled,true);assert.ok(result.journalStates.find(j=>j.id===invoice.id)?.creditNote);
   assert.equal((await post('/new/close',{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0})).status,201);
   const reopen={requestId:randomUUID(),day:'2026-11-08',expectedVersion:1};
   assert.equal((await post(`/admin/${c.id}/reopen`,reopen)).status,401);

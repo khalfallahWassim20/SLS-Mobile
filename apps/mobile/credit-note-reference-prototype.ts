@@ -9,6 +9,12 @@ export function validatePrototypeCreditReference(value:unknown) {
  if(!raw||raw.experimental!==true||raw.version!==5||!Array.isArray(raw.saleStates)||!Array.isArray(raw.journalStates))throw Error('Référence d’avoirs invalide.');
  // Réutilise les validations du référentiel, des soldes, des reçus et preuves.
  const base=validateIdentifiedReference({...raw,version:4});
+ if(!Array.isArray(raw.clients)||raw.clients.length!==base.clients.length)throw Error('Statuts clients absents.');
+ const clients=base.clients.map((client,index)=>{
+  const original=obj((raw.clients as unknown[])[index]);
+  if(!original||original.id!==client.id||typeof original.active!=='boolean'||typeof original.statusRevision!=='string'||! /^[1-9]\d{0,18}$/.test(original.statusRevision)||BigInt(original.statusRevision)>9223372036854775807n)throw Error('Statut client invalide.');
+  return {...client,active:original.active,statusRevision:original.statusRevision};
+ });
  const seen=new Set<string>(),settlements=new Set(base.settlementStates?.map(s=>s.operationId)??[]);
  const sales=(base.saleStates??[]).map((sale,index)=>{
   const input=obj((raw.saleStates as unknown[])[index]);
@@ -48,5 +54,11 @@ export function validatePrototypeCreditReference(value:unknown) {
  });
  // Vérifie aussi les identifiants de reçus et d'avoirs entre préétablies.
  reconcilePreInvoiceCredits(0,[],journals);
- return {...base,version:5 as const,experimental:true as const,saleStates:sales,saleProofs,journalStates:journals};
+ return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,journalStates:journals};
+}
+
+/** Seule cette liste est destinée au choix d'un client pour une nouvelle
+ * opération. Le référentiel complet sert au rapprochement historique. */
+export function activePrototypeClients(reference:ReturnType<typeof validatePrototypeCreditReference>) {
+ return reference.clients.filter(client=>client.active);
 }

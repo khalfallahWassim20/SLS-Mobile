@@ -6,6 +6,22 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       credit_limit bigint NOT NULL DEFAULT 0 CHECK (credit_limit >= 0), active boolean NOT NULL DEFAULT true,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
     );
+    -- Le statut est versionné même si une modification provient d'un autre
+    -- point d'entrée SQL : une réponse réseau ancienne ne doit pas réactiver
+    -- silencieusement un client désactivé sur un téléphone.
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS status_revision bigint NOT NULL DEFAULT 1 CHECK (status_revision > 0);
+    CREATE OR REPLACE FUNCTION sls_client_status_revision() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.active IS DISTINCT FROM OLD.active THEN
+        NEW.status_revision := OLD.status_revision + 1;
+      ELSE
+        NEW.status_revision := OLD.status_revision;
+      END IF;
+      RETURN NEW;
+    END $$;
+    DROP TRIGGER IF EXISTS sls_client_status_revision_trigger ON clients;
+    CREATE TRIGGER sls_client_status_revision_trigger BEFORE UPDATE ON clients
+      FOR EACH ROW EXECUTE FUNCTION sls_client_status_revision();
     CREATE TABLE IF NOT EXISTS commercials (
       id uuid PRIMARY KEY, name text NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 200),
       active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(),
