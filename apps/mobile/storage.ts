@@ -24,6 +24,7 @@ import {createCreditTransportPrototype} from './credit-note-transport-prototype'
 import {readCreditSourceChoices} from './credit-note-source-choices-prototype';
 import {readCreditJournalExportPrototype} from './credit-note-journal-export-prototype';
 import {describeCreditJournalPrototype} from './credit-note-journal-view-model-prototype';
+import {assertLegacyMobileCreditSafe,assertCreditWritePrototype,assertCreditReceiptPrototype,type CreditWriteContext} from './credit-note-write-guard-prototype';
 import type {CommercialSession} from './commercial-login';
 
 export type SavedSale = {
@@ -59,10 +60,11 @@ export async function getSales(): Promise<SavedSale[]> {
   const rows = await (await db()).getAllAsync<{ id: number; payload: string }>('SELECT id, payload FROM sales ORDER BY id DESC');
   return rows.map(row => ({ ...JSON.parse(row.payload), id: row.id } as SavedSale));
 }
-export async function saveSale(sale: Omit<SavedSale, 'id'>, syncEligible = false): Promise<void> {
+export async function saveSale(sale: Omit<SavedSale, 'id'>, syncEligible = false, credit?:CreditWriteContext): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
     const identity=await getDeviceIdentity(tx);
+    if(credit){if(!syncEligible)throw Error('Vente v5 non synchronisable.');await assertCreditWritePrototype(tx,credit,{kind:'sale',clientId:sale.clientId},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));}else await assertLegacyMobileCreditSafe(tx,identity);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(sale.createdAt))]);
     if(identity && !syncEligible)throw new Error('Vente non synchronisable : actualisez les données.');
     const snapshot = syncEligible ? { ...sale, syncSaleId: randomUUID(), syncVersion: 1 } : sale;
@@ -83,13 +85,14 @@ export async function getRevisions(saleId: number): Promise<Revision[]> {
     'SELECT id, created_at, previous_payload, new_payload, refund FROM sale_revisions WHERE sale_id = ? ORDER BY id DESC', saleId);
   return rows.map(r => ({ id: r.id, createdAt: r.created_at, previous: JSON.parse(r.previous_payload), current: JSON.parse(r.new_payload), refund: r.refund }));
 }
-export async function updateSale(previous: SavedSale, updated: SavedSale, refund: number): Promise<void> {
+export async function updateSale(previous: SavedSale, updated: SavedSale, refund: number, credit?:CreditWriteContext): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
     await assertNoLocalCreditNote(tx,'sale',previous.syncSaleId);
     const row = await tx.getFirstAsync<{payload: string}>('SELECT payload FROM sales WHERE id = ?', previous.id);
     if (!row || JSON.stringify({ ...JSON.parse(row.payload), id: previous.id }) !== JSON.stringify(previous)) throw new Error('La vente a changé. Veuillez rouvrir son détail.');
     const recordedAt=new Date().toISOString(),identity=await getDeviceIdentity(tx);
+    if(credit){if(previous.clientId!==updated.clientId)throw Error('Client de la facture modifié.');await assertCreditWritePrototype(tx,credit,{kind:'edit',clientId:previous.clientId},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));}else await assertLegacyMobileCreditSafe(tx,identity);
     await assertNoRemoteCreditNote(tx,identity,'sale',previous.syncSaleId);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(previous.createdAt)),tunisDay(new Date(recordedAt))]);
     await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion??0,total:previous.total,paid:previous.paid});
@@ -114,10 +117,11 @@ export async function getSettlements(): Promise<Settlement[]> {
   const rows = await (await db()).getAllAsync<{id: number; payload: string}>('SELECT id, payload FROM settlements ORDER BY id DESC');
   return rows.map(r => ({ ...JSON.parse(r.payload), id: r.id }));
 }
-export async function saveSettlement(settlement: Omit<Settlement, 'id'>, syncEligible = false): Promise<void> {
+export async function saveSettlement(settlement: Omit<Settlement, 'id'>, syncEligible = false, credit?:CreditWriteContext): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
     const identity=await getDeviceIdentity(tx);
+    if(credit){if(!syncEligible)throw Error('Règlement v5 non synchronisable.');await assertCreditWritePrototype(tx,credit,{kind:'settlement',clientId:settlement.clientId,amount:settlement.amount},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));}else await assertLegacyMobileCreditSafe(tx,identity);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(settlement.createdAt))]);
     if(identity && !syncEligible)throw new Error('Règlement non synchronisable : actualisez les données.');
     const syncOperationId = syncEligible ? randomUUID() : undefined;
@@ -173,13 +177,14 @@ export async function getPreInvoices(journalDate: string): Promise<TourPreInvoic
  const rows = await database.getAllAsync<{payload: string}>('SELECT payload FROM tour_pre_invoices WHERE journal_date = ? ORDER BY rowid', journalDate);
  return rows.map(row => JSON.parse(row.payload));
 }
-export async function savePreInvoice(value: Omit<TourPreInvoice, 'id'>): Promise<void> {
+export async function savePreInvoice(value: Omit<TourPreInvoice, 'id'>, credit?:CreditWriteContext): Promise<void> {
  if (!value.clientId || !value.clientName || !Number.isSafeInteger(value.amount) || value.amount <= 0 || !/^\d{4}-\d{2}-\d{2}$/.test(value.journalDate)) throw new Error('Saisie invalide.');
  const database = await db();
  await getPreInvoices(value.journalDate); // initialise la table avant l'écriture
  const id = randomUUID(), payload = { ...value, id };
  try { await database.withExclusiveTransactionAsync(async tx => {
    const identity=await getDeviceIdentity(tx);
+   if(credit)await assertCreditWritePrototype(tx,credit,{kind:'preinvoice',clientId:value.clientId,day:value.journalDate},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));else await assertLegacyMobileCreditSafe(tx,identity);
    await assertDeviceWritable(tx,identity,[value.journalDate]);
    await tx.runAsync('INSERT INTO tour_pre_invoices (id,journal_date,client_id,payload) VALUES (?,?,?,?)', id, value.journalDate, value.clientId, JSON.stringify(payload));
    const operationId=await queueJournalSnapshot(tx,id,randomUUID);
@@ -202,7 +207,7 @@ async function ensureJournalReceipts() {
 }
 export async function getAllPreInvoices(): Promise<TourPreInvoice[]> {
  const database = await db();
- await database.withExclusiveTransactionAsync(async tx => { await bootstrapJournalQueue(tx,randomUUID); });
+ await database.withExclusiveTransactionAsync(async tx => { const missing=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_pre_invoices p LEFT JOIN journal_sync_state s ON s.invoice_id=p.id WHERE s.invoice_id IS NULL) AS n');if(!missing)throw Error('État du journal indisponible.');if(missing.n){await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));await bootstrapJournalQueue(tx,randomUUID);} });
  const rows = await database.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid');
  return rows.map(r => JSON.parse(r.payload));
 }
@@ -211,10 +216,12 @@ export async function getTourReceipts(): Promise<TourJournalReceipt[]> {
  const rows = await database.getAllAsync<{payload:string}>('SELECT payload FROM tour_journal_receipts ORDER BY rowid');
  return rows.map(r => JSON.parse(r.payload));
 }
-export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, availableOldDebt: number): Promise<void> {
+export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, availableOldDebt: number, credit?:CreditWriteContext): Promise<void> {
  const database = await ensureJournalReceipts();
  await database.withExclusiveTransactionAsync(async tx => {
    const identity=await getDeviceIdentity(tx);
+   const creditBalance=credit?await assertCreditWritePrototype(tx,credit,{kind:'receipt',clientId:value.clientId},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data)):null;
+   if(!credit)await assertLegacyMobileCreditSafe(tx,identity);
    await assertDeviceWritable(tx,identity,[value.journalDate]);
    await assertNoLocalCreditNote(tx,'preinvoice',value.preInvoiceId);
    await assertNoRemoteCreditNote(tx,identity,'preinvoice',value.preInvoiceId);
@@ -228,7 +235,7 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
    if (previous.length && value.oldDebtLimitAtStart !== previous[0].oldDebtLimitAtStart) throw new Error('Ancienne dette incohérente.');
    if (!Number.isSafeInteger(value.oldDebtLimitAtStart) || value.oldDebtLimitAtStart < 0) throw new Error('Ancienne dette invalide.');
    const priorDebtPaid = previous.reduce((n,p) => n+p.oldDebtPaid, 0);
-   const bound = Math.min(availableOldDebt, Math.max(0,value.oldDebtLimitAtStart-priorDebtPaid));
+   const bound = creditBalance ? assertCreditReceiptPrototype(creditBalance.balance,invoice.amount,previous,value) : Math.min(availableOldDebt, Math.max(0,value.oldDebtLimitAtStart-priorDebtPaid));
    if (!['Espèces','Chèque','Virement'].includes(value.mode)) throw new Error('Mode de paiement invalide.');
    if (value.mode === 'Chèque' && (value.prePaid || value.oldDebtPaid) && (!value.chequeNumber.trim() || !value.chequeBank.trim() || !value.chequeDue.trim())) throw new Error('Renseignez le numéro, la banque et l’échéance du chèque.');
    validatePreInvoiceReceipt(invoice.amount, previous, value, bound);
@@ -284,9 +291,9 @@ export async function getLocalCloseAttempt(identity:DeviceIdentity,day:string):P
  const database=await db();let result:Attempt|null=null;
  await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);result=await findTourCloseAttempt(tx,identity.commercialId,day);});return result;
 }
-export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number):Promise<Attempt> {
+export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number,creditAware=false):Promise<Attempt> {
  const database=await db();let result:Attempt|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);});return result!;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);if(!creditAware)await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);});return result!;
 }
 export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});

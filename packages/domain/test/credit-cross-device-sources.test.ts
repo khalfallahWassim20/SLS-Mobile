@@ -25,6 +25,7 @@ import {readCreditSourceChoices} from '../../../apps/mobile/credit-note-source-c
 import {readCreditJournalExportPrototype} from '../../../apps/mobile/credit-note-journal-export-prototype.js';
 import {journalCsv} from '../../../apps/mobile/journal-export.js';
 import {describeCreditJournalPrototype} from '../../../apps/mobile/credit-note-journal-view-model-prototype.js';
+import {assertLegacyMobileCreditSafe,assertCreditWritePrototype} from '../../../apps/mobile/credit-note-write-guard-prototype.js';
 
 test('deuxième appareil : avoirs distants sans copier les factures dans les tables actives',async()=>{
  const db=new PGlite(),mobile=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
@@ -72,10 +73,26 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   assert.equal((await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest))).items.length,4);
   mobile.exec('DELETE FROM sales;DELETE FROM sales_outbox;DELETE FROM tour_journal_receipts;DELETE FROM tour_pre_invoices;DELETE FROM journal_sync_state;DELETE FROM identified_local_operations');
+  // L'écran v3 peut écrire avant tout avoir ; la future écriture v5 vérifie
+  // le même solde dans la transaction, sans traiter une limite de zéro comme blocage.
+  await transaction(()=>assertLegacyMobileCreditSafe(tx,identity));
+  const context={identity,expectedBalance:1019000};
+  assert.equal((await transaction(()=>assertCreditWritePrototype(tx,context,{kind:'sale',clientId},digest))).balance,1019000);
+  await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,{...context,expectedBalance:1018999},{kind:'sale',clientId},digest)),/Solde modifié/);
+  await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,{...context,identity:{...identity,commercialId:randomUUID()}},{kind:'sale',clientId},digest)),/Identité|incohérent/);
+  await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,context,{kind:'preinvoice',clientId,day},digest)),/existe déjà/);
+  await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,context,{kind:'settlement',clientId,amount:1019001},digest)),/ne pas dépasser/);
+  const rawCache=mobile.prepare('SELECT payload FROM credit_reference_prototype_cache WHERE id=1').get()!.payload as string,changed=JSON.parse(rawCache);changed.clients.find((x:{id:string})=>x.id===clientId).creditLimit='1019000';mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(JSON.stringify(changed));
+  await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,context,{kind:'sale',clientId},digest)),/Limite de crédit/);
+  changed.clients.find((x:{id:string})=>x.id===clientId).active=false;mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(JSON.stringify(changed));
+  await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,context,{kind:'preinvoice',clientId,day:'2026-11-09'},digest)),/désactivé/);
+  mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(rawCache);
   const saleCommand={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T11:00:00.000Z',choice:'refund' as const};
   const preCommand={operationId:randomUUID(),invoiceId,expectedVersion:2,recordedAt:'2026-11-08T11:00:00.000Z',choice:'credit' as const};
   const saleReview=await transaction(()=>previewLocalCredit(tx,identity,clientId,'sale',{...saleCommand,operationId:randomUUID()},digest));assert.equal(saleReview.beforeBalance,1019000);assert.equal(saleReview.afterBalance,950000);
   await transaction(()=>confirmLocalCreditReview(tx,identity,saleReview,saleCommand,digest));
+  await assert.rejects(transaction(()=>assertLegacyMobileCreditSafe(tx,identity)),/Des avoirs existent/);
+  assert.equal((await transaction(()=>assertCreditWritePrototype(tx,{identity,expectedBalance:950000},{kind:'sale',clientId},digest))).balance,950000);
   const preReview=await transaction(()=>previewLocalCredit(tx,identity,clientId,'preinvoice',{...preCommand,operationId:randomUUID()},digest));assert.equal(preReview.afterBalance,350000);
   await transaction(()=>confirmLocalCreditReview(tx,identity,preReview,preCommand,digest));
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);assert.equal(mobile.prepare('SELECT count(*) AS n FROM tour_pre_invoices').get()?.n,0);
@@ -118,7 +135,7 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   assert.match(journalCsv(await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest))),/synchronisé/);
   // Les deux factures existent sur ce téléphone, mais leurs annulations sont
   // connues uniquement par la référence serveur (créées sur un autre appareil).
-  mobile.exec('SAVEPOINT remote_export');mobile.exec('DELETE FROM offline_credit_prototype');mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
+  mobile.exec('SAVEPOINT remote_export');mobile.exec('DELETE FROM offline_credit_prototype');await assert.rejects(assertLegacyMobileCreditSafe(tx,identity),/Des avoirs existent/);mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
   mobile.prepare('INSERT INTO tour_pre_invoices(id,client_id,journal_date,payload) VALUES(?,?,?,?)').run(invoiceId,clientId,day,JSON.stringify(invoice));
   mobile.prepare('INSERT INTO tour_journal_receipts(id,pre_invoice_id,client_id,journal_date,payload) VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,clientId,day,JSON.stringify(receipt));
   const preSource=sources.items.find((x:{kind:string})=>x.kind==='preinvoice').source;
