@@ -8,7 +8,7 @@ type Reference=ReturnType<typeof validatePrototypeCreditReference>;
 type Sale={id?:number;clientId:string;syncSaleId?:string;syncVersion?:number;total:number;paid:number;[key:string]:unknown};
 type Journal={id:string;clientId:string;journalDate:string;version:number;total:number;receipts:JournalSyncReceipt[];snapshot:unknown};
 type Settlement={clientId:string;syncOperationId?:string;amount:number};
-export function prototypeCreditBalance(input:{clientId:string;identity:{commercialId:string;serverOrigin:string};reference:Reference;sales:Sale[];journals:Journal[];settlements:Settlement[];notes:Note[]}) {
+export function prototypeCreditBalance(input:{clientId:string;identity:{commercialId:string;serverOrigin:string};reference:Reference;sales:Sale[];journals:Journal[];settlements:Settlement[];notes:Note[];verifiedRemoteSales?:ReadonlySet<string>;verifiedRemoteJournals?:ReadonlySet<string>}) {
  const {clientId,reference}=input,client=reference.clients.find(c=>c.id===clientId);
  if(!client?.serverBalance)throw Error('Solde serveur indisponible.');
  const saleIds=new Set<string>(),journalIds=new Set<string>(),receiptIds=new Set<string>(),settlementIds=new Set<string>();
@@ -45,7 +45,7 @@ export function prototypeCreditBalance(input:{clientId:string;identity:{commerci
   const remote=s.syncSaleId?remoteSales.get(s.syncSaleId):undefined;
   if(remote&&remote.clientId!==clientId)conflict=true;
   const note=s.syncSaleId?noteByEntity.get(`sale:${s.syncSaleId}`):undefined;
-  if(!note)return {...s,creditNote:null};
+  if(!note)return {...s,creditNote:remote?.creditNote&&s.syncSaleId&&input.verifiedRemoteSales?.has(s.syncSaleId)?remote.creditNote:null};
   const {id:_id,...current}=s;
   if(canonicalJson(current)!==canonicalJson(note.source))throw Error('Vente locale modifiée après avoir.');
   const event=prepareFullCreditNote({actor:{id:note.commercialId,role:'commercial'},command:note.command,source:{invoiceId:note.command.invoiceId,version:s.syncVersion!,total:s.total,netPaid:s.paid,cancelled:false},daysOpen:true,previous:null}).event;
@@ -66,7 +66,7 @@ export function prototypeCreditBalance(input:{clientId:string;identity:{commerci
   const note=noteByEntity.get(`preinvoice:${j.id}`);
   if(note&&canonicalJson(note.source)!==canonicalJson(j.snapshot))throw Error('Facture locale modifiée après avoir.');
   if(note){const calculated=calculatePreInvoiceCancellation({balance:0,invoiceTotal:j.total,receipts:j.receipts,alreadyCancelled:false,choice:note.command.choice??undefined});if(calculated.balanceDelta!==note.balanceDelta||calculated.refund!==note.refund||calculated.retainedCredit!==note.retainedCredit)throw Error('Montants de l’avoir local incohérents.');}
-  return {id:j.id,version:j.version,total:j.total,receipts:j.receipts,creditNote:note?{operationId:note.command.operationId,expectedVersion:note.command.expectedVersion,recordedAt:note.command.recordedAt,choice:note.command.choice,actor:{id:note.commercialId,role:'commercial'}}:null};
+  return {id:j.id,version:j.version,total:j.total,receipts:j.receipts,creditNote:note?{operationId:note.command.operationId,expectedVersion:note.command.expectedVersion,recordedAt:note.command.recordedAt,choice:note.command.choice,actor:{id:note.commercialId,role:'commercial'}}:remote?.creditNote&&input.verifiedRemoteJournals?.has(j.id)?remote.creditNote:null};
  });
  const journalBalance=reconcilePreInvoiceCredits(salesBalance.balance,localJournals,reference.journalStates.filter(s=>s.clientId===clientId));
  return {balance:journalBalance.balance,conflict:conflict||salesBalance.conflict||journalBalance.conflict};

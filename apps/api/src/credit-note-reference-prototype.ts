@@ -1,6 +1,7 @@
 /** Projection intégrée réservée aux tests. Aucun routeur actif ne l'expose ;
  * elle ne rend pas les registres expérimentaux utilisables en production. */
 import type {Pool,PoolClient} from 'pg';
+import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {canonicalJson,calculatePreInvoiceCancellation,type CreditNoteEvent} from '@sls/domain';
 import {readIdentifiedReferenceInTransaction} from './identified-reference.js';
@@ -38,6 +39,15 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
   const balances=projectPrototypeCreditNotes(base.clients.map(c=>({clientId:c.id,balance:asNumber(c.serverBalance)})),base.saleStates.map(s=>({invoiceId:s.saleId,clientId:s.clientId,version:s.version,total:asNumber(s.total),netPaid:asNumber(s.paid)})),saleNotes.rows.map(r=>r.event as CreditNoteEvent),saleMovements.rows.map(r=>({operationId:r.operation_id,kind:r.kind,balanceDelta:asNumber(r.delta)})));
   const projectedBalances=new Map(balances.map(b=>[b.clientId,b.balance]));
   const clients=new Map(base.clients.map(c=>[c.id,{...c,serverBalance:String(projectedBalances.get(c.id)!)}]));
+  // Preuve du contenu complet de la facture annulée : les totaux seuls ne
+  // suffisent pas pour reconnaître une annulation faite sur un autre appareil.
+  const saleProofs=[];
+  for(const row of saleNotes.rows){
+   const found=await db.query('SELECT version,client_id,payload FROM identified_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1',[row.invoice_id]);
+   const saved=found.rows[0],event=row.event as CreditNoteEvent,sale=saved?.payload?.sale;
+   if(!saved||!sale||saved.version!==event.command.expectedVersion||sale.syncSaleId!==row.invoice_id||sale.syncVersion!==saved.version||sale.clientId!==saved.client_id||sale.total!==event.source.total||sale.paid!==event.source.netPaid)throw new RangeError('Source de vente annulée incohérente.');
+   saleProofs.push({saleId:row.invoice_id,version:saved.version,hash:createHash('sha256').update(canonicalJson(sale)).digest('hex')});
+  }
   const saleById=new Map(saleNotes.rows.map(r=>[r.invoice_id,r.event as CreditNoteEvent]));
   const saleStates=base.saleStates.map(s=>{
    const e=saleById.get(s.saleId);
@@ -77,7 +87,7 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    return {...s,version:proof.version,creditNote:item?{operationId:item.command.operationId,expectedVersion:item.version,choice:item.command.choice,recordedAt:item.command.recordedAt,actor:item.actor}:null};
   });
   if(preById.size!==journalStates.filter(s=>s.creditNote).length)throw new RangeError('Préétablie annulée introuvable.');
-  return {experimental:true as const,version:5 as const,clients:[...clients.values()],articles:base.articles,saleStates,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
+  return {experimental:true as const,version:5 as const,clients:[...clients.values()],articles:base.articles,saleStates,saleProofs,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
 }
 export async function readPrototypeCreditReference(pool:Pool) {
  const db=await pool.connect();

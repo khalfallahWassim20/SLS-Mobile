@@ -25,6 +25,8 @@ export async function savePrototypeCreditReference(tx:Tx,identity:DeviceIdentity
    const updated=nextSales.get(sale.saleId);
    if(!updated||updated.clientId!==sale.clientId||updated.version<sale.version||(updated.version===sale.version&&canonicalJson(updated)!==canonicalJson(sale))|| (sale.creditNote&&(!updated.creditNote||canonicalJson(updated.creditNote)!==canonicalJson(sale.creditNote))))throw Error('Référence de vente périmée ou incohérente.');
   }
+  const nextSaleProofs=new Map(next.saleProofs.map(p=>[p.saleId,p]));
+  for(const p of old.saleProofs)if(canonicalJson(nextSaleProofs.get(p.saleId))!==canonicalJson(p))throw Error('Preuve de vente périmée ou incohérente.');
   const nextJournals=new Map(next.journalStates.map(s=>[s.id,s]));
   for(const journal of old.journalStates) {
    const updated=nextJournals.get(journal.id);

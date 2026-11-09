@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
+import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readReadyOfflineCreditPrototype,readAllOfflineCreditPrototype,acknowledgeOfflineCreditPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
 
 test('avoir mobile isolé : file persistante, dépendances, identité, clôture et accusé',async()=>{
@@ -12,7 +13,7 @@ test('avoir mobile isolé : file persistante, dépendances, identité, clôture 
   db.exec(`CREATE TABLE sales(id INTEGER PRIMARY KEY,payload TEXT);CREATE TABLE sales_outbox(operation_id TEXT,sale_id TEXT,payload TEXT);
    CREATE TABLE journal_sync_outbox(operation_id TEXT,invoice_id TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(pre_invoice_id TEXT,payload TEXT);
-   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}`);
+   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}`);
   const tx={getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).all(...args) as T[],getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{db.prepare(sql).run(...args)}};
   const identity={commercialId:randomUUID(),serverOrigin:'https://example.test'},id=randomUUID(),operationId=randomUUID();
   db.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(identity.commercialId,identity.serverOrigin);
@@ -53,7 +54,7 @@ test('avoir préétabli isolé : n’annule pas le paiement d’ancienne dette',
   db.exec(`CREATE TABLE sales(id INTEGER PRIMARY KEY,payload TEXT);CREATE TABLE sales_outbox(operation_id TEXT,sale_id TEXT,payload TEXT);
    CREATE TABLE journal_sync_outbox(operation_id TEXT,invoice_id TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(pre_invoice_id TEXT,payload TEXT);
-   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}`);
+   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}`);
   const tx={getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).all(...args) as T[],getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{db.prepare(sql).run(...args)}};
   const identity={commercialId:randomUUID(),serverOrigin:'https://example.test'},id=randomUUID(),journalOp=randomUUID(),clientId=randomUUID();
   db.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(identity.commercialId,identity.serverOrigin);

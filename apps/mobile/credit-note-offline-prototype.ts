@@ -5,6 +5,7 @@ import {calculatePreInvoiceCancellation,prepareFullCreditNote,canonicalJson,type
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {assertLocalTourWritable} from './tour-close-queue';
 import {tunisDay} from './journal';
+import {assertNoRemoteCreditNote} from './credit-note-local-guard';
 
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
@@ -27,6 +28,7 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
  await bound(tx,identity);
  if(kind!=='sale'&&kind!=='preinvoice')throw Error('Type de facture invalide.');
  if(!command||!uuid(command.operationId)||!uuid(command.invoiceId)||!Number.isSafeInteger(command.expectedVersion)||command.expectedVersion<1||command.expectedVersion>=1000000||!['refund','credit',null].includes(command.choice)||typeof command.recordedAt!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(command.recordedAt)||!Number.isFinite(Date.parse(command.recordedAt))||new Date(command.recordedAt).toISOString()!==command.recordedAt)throw Error('Demande invalide.');
+ await assertNoRemoteCreditNote(tx,identity,kind,command.invoiceId);
  const proof=await tx.getFirstAsync<{commercialId:string}>(`SELECT commercial_id AS commercialId FROM identified_local_operations WHERE entity_id=? AND operation_kind=? LIMIT 1`,command.invoiceId,kind==='sale'?'sale':'journal');
  if(!proof||proof.commercialId!==identity.commercialId)throw Error('Facture sans identité locale confirmée : rapprochement nécessaire.');
  const taken=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_id=?) OR EXISTS(SELECT 1 FROM offline_credit_prototype WHERE operation_id=?) AS n`,command.operationId,command.operationId);

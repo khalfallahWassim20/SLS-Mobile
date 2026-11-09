@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {PGlite} from '@electric-sql/pglite';
 import type {Pool} from 'pg';
@@ -21,9 +21,10 @@ import {validateIdentifiedReference} from '../../../apps/mobile/identified-refer
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {prototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-prototype.js';
-import {offlineCreditPrototypeSchema,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
+import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
 import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
+import {assertNoRemoteCreditNote} from '../../../apps/mobile/credit-note-local-guard.js';
 
 test('projection intégrée isolée : soldes, crédits, factures et refus en cas de corruption',async()=>{
  const db=new PGlite();try{
@@ -69,8 +70,9 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
    await assert.rejects(savePrototypeCreditReference(tx,identity,{...identity,serverOrigin:'https://other.test'},result),/Session/);
    const previousSale={...result.saleStates[0],version:1,total:'119000',paid:'50000',cancelled:false,creditNote:null};
-   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleStates:[previousSale]}),/périmée/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleStates:[previousSale],saleProofs:[]}),/périmée/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalStates:[{...result.journalStates[0],creditNote:null}]}),/périmée/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleProofs:[{...result.saleProofs[0],hash:'0'.repeat(64)}]}),/Preuve/);
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
   } finally {cache.close();}
   const mobile=validatePrototypeCreditReference(result);assert.equal(mobile.clients[0].serverBalance,'350000');
@@ -91,6 +93,7 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   try {
    localDb.exec(`CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
     CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
+    CREATE TABLE sales_outbox(sale_id TEXT);CREATE TABLE journal_sync_outbox(invoice_id TEXT);
     CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);
     CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
     CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);
@@ -117,6 +120,11 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    assert.deepEqual(createdSale.note,localSale);assert.deepEqual(createdPre.note,localPre);
    localDb.exec('BEGIN');assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId),{balance:350000,conflict:false});localDb.exec('COMMIT');
    await savePrototypeCreditReference(tx,identity,identity,result);
+   await assert.rejects(assertNoRemoteCreditNote(tx,identity,'sale',saleId),/annulée/);
+   await assert.rejects(assertNoRemoteCreditNote(tx,identity,'preinvoice',invoiceId),/annulée/);
+   await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',{...saleCommand,operationId:randomUUID()}),/annulée/);
+   await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'preinvoice',{...preCommand,operationId:randomUUID()}),/annulée/);
+   await assertNoRemoteCreditNote(tx,identity,'sale',randomUUID());
    localDb.exec('BEGIN');assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId),{balance:350000,conflict:false});localDb.exec('COMMIT');
    await assert.rejects(readPrototypeCreditBalance(tx,{...identity,serverOrigin:'https://other.test'},clientId),/identité/i);
    localDb.exec('BEGIN');localDb.prepare('DELETE FROM journal_sync_state').run();await assert.rejects(readPrototypeCreditBalance(tx,identity,clientId),/sans version/);localDb.exec('ROLLBACK');
@@ -124,6 +132,27 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    localDb.exec('BEGIN');localDb.prepare('DELETE FROM tour_pre_invoices').run();await assert.rejects(readPrototypeCreditBalance(tx,identity,clientId),/sans facture/);localDb.exec('ROLLBACK');
    localDb.exec('BEGIN');localDb.prepare('UPDATE offline_credit_prototype SET payload=? WHERE operation_id=?').run(JSON.stringify({...localSale,refund:0}),saleCommand.operationId);await assert.rejects(readPrototypeCreditBalance(tx,identity,clientId),/Montants/);localDb.exec('ROLLBACK');
    localDb.exec('BEGIN');localDb.prepare('DELETE FROM offline_credit_prototype WHERE operation_id=?').run(saleCommand.operationId);assert.equal((await readPrototypeCreditBalance(tx,identity,clientId)).conflict,true);localDb.exec('ROLLBACK');
+   const digest=async(value:string)=>createHash('sha256').update(value).digest('hex');
+   // Une annulation provenant d’un autre appareil n'est reconnue que si le
+   // contenu complet est identique et qu'aucune écriture ne reste en attente.
+   localDb.exec('BEGIN');localDb.prepare('DELETE FROM offline_credit_prototype').run();
+   assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId,digest),{balance:350000,conflict:false});
+   localDb.prepare('INSERT INTO sales_outbox VALUES(?)').run(saleId);
+   assert.equal((await readPrototypeCreditBalance(tx,identity,clientId,digest)).conflict,true);
+   localDb.prepare('DELETE FROM sales_outbox').run();
+   localDb.prepare('INSERT INTO journal_sync_outbox VALUES(?)').run(invoiceId);
+   assert.equal((await readPrototypeCreditBalance(tx,identity,clientId,digest)).conflict,true);
+   localDb.prepare('DELETE FROM journal_sync_outbox').run();
+   // Même montant et version, mais lignes différentes : aucune adoption.
+   localDb.prepare('UPDATE sales SET payload=? WHERE id=1').run(JSON.stringify({...sale,lines:[{...sale.lines[0],name:'Autre produit'}]}));
+   assert.equal((await readPrototypeCreditBalance(tx,identity,clientId,digest)).conflict,true);
+   localDb.prepare('UPDATE sales SET payload=? WHERE id=1').run(JSON.stringify(sale));
+   const changed={...r1,mode:'Virement'};
+   localDb.prepare('UPDATE tour_journal_receipts SET payload=? WHERE id=?').run(JSON.stringify(changed),r1.id);
+   localDb.prepare('UPDATE journal_sync_state SET payload=?').run(JSON.stringify({...preResult.event.source,receipts:[changed,r2]}));
+   assert.equal((await readPrototypeCreditBalance(tx,identity,clientId,digest)).conflict,true);
+   localDb.exec('ROLLBACK');
+
   }finally{localDb.close();}
 
   assert.equal(prototypeCreditBalance({...current,notes:[localPre],reference:mobile}).conflict,true);

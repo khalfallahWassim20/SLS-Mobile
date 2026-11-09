@@ -22,6 +22,15 @@ export function validatePrototypeCreditReference(value:unknown) {
   if(canonicalJson(event)!==canonicalJson(calculated)||seen.has(event.command.operationId)||settlements.has(event.command.operationId))throw Error('Avoir de vente incohérent ou dupliqué.');
   seen.add(event.command.operationId);return {...sale,cancelled:true as const,creditNote:calculated};
  });
+ if(!Array.isArray(raw.saleProofs))throw Error('Preuves de vente absentes.');
+ const cancelledSales=new Map(sales.filter(s=>s.creditNote).map(s=>[s.saleId,s]));
+ const proofIds=new Set<string>();
+ const saleProofs=raw.saleProofs.map(value=>{
+  const p=obj(value),sale=p&&typeof p.saleId==='string'?cancelledSales.get(p.saleId):undefined;
+  if(!p||!sale||proofIds.has(sale.saleId)||p.version!==sale.creditNote?.command.expectedVersion||typeof p.hash!=='string'||!/^[0-9a-f]{64}$/.test(p.hash)||Object.keys(p).length!==3)throw Error('Preuve de vente invalide.');
+  proofIds.add(sale.saleId);return {saleId:sale.saleId,version:p.version as number,hash:p.hash};
+ });
+ if(saleProofs.length!==cancelledSales.size)throw Error('Preuves de vente incomplètes.');
  const proofs=new Map(base.journalProofs.map(p=>[p.id,p]));
  const journals=(base.journalStates??[]).map((state,index)=>{
   const input=obj((raw.journalStates as unknown[])[index]),proof=proofs.get(state.id);
@@ -39,5 +48,5 @@ export function validatePrototypeCreditReference(value:unknown) {
  });
  // Vérifie aussi les identifiants de reçus et d'avoirs entre préétablies.
  reconcilePreInvoiceCredits(0,[],journals);
- return {...base,version:5 as const,experimental:true as const,saleStates:sales,journalStates:journals};
+ return {...base,version:5 as const,experimental:true as const,saleStates:sales,saleProofs,journalStates:journals};
 }

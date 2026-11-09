@@ -11,6 +11,10 @@ import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale} from '../src/identified-operations.js';
 import {lockIdentifiedOperation} from '../src/identified-overlap.js';
 import {readPrototypeCreditHistory} from '../src/credit-note-history-prototype.js';
+import {readPrototypeCreditReference} from '../src/credit-note-reference-prototype.js';
+import {validatePrototypeCreditReference} from '../../mobile/credit-note-reference-prototype.js';
+import {canonicalJson} from '@sls/domain';
+import {createHash} from 'node:crypto';
 
 dotenv.config({path:'apps/api/.env'});
 async function waitForBlocked(pool:pg.Pool,pid:number) {
@@ -82,6 +86,9 @@ test('PostgreSQL : deux demandes et deux reprises simultanées dans le registre 
    assert.equal((await pendingEdit2).value,'received');assert.match(String((await pendingNote2).error),/périmée/);
    const result=await pool.query('SELECT count(*)::int AS n FROM credit_note_prototype_events WHERE invoice_id=$1',[modified.invoiceId]);assert.equal(result.rows[0].n,0);
    const history=await readPrototypeCreditHistory(pool);assert.equal(history.length,3);assert.ok(history.every(e=>e.kind==='sale'&&e.invoiceTotal===119000&&e.refund===50000&&e.ownerId===c.id));
+   const mobile=validatePrototypeCreditReference(await readPrototypeCreditReference(pool));assert.equal(mobile.saleProofs.length,3);
+   const source=(await pool.query('SELECT payload FROM identified_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1',[cmd.invoiceId])).rows[0].payload.sale;
+   assert.equal(mobile.saleProofs.find(p=>p.saleId===cmd.invoiceId)?.hash,createHash('sha256').update(canonicalJson(source)).digest('hex'));
 
   } finally {await blocker.query('ROLLBACK').catch(()=>{});blocker.release();}
  } finally {if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}

@@ -16,6 +16,7 @@ import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/com
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
+import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {uploadPrototypeCreditNotes} from '../../../apps/mobile/credit-note-upload-prototype.js';
 import {ClosedDaySyncError} from '../../../apps/mobile/identified-upload.js';
@@ -36,7 +37,7 @@ test('avoir expérimental de bout en bout : file locale, HTTP, reprise et clôtu
   mobile.exec(`CREATE TABLE sales(id INTEGER PRIMARY KEY,payload TEXT);CREATE TABLE sales_outbox(operation_id TEXT,sale_id TEXT,payload TEXT);
    CREATE TABLE journal_sync_outbox(operation_id TEXT,invoice_id TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(pre_invoice_id TEXT,payload TEXT);
-   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}`);
+   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}`);
   const tx={getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).all(...args) as T[],getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{mobile.prepare(sql).run(...args)}};
   mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(c.id,origin);
   const clientId=randomUUID(),saleId=randomUUID(),op=randomUUID(),at='2026-11-08T09:00:00.000Z';await db.query('INSERT INTO clients(id,name) VALUES($1,$2)',[clientId,'Client fictif']);

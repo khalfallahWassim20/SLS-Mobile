@@ -11,7 +11,7 @@ import {validateIdentifiedReference} from './identified-reference';
 import {tunisDay} from './journal';
 import {resetLocalTestOperations} from './reset-test-operations';
 import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readAllOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Kind,type Note} from './credit-note-offline-prototype';
-import {assertNoLocalCreditNote} from './credit-note-local-guard';
+import {assertNoLocalCreditNote,assertNoRemoteCreditNote} from './credit-note-local-guard';
 import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {preparePrototypeClose} from './credit-note-close-prototype';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from './credit-note-balance-storage-prototype';
@@ -80,6 +80,7 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
     const row = await tx.getFirstAsync<{payload: string}>('SELECT payload FROM sales WHERE id = ?', previous.id);
     if (!row || JSON.stringify({ ...JSON.parse(row.payload), id: previous.id }) !== JSON.stringify(previous)) throw new Error('La vente a changé. Veuillez rouvrir son détail.');
     const recordedAt=new Date().toISOString(),identity=await getDeviceIdentity(tx);
+    await assertNoRemoteCreditNote(tx,identity,'sale',previous.syncSaleId);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(previous.createdAt)),tunisDay(new Date(recordedAt))]);
     await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion??0,total:previous.total,paid:previous.paid});
     const { id: _id, ...originalPayload } = updated;
@@ -206,6 +207,7 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
    const identity=await getDeviceIdentity(tx);
    await assertDeviceWritable(tx,identity,[value.journalDate]);
    await assertNoLocalCreditNote(tx,'preinvoice',value.preInvoiceId);
+   await assertNoRemoteCreditNote(tx,identity,'preinvoice',value.preInvoiceId);
    const state = await tx.getFirstAsync<{version:number;payload:string}>('SELECT version,payload FROM journal_sync_state WHERE invoice_id=?', value.preInvoiceId);
    await assertKnownDeviceEntity(tx,identity,'journal',value.preInvoiceId,undefined,state ? {...state,digest:(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)} : undefined);
    const raw = await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE id=? AND client_id=? AND journal_date=?', value.preInvoiceId, value.clientId, value.journalDate);
@@ -318,7 +320,7 @@ export async function clearLocalTestOperations():Promise<void> {
 export async function getPrototypeCreditBalance(identity:DeviceIdentity,clientId:string) {
  const database=await db();
  let result:Awaited<ReturnType<typeof readPrototypeCreditBalance>>|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{result=await readPrototypeCreditBalance(tx,identity,clientId);});
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readPrototypeCreditBalance(tx,identity,clientId,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
  return result!;
 }
 
@@ -326,6 +328,6 @@ export async function getPrototypeCreditBalance(identity:DeviceIdentity,clientId
 export async function createBalancedLocalCreditPrototype(identity:DeviceIdentity,clientId:string,kind:Kind,invoiceId:string,expectedVersion:number,choice:FullCreditChoice|null) {
  const database=await db();
  let result:Awaited<ReturnType<typeof prepareBalancedLocalCredit>>|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{result=await prepareBalancedLocalCredit(tx,identity,clientId,kind,{operationId:randomUUID(),invoiceId,expectedVersion,recordedAt:new Date().toISOString(),choice});});
+ await database.withExclusiveTransactionAsync(async tx=>{result=await prepareBalancedLocalCredit(tx,identity,clientId,kind,{operationId:randomUUID(),invoiceId,expectedVersion,recordedAt:new Date().toISOString(),choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
  return result!;
 }
