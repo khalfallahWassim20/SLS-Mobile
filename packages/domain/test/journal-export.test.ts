@@ -22,6 +22,13 @@ test('export local : avoirs du jour distincts des factures et de l’ancienne de
  assert.match(csv,/AVOIRS CRÉÉS CE JOUR/);assert.match(csv,/'=Fictif/);assert.match(csv,/facture du 2026-11-07/);assert.match(csv,/en attente/);assert.match(csv,/synchronisé/);
  assert.match(csv,/850,000/);assert.match(csv,/100,000/);assert.match(csv,/250,000/);assert.match(csv,/'-600,000/);
  assert.match(html,/AVOIRS CRÉÉS CE JOUR/);assert.match(html,/corriger séparément dans le système principal/);
+ assert.match(csv,/Vente supplémentaire — annulée par avoir/);assert.match(html,/Vente supplémentaire — annulée par avoir/);
+ const prior={...data,day:'2026-11-07',rows:[{clientId:client,clientName:'=Fictif',sector:'',preInvoice:{...invoice,sector:''},sales:[],total:600000}],receipts:[receipt]};
+ const originalNotes=notes.map(x=>x.note.kind==='preinvoice'?{...x,note:{...x.note,source:{...x.note.source,invoice:{...invoice,sector:''}}}}:x);
+ const preData={...prior,credits:originalNotes};const historical=journalCsv(preData);assert.match(historical,/Facture préétablie — annulée par avoir/);assert.match(historical,/avoir du 2026-11-08 · synchronisé/);assert.match(historical,/400,000/);
+ assert.throws(()=>journalCsv({...preData,receipts:[{...receipt,oldDebtPaid:1}]}),/modifiée après avoir/);
+ assert.throws(()=>journalCsv({...data,rows:[{...data.rows[0],sales:[{...sale,total:250001}]}]}),/modifiée après avoir/);
+ assert.throws(()=>journalCsv({...data,credits:[notes[0],{...notes[0],note:{...notes[0].note,command:{...notes[0].note.command,operationId:randomUUID()}}}]}),/plusieurs fois/);
  assert.throws(()=>journalCsv({...data,credits:[notes[0],notes[0]]}),/dupliqué/);
  assert.throws(()=>journalCsv({...data,credits:[{...notes[0],note:{...notes[0].note,refund:1}}]}),/incohérents/);
  const later=journalCsv({...data,day:'2026-11-09',rows:[]});assert.doesNotMatch(later,/facture du 2026-11-07/);

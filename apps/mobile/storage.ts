@@ -22,6 +22,7 @@ import {previewLocalCredit,confirmLocalCreditReview,type CreditReview} from './c
 import {creditSourcesPrototypeSchema,saveCreditSourcesPrototype,readCreditSourcesPrototype} from './credit-note-sources-prototype';
 import {createCreditTransportPrototype} from './credit-note-transport-prototype';
 import {readCreditSourceChoices} from './credit-note-source-choices-prototype';
+import {readCreditJournalExportPrototype} from './credit-note-journal-export-prototype';
 import type {CommercialSession} from './commercial-login';
 
 export type SavedSale = {
@@ -397,4 +398,10 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
   cacheReference:cacheCreditReferencePrototype,cacheSources:cacheCreditSourcesPrototype,
   synchronize:synchronizeCreditPrototype
  });
+}
+
+/** Export v5 préparatoire : capture atomique, non raccordée à l'écran v3. */
+export async function getCreditJournalExportPrototype(identity:DeviceIdentity,day:string,commercial:string) {
+ const database=await db();let result:Awaited<ReturnType<typeof readCreditJournalExportPrototype>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditJournalExportPrototype(tx,identity,day,commercial,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
 }

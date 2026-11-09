@@ -1,7 +1,7 @@
 import type { JournalRow } from './journal.js';
 import type { TourJournalReceipt } from './storage.js';
 import type {Note} from './credit-note-offline-prototype';
-import {prepareFullCreditNote,calculatePreInvoiceCancellation} from '@sls/domain';
+import {canonicalJson,prepareFullCreditNote,calculatePreInvoiceCancellation} from '@sls/domain';
 import {tunisDay} from './journal';
 
 /** Instantané local, distinct du journal consolidé reçu sur le serveur. */
@@ -15,29 +15,11 @@ const sum = (values: number[]) => { const n=values.reduce((a,b)=>a+BigInt(b),0n)
 const escapeHtml = (value: unknown) => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 // Neutralise les formules de tableur même après espaces et caractères de contrôle.
 const cell = (value: unknown) => { let s=String(value ?? ''); if (/^[\s\u0000-\u001f]*[=+@\-\t\r]/.test(s)) s="'"+s; return '"'+s.replace(/"/g,'""')+'"'; };
-function lines(data: JournalExport): string[][] {
- const rows: string[][] = [
-  ['Journal de tournée — instantané local (données fictives)'],
-  ['Date',data.day,'Commercial',data.commercial],
-  ['Périmètre','Opérations présentes sur ce téléphone uniquement ; les autres appareils et opérations non présentes ne sont pas inclus.'],
-  ['Client','Secteur','Type','Référence locale / date','Montant facture DT','Paiement facture DT','Ancienne dette réglée DT','Mode','Total client DT'],
- ];
- for(const r of data.rows){
-  rows.push([r.clientName,r.sector,'Synthèse client','',amount(r.preInvoice?.amount ?? 0),'','','',amount(r.total)]);
-  if(r.preInvoice) rows.push([r.clientName,r.sector,'Facture préétablie',r.preInvoice.id,amount(r.preInvoice.amount),'','','','']);
-  for(const s of r.sales) rows.push([r.clientName,r.sector,'Vente supplémentaire',`Vente locale ${s.id}`,amount(s.total),amount(s.paid),'',s.paymentMode,'']);
-  for(const p of data.receipts.filter(p=>p.clientId===r.clientId && p.journalDate===data.day)) rows.push([r.clientName,r.sector,p.creditFull?'Journal — crédit total':'Règlement journal',p.createdAt,'',amount(p.prePaid),amount(p.oldDebtPaid),p.mode,'']);
- }
- rows.push(['TOTAL FACTURÉ (préétabli + ventes)','','','','','','','',amount(sum(data.rows.map(r=>r.total)))]);
- const journalReceipts=data.receipts.filter(p=>p.journalDate===data.day && data.rows.some(r=>r.clientId===p.clientId));
- rows.push(['TOTAL PAIEMENTS FACTURE PRÉÉTABLIE','','','','',amount(sum(journalReceipts.map(p=>p.prePaid)))]);
- rows.push(['TOTAL ANCIENNE DETTE RÉGLÉE','','','','','',amount(sum(journalReceipts.map(p=>p.oldDebtPaid)))]);
- rows.push(['TOTAL ENCAISSÉ LOCAL','','','','',amount(sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>s.paid))]))]);
- if(data.credits) {
-  const seen=new Set<string>();let total=0n,refund=0n;
-  const events=data.credits.map(({note,pending})=>{
+function creditEvents(data:JournalExport) {
+  const seen=new Set<string>(),entities=new Set<string>();
+  const events=(data.credits??[]).map(({note,pending})=>{
    if(!note||!note.command||typeof pending!=='boolean'||seen.has(note.command.operationId))throw Error('Avoir local invalide ou dupliqué.');
-   seen.add(note.command.operationId);
+   seen.add(note.command.operationId);const entity=`${note.kind}:${note.command.invoiceId}`;if(entities.has(entity))throw Error('Facture annulée plusieurs fois.');entities.add(entity);
    const source=note.source as Record<string,any>|null;
    if(!source||typeof source!=='object'||!['sale','preinvoice'].includes(note.kind))throw Error('Source de l’avoir invalide.');
    let name:string,invoiceTotal:number,invoiceDay:string,calculated:{balanceDelta:number;refund:number;retainedCredit:number};
@@ -55,7 +37,39 @@ function lines(data: JournalExport): string[][] {
    }
    if(typeof name!=='string'||!name.trim()||calculated.balanceDelta!==note.balanceDelta||calculated.refund!==note.refund||calculated.retainedCredit!==note.retainedCredit)throw Error('Montants de l’avoir incohérents.');
    return {note,pending,name,invoiceTotal,invoiceDay,day:tunisDay(new Date(note.command.recordedAt))};
-  }).filter(e=>e.day===data.day);
+  });
+ return events;
+}
+function lines(data: JournalExport): string[][] {
+ const allEvents=creditEvents(data),byInvoice=new Map(allEvents.map(e=>[`${e.note.kind}:${e.note.command.invoiceId}`,e]));
+ const rows: string[][] = [
+  ['Journal de tournée — instantané local (données fictives)'],
+  ['Date',data.day,'Commercial',data.commercial],
+  ['Périmètre','Opérations présentes sur ce téléphone uniquement ; les autres appareils et opérations non présentes ne sont pas inclus.'],
+  ['Client','Secteur','Type','Référence locale / date','Montant facture DT','Paiement facture DT','Ancienne dette réglée DT','Mode','Total client DT'],
+ ];
+ for(const r of data.rows){
+  rows.push([r.clientName,r.sector,'Synthèse client','',amount(r.preInvoice?.amount ?? 0),'','','',amount(r.total)]);
+  if(r.preInvoice) {
+   const e=byInvoice.get(`preinvoice:${r.preInvoice.id}`);
+   if(e){const source=e.note.source as {invoice:unknown;receipts:unknown};const receipts=data.receipts.filter(p=>p.preInvoiceId===r.preInvoice!.id);if(canonicalJson(source.invoice)!==canonicalJson(r.preInvoice)||canonicalJson(source.receipts)!==canonicalJson(receipts))throw Error('Facture préétablie modifiée après avoir : export refusé.');}
+   rows.push([r.clientName,r.sector,e?'Facture préétablie — annulée par avoir':'Facture préétablie',`${r.preInvoice.id}${e?` · avoir du ${e.day} · ${e.pending?'en attente':'synchronisé'}`:''}`,amount(r.preInvoice.amount),'','','','']);
+  }
+  for(const s of r.sales){
+   const e=s.syncSaleId?byInvoice.get(`sale:${s.syncSaleId}`):undefined;
+   if(e){const {id:_id,...source}=s;if(canonicalJson(source)!==canonicalJson(e.note.source))throw Error('Vente modifiée après avoir : export refusé.');}
+   rows.push([r.clientName,r.sector,e?'Vente supplémentaire — annulée par avoir':'Vente supplémentaire',`Vente locale ${s.id}${e?` · avoir du ${e.day} · ${e.pending?'en attente':'synchronisé'}`:''}`,amount(s.total),amount(s.paid),'',s.paymentMode,'']);
+  }
+  for(const p of data.receipts.filter(p=>p.clientId===r.clientId && p.journalDate===data.day)) rows.push([r.clientName,r.sector,p.creditFull?'Journal — crédit total':'Règlement journal',p.createdAt,'',amount(p.prePaid),amount(p.oldDebtPaid),p.mode,'']);
+ }
+ rows.push(['TOTAL FACTURÉ (préétabli + ventes)','','','','','','','',amount(sum(data.rows.map(r=>r.total)))]);
+ const journalReceipts=data.receipts.filter(p=>p.journalDate===data.day && data.rows.some(r=>r.clientId===p.clientId));
+ rows.push(['TOTAL PAIEMENTS FACTURE PRÉÉTABLIE','','','','',amount(sum(journalReceipts.map(p=>p.prePaid)))]);
+ rows.push(['TOTAL ANCIENNE DETTE RÉGLÉE','','','','','',amount(sum(journalReceipts.map(p=>p.oldDebtPaid)))]);
+ rows.push(['TOTAL ENCAISSÉ LOCAL','','','','',amount(sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>s.paid))]))]);
+ if(data.credits) {
+  let total=0n,refund=0n;
+  const events=allEvents.filter(e=>e.day===data.day);
   rows.push(['AVOIRS CRÉÉS CE JOUR — distincts des factures d’origine']);
   for(const e of events){
    total+=BigInt(e.invoiceTotal);refund+=BigInt(e.note.refund);

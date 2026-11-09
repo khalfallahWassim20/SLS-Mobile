@@ -22,6 +22,8 @@ import {saveAndVerifyFinalCreditReference} from '../../../apps/mobile/credit-not
 import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
 import {createCreditTransportPrototype} from '../../../apps/mobile/credit-note-transport-prototype.js';
 import {readCreditSourceChoices} from '../../../apps/mobile/credit-note-source-choices-prototype.js';
+import {readCreditJournalExportPrototype} from '../../../apps/mobile/credit-note-journal-export-prototype.js';
+import {journalCsv} from '../../../apps/mobile/journal-export.js';
 
 test('deuxième appareil : avoirs distants sans copier les factures dans les tables actives',async()=>{
  const db=new PGlite(),mobile=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
@@ -77,6 +79,9 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   await transaction(()=>confirmLocalCreditReview(tx,identity,preReview,preCommand,digest));
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);assert.equal(mobile.prepare('SELECT count(*) AS n FROM tour_pre_invoices').get()?.n,0);
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:350000,conflict:false});
+  const exportBefore=await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest));
+  const exportCsv=journalCsv(exportBefore);assert.match(exportCsv,/AVOIRS CRÉÉS CE JOUR/);assert.match(exportCsv,/en attente/);assert.match(exportCsv,/719,000/);assert.match(exportCsv,/'-719,000/);assert.match(exportCsv,/50,000/);assert.match(exportCsv,/250,000/);
+  await assert.rejects(transaction(()=>readCreditJournalExportPrototype(tx,identity,'2026-02-30','Deuxième',digest)),/Date ou commercial invalide/);
   let lose=true;
   const io={readOperations:()=>transaction(()=>readIdentifiedOutbox(tx,identity)),acknowledgeOperation:(entry:Awaited<ReturnType<typeof readIdentifiedOutbox>>[number])=>transaction(()=>acknowledgeIdentifiedOutbox(tx,identity,entry)),
    readReadyCredits:()=>transaction(()=>readReadyOfflineCreditPrototype(tx,identity)),readAllCredits:()=>transaction(()=>readAllOfflineCreditPrototype(tx,identity)),acknowledgeCredit:(note:Note,response:unknown)=>transaction(()=>acknowledgeOfflineCreditPrototype(tx,identity,note,response)),
@@ -108,6 +113,11 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
   controller=makeController();assert.deepEqual(await controller.synchronize(),{operations:0,credits:2});
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:350000,conflict:false});
+  assert.match(journalCsv(await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest))),/synchronisé/);
+  // Annulation connue uniquement par le serveur : ne jamais exporter la
+  // facture locale comme active jusqu'à la prise en charge de ce cas.
+  mobile.exec('SAVEPOINT remote_export');mobile.prepare('DELETE FROM offline_credit_prototype WHERE invoice_id=?').run(saleId);mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
+  await assert.rejects(readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest),/Annulation reçue d’un autre appareil/);mobile.exec('ROLLBACK TO remote_export; RELEASE remote_export');
   await assert.rejects(transaction(()=>readCreditSourcesPrototype(tx,identity,clientId,digest)),/non confirmée|incomplètes/);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,1);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM pre_invoice_credit_prototype_events')).rows[0].n,1);
