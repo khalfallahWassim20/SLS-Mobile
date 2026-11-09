@@ -29,6 +29,10 @@ test('export local : avoirs du jour distincts des factures et de l’ancienne de
  assert.throws(()=>journalCsv({...preData,receipts:[{...receipt,oldDebtPaid:1}]}),/modifiée après avoir/);
  assert.throws(()=>journalCsv({...data,rows:[{...data.rows[0],sales:[{...sale,total:250001}]}]}),/modifiée après avoir/);
  assert.throws(()=>journalCsv({...data,credits:[notes[0],{...notes[0],note:{...notes[0].note,command:{...notes[0].note.command,operationId:randomUUID()}}}]}),/plusieurs fois/);
+ const remote={kind:'sale' as const,invoiceId:id,day:'2026-11-08',source};const remoteData={...data,credits:[],remoteCancellations:[remote]};assert.match(journalCsv(remoteData),/enregistré ailleurs/);assert.match(journalHtml(remoteData),/Vente supplémentaire — annulée par avoir/);
+ assert.throws(()=>journalCsv({...remoteData,remoteCancellations:[remote,remote]}),/Annulation distante invalide/);
+ assert.throws(()=>journalCsv({...remoteData,remoteCancellations:[{...remote,source:{...source,total:1}}]}),/modifiée après avoir/);
+ assert.throws(()=>journalCsv({...data,remoteCancellations:[remote]}),/Annulation distante invalide/);
  assert.throws(()=>journalCsv({...data,credits:[notes[0],notes[0]]}),/dupliqué/);
  assert.throws(()=>journalCsv({...data,credits:[{...notes[0],note:{...notes[0].note,refund:1}}]}),/incohérents/);
  const later=journalCsv({...data,day:'2026-11-09',rows:[]});assert.doesNotMatch(later,/facture du 2026-11-07/);

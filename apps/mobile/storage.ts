@@ -23,6 +23,7 @@ import {creditSourcesPrototypeSchema,saveCreditSourcesPrototype,readCreditSource
 import {createCreditTransportPrototype} from './credit-note-transport-prototype';
 import {readCreditSourceChoices} from './credit-note-source-choices-prototype';
 import {readCreditJournalExportPrototype} from './credit-note-journal-export-prototype';
+import {describeCreditJournalPrototype} from './credit-note-journal-view-model-prototype';
 import type {CommercialSession} from './commercial-login';
 
 export type SavedSale = {
@@ -404,4 +405,11 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
 export async function getCreditJournalExportPrototype(identity:DeviceIdentity,day:string,commercial:string) {
  const database=await db();let result:Awaited<ReturnType<typeof readCreditJournalExportPrototype>>|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditJournalExportPrototype(tx,identity,day,commercial,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
+}
+
+/** Modèle de journal et export issus d'une seule capture vérifiée ; le rendu
+ * ne doit pas être combiné avec les soldes et actions v3. */
+export async function getCreditJournalViewPrototype(identity:DeviceIdentity,day:string,commercial:string) {
+ const snapshot=await getCreditJournalExportPrototype(identity,day,commercial);
+ return {snapshot,view:describeCreditJournalPrototype(snapshot)};
 }
