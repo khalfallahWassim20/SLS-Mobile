@@ -20,6 +20,9 @@ import {preparePrototypeClose} from './credit-note-close-prototype';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from './credit-note-balance-storage-prototype';
 import {previewLocalCredit,confirmLocalCreditReview,type CreditReview} from './credit-note-review-prototype';
 import {creditSourcesPrototypeSchema,saveCreditSourcesPrototype,readCreditSourcesPrototype} from './credit-note-sources-prototype';
+import {createCreditTransportPrototype} from './credit-note-transport-prototype';
+import {readCreditSourceChoices} from './credit-note-source-choices-prototype';
+import type {CommercialSession} from './commercial-login';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -324,6 +327,12 @@ export async function getCreditSourcesPrototype(identity:DeviceIdentity,clientId
  await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditSourcesPrototype(tx,identity,clientId,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result;
 }
 
+/** Liste préparatoire sans fusion avec les tables du journal actif. */
+export async function getCreditSourceChoicesPrototype(identity:DeviceIdentity,clientId:string) {
+ const database=await db();let result:Awaited<ReturnType<typeof readCreditSourceChoices>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditSourceChoices(tx,identity,clientId,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
+}
+
 /** Effacement explicite des données fictives de ce téléphone seulement. */
 export async function clearLocalTestOperations():Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await resetLocalTestOperations(tx);});
@@ -378,4 +387,14 @@ export async function synchronizeCreditPrototype(identity:DeviceIdentity,verifie
    saveFinalReference:async(id,session,value)=>{const database=await db();await database.withExclusiveTransactionAsync(tx=>saveAndVerifyFinalCreditReference(tx,id,session,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data)));}
   });
  } finally {creditSyncRunning=false;}
+}
+
+/** Point de raccordement préparatoire ; aucune interface actuelle ne l'appelle.
+ * Le jeton reste en mémoire et le téléphone doit déjà être lié. */
+export function createExperimentalCreditMobileTransport(session:CommercialSession,identity:DeviceIdentity,onUnauthorized:()=>void) {
+ return createCreditTransportPrototype(session,identity,{
+  request:(url,options)=>fetch(url,options),onUnauthorized,
+  cacheReference:cacheCreditReferencePrototype,cacheSources:cacheCreditSourcesPrototype,
+  synchronize:synchronizeCreditPrototype
+ });
 }

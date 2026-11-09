@@ -20,6 +20,8 @@ import {previewLocalCredit,confirmLocalCreditReview} from '../../../apps/mobile/
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from '../../../apps/mobile/identified-outbox.js';
 import {saveAndVerifyFinalCreditReference} from '../../../apps/mobile/credit-note-sync-final-prototype.js';
 import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
+import {createCreditTransportPrototype} from '../../../apps/mobile/credit-note-transport-prototype.js';
+import {readCreditSourceChoices} from '../../../apps/mobile/credit-note-source-choices-prototype.js';
 
 test('deuxième appareil : avoirs distants sans copier les factures dans les tables actives',async()=>{
  const db=new PGlite(),mobile=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
@@ -32,7 +34,7 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   const a=await loginCommercial(pool,secret,{login:'first.test',password:'mot de passe fictif'}),b=await loginCommercial(pool,secret,{login:'second.test',password:'mot de passe fictif'});assert.ok(a&&b);
   const clientId=randomUUID();await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,1000000)',[clientId,'Client fictif']);
   const app=express();app.use(express.json());app.use('/v5',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
-  const addr=server.address();assert.ok(addr&&typeof addr!=='string');const origin=`http://127.0.0.1:${addr.port}`,identity={commercialId:second.id,serverOrigin:origin};
+  const addr=server.address();assert.ok(addr&&typeof addr!=='string');const origin=`http://127.0.0.1:${addr.port}`,identity={commercialId:second.id,serverOrigin:'https://sync.example.test'};
   const headers=(token:string)=>({Authorization:`Bearer ${token}`,'Content-Type':'application/json','X-SLS-Reference-Version':'5'});
   const post=(token:string,path:string,body:unknown)=>fetch(`${origin}/v5/${path}`,{method:'POST',headers:headers(token),body:JSON.stringify(body)});
   const get=async(path:string)=>{const r=await fetch(`${origin}/v5/${path}`,{headers:headers(b.token)});if(!r.ok)throw Error(`HTTP ${r.status}`);return r.json();};
@@ -49,7 +51,7 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
    ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}`);
   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{mobile.prepare(sql).run(...args)}};
   const transaction=async<T>(action:()=>Promise<T>)=>{mobile.exec('BEGIN');try{const v=await action();mobile.exec('COMMIT');return v;}catch(e){mobile.exec('ROLLBACK');throw e;}};
-  const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(second.id,origin);
+  const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(second.id,identity.serverOrigin);
   const reference=await get('reference');await transaction(()=>saveVerifiedCreditReference(tx,identity,identity,reference,digest));
   const sources=await get(`credit-sources/${clientId}`);await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   const saleCommand={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T11:00:00.000Z',choice:'refund' as const};
@@ -66,9 +68,19 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
    sendOperation:(path:string,body:string)=>fetch(`${origin}/v5/${path}`,{method:'POST',headers:headers(b.token),body}),
    sendCredit:async(path:string,body:string)=>{const r=await fetch(`${origin}/v5/credit-notes/${path}`,{method:'POST',headers:headers(b.token),body});if(lose){lose=false;assert.equal(r.status,201);throw Error('réponse perdue');}return r;},
    fetchReference:()=>get('reference'),saveReference:(x:typeof identity,y:typeof identity,v:unknown)=>transaction(async()=>{await saveVerifiedCreditReference(tx,x,y,v,digest);}),saveFinalReference:(x:typeof identity,y:typeof identity,v:unknown)=>transaction(()=>saveAndVerifyFinalCreditReference(tx,x,y,v,digest))};
-  await assert.rejects(syncCreditPrototype(identity,identity,io),/réponse perdue/);
+  // Le contrôleur de transport utilise les véritables échanges HTTP et les
+  // wrappers SQLite, mais le nom de serveur public est routé vers le test local.
+  const session={id:second.id,name:'Deuxième',serverOrigin:identity.serverOrigin,token:b.token,expiresAt:new Date(Date.now()+3600000).toISOString()};
+  const controller=createCreditTransportPrototype(session,identity,{
+   request:async(url,options)=>{const response=await fetch(url.replace(identity.serverOrigin+'/api/mobile/identified',origin+'/v5'),options);if(options.method==='POST'&&url.includes('/credit-notes/')&&lose){lose=false;assert.equal(response.status,201);throw Error('réponse perdue');}return response;},
+   cacheReference:(x,y,v)=>transaction(async()=>{await saveVerifiedCreditReference(tx,x,y,v,digest);}),
+   cacheSources:(x,y,id,v)=>transaction(async()=>{await saveCreditSourcesPrototype(tx,x,y,id,v,digest);}),
+   synchronize:(x,y,transport)=>syncCreditPrototype(x,y,{...io,...transport})
+  });
+  await controller.refreshSources(clientId);
+  await assert.rejects(controller.synchronize(),/réponse perdue/);
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
-  assert.deepEqual(await syncCreditPrototype(identity,identity,io),{operations:0,credits:2});
+  assert.deepEqual(await controller.synchronize(),{operations:0,credits:2});
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:350000,conflict:false});
   await assert.rejects(transaction(()=>readCreditSourcesPrototype(tx,identity,clientId,digest)),/non confirmée|incomplètes/);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,1);
@@ -83,7 +95,7 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   const review3=await transaction(()=>previewLocalCredit(tx,identity,clientId,'sale',{...cmd3,operationId:randomUUID()},digest));await transaction(()=>confirmLocalCreditReview(tx,identity,review3,cmd3,digest));
   const updated={...sale3,syncVersion:2,lines:[{...sale3.lines[0],name:'Autre libellé'}]};
   assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:sale3Id,version:2,recordedAt:'2026-11-08T12:00:00.000Z',sale:updated,refund:0})).status,201);
-  await assert.rejects(syncCreditPrototype(identity,identity,io),/Version de facture périmée/);
+  await assert.rejects(controller.synchronize(),/Version de facture périmée/);
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,1);
   assert.equal((await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest))).conflict,true);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);

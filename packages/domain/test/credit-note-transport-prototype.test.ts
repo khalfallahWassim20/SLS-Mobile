@@ -1,0 +1,31 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {createCreditTransportPrototype} from '../../../apps/mobile/credit-note-transport-prototype.js';
+function fixture(){
+ const commercialId=randomUUID(),identity={commercialId,serverOrigin:'https://api.example.test'},now0=Date.parse('2026-11-08T10:00:00.000Z');let now=now0,unauthorized=0;
+ const session={id:commercialId,name:'Fictif',serverOrigin:identity.serverOrigin,token:'jeton fictif',expiresAt:'2026-11-08T23:00:00.000Z'};
+ const events:string[]=[],calls:{url:string;options:any}[]=[];let release:(()=>void)|null=null,block=false,status=200;
+ const io={now:()=>now,onUnauthorized:()=>{unauthorized++},request:async(url:string,options:any)=>{calls.push({url,options});if(block)await new Promise<void>(r=>{release=r});return {status,ok:status===200,json:async()=>({clientId:'test',error:'Session refusée'})};},
+  cacheReference:async()=>{events.push('reference')},cacheSources:async()=>{events.push('sources')},
+  synchronize:async(_a:any,_b:any,transport:any)=>{await transport.fetchReference();const r=await transport.sendCredit('sales','{"operationId":"x"}');await r.json();events.push('sync');return {operations:0,credits:1}}};
+ return {identity,session,events,calls,io,expire:()=>{now=Date.parse(session.expiresAt)},reject:()=>{status=401},unauthorized:()=>unauthorized,block:()=>{block=true},release:()=>{assert.ok(release);release();}};
+}
+test('transport v5 : routes fixes, session vérifiée, ordre et exclusion simultanée',async()=>{
+ const f=fixture(),controller=createCreditTransportPrototype(f.session,f.identity,f.io),client=randomUUID();
+ await controller.refreshSources(client);assert.deepEqual(f.events,['reference','sources']);assert.match(f.calls[0].url,/\/api\/mobile\/identified\/reference$/);assert.match(f.calls[1].url,new RegExp(`/credit-sources/${client}$`));
+ assert.equal(f.calls[0].options.headers['X-SLS-Reference-Version'],'5');assert.equal(f.calls[0].options.headers.Authorization,'Bearer jeton fictif');
+ assert.deepEqual(await controller.synchronize(),{operations:0,credits:1});assert.match(f.calls.at(-1)!.url,/credit-notes\/sales$/);
+ f.block();const pending=controller.refreshReference();await assert.rejects(controller.refreshSources(client),/déjà en cours/);f.release();await pending;
+});
+test('transport v5 : identité, expiration et session refusée ne remplacent aucun cache',async()=>{
+ const wrong=fixture(),controller=createCreditTransportPrototype(wrong.session,{...wrong.identity,commercialId:randomUUID()},wrong.io);
+ await assert.rejects(controller.refreshReference(),/identité différente/);assert.equal(wrong.calls.length,0);
+ const expired=fixture(),c=createCreditTransportPrototype(expired.session,expired.identity,expired.io);expired.block();const pending=c.refreshReference();expired.expire();expired.release();await assert.rejects(pending,/expirée/);assert.deepEqual(expired.events,[]);
+ const refused=fixture(),d=createCreditTransportPrototype(refused.session,refused.identity,refused.io);refused.reject();await assert.rejects(d.refreshReference(),/Session refusée/);assert.equal(refused.unauthorized(),1);assert.deepEqual(refused.events,[]);
+ await assert.rejects(d.refreshSources('non-uuid'),/Client invalide/);
+});
+test('transport v5 : interdiction de routes arbitraires',async()=>{
+ const f=fixture();f.io.synchronize=async(_a,_b,transport)=>{await assert.rejects(async()=>transport.sendOperation('../reference','{}'),/invalide/);await assert.rejects(async()=>transport.sendCredit('other','{}'),/invalide/);return {operations:0,credits:0};};
+ const c=createCreditTransportPrototype(f.session,f.identity,f.io);await c.synchronize();assert.equal(f.calls.length,0);
+});
