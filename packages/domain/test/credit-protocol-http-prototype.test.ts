@@ -24,6 +24,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   await db.query('INSERT INTO clients(id,name,opening_balance,active) VALUES($1,$2,1000000,true),($3,$4,0,false)',[clientId,'Client fictif',inactive,'Client inactif']);
   assert.throws(()=>identifiedCommercialRoutes(pool,secret,{enforceMode:false,allowCreditProtocol:true}),/exige/);
   const app=express();app.use(express.json());app.use('/old',identifiedCommercialRoutes(pool,secret));app.use('/new',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));
+  app.use('/admin-old',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin'));
   app.use('/admin-read',(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},identifiedAdminReadRoutes(pool,{allowCreditProtocol:true}));
   app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin',{allowCreditProtocol:true}));
   server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
@@ -61,8 +62,27 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   const adminHeaders={...headers,Authorization:'Bearer admin-test'};
   assert.equal((await get(`/admin-read/${c.id}/2026-11-08`,{...adminHeaders,'X-SLS-Reference-Version':'4'})).status,409);
   const adminDay=await (await get(`/admin-read/${c.id}/2026-11-08`,adminHeaders)).json() as any;assert.equal(adminDay.creditEvents.length,2);assert.ok(Array.isArray(adminDay.closureEvents));
+  // L'admin crée l'avoir d'une autre vente du commercial, après authentification
+  // et uniquement en v5. Les anciennes routes ne sont pas activées.
+  const adminCommand={operationId:randomUUID(),invoiceId:otherId,expectedVersion:1,recordedAt:'2026-11-09T10:00:00.000Z',choice:'credit'};
+  assert.equal((await post('/admin-old/credit-notes/sales',adminCommand,adminHeaders)).status,404);
+  assert.equal((await post('/admin/credit-notes/sales',adminCommand)).status,401);
+  assert.equal((await post('/admin/credit-notes/sales',adminCommand,{...adminHeaders,'X-SLS-Reference-Version':'4'})).status,409);
+  assert.equal((await post('/admin/credit-notes/sales',adminCommand,adminHeaders)).status,201);
+  assert.equal((await post('/admin/credit-notes/sales',adminCommand,adminHeaders)).status,200);
+  const later=await (await get(`/admin-read/${c.id}/2026-11-09`,adminHeaders)).json() as any;
+  assert.equal(later.creditEvents.length,1);assert.equal(later.creditEvents[0].actor.role,'admin');assert.equal(later.creditRetainedTotal,50000);
+  const invoice2={...invoice,id:randomUUID(),journalDate:'2026-11-09',createdAt:'2026-11-09T09:00:00.000Z'};
+  const j2={operationId:randomUUID(),version:1,invoice:invoice2,receipts:[]};assert.equal((await post('/new/journal',j2)).status,201);
+  const pay2={...receipt,id:randomUUID(),preInvoiceId:invoice2.id,journalDate:invoice2.journalDate,createdAt:'2026-11-09T09:30:00.000Z',prePaid:250000,oldDebtPaid:400000};
+  assert.equal((await post('/new/journal',{...j2,operationId:randomUUID(),version:2,receipts:[pay2]})).status,201);
+  const adminPre={operationId:randomUUID(),invoiceId:invoice2.id,expectedVersion:2,recordedAt:'2026-11-09T11:00:00.000Z',choice:'credit'};
+  assert.equal((await post('/admin/credit-notes/preinvoices',adminPre,adminHeaders)).status,201);
+  assert.equal((await post('/admin/credit-notes/preinvoices',adminPre,adminHeaders)).status,200);
+  const adminPreDay=await (await get(`/admin-read/${c.id}/2026-11-09`,adminHeaders)).json() as any;
+  assert.equal(adminPreDay.creditEvents.length,2);assert.equal(adminPreDay.creditRetainedTotal,300000);assert.equal(adminPreDay.rows[0].oldDebtPaid,400000);assert.equal(adminPreDay.rows[0].preInvoiceCancelled,true);
   const result=validatePrototypeCreditReference(await (await get('/new/reference')).json());
-  assert.equal(result.clients.find(x=>x.id===clientId)?.serverBalance,'1059000');assert.equal(result.saleStates.find(s=>s.saleId===saleId)?.cancelled,true);assert.ok(result.journalStates.find(j=>j.id===invoice.id)?.creditNote);
+  assert.equal(result.clients.find(x=>x.id===clientId)?.serverBalance,'290000');assert.equal(result.saleStates.find(s=>s.saleId===saleId)?.cancelled,true);assert.ok(result.journalStates.find(j=>j.id===invoice.id)?.creditNote);
   assert.equal((await post('/new/close',{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0})).status,201);
   const reopen={requestId:randomUUID(),day:'2026-11-08',expectedVersion:1};
   assert.equal((await post(`/admin/${c.id}/reopen`,reopen)).status,401);

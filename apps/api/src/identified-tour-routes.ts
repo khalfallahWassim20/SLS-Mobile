@@ -13,7 +13,7 @@ import {IdentifiedOverlap} from './identified-overlap.js';
 import {CreditProtocolUpgradeRequired} from './credit-note-active-guards.js';
 import {readPrototypeCreditReference} from './credit-note-reference-prototype.js';
 import {readPrototypeCreditJournal} from './credit-note-journal-prototype.js';
-import {prototypeCommercialCreditRoutes} from './credit-note-routes-prototype.js';
+import {prototypeCommercialCreditRoutes,prototypeAdminCreditRoutes} from './credit-note-routes-prototype.js';
 import {IdentifiedSyncDisabled,assertIdentifiedMode,readSyncMode} from './tour-sync-mode.js';
 
 const input=z.object({requestId:z.string().uuid(),day:z.string(),expectedVersion:z.number().int().min(0)}).strict();
@@ -50,6 +50,9 @@ export function identifiedAdminRoutes(pool:Pool,authenticateAdmin:RequestHandler
  const enforceMode=options.enforceMode!==false;
  if(options.allowCreditProtocol&&!enforceMode)throw Error('Le protocole d’avoirs exige le mode individuel.');
  const r=Router();r.use(authenticateAdmin);r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
+ // Reste désactivé dans server.ts. L'authentification est imposée par ce
+ // routeur parent, avant même de vérifier la version ou de traiter la requête.
+ if(options.allowCreditProtocol===true)r.use('/credit-notes',(req,res,next)=>{if(req.get('X-SLS-Reference-Version')!=='5'){res.status(409).json({error:'Référence v5 requise.'});return;}next();},prototypeAdminCreditRoutes(pool,(_req,_res,next)=>next(),adminName));
  r.post('/:commercialId/reopen',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'admin',actorId:adminName,commercialId:req.params.commercialId},enforceMode,options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5');res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
  return r;
 }

@@ -10,7 +10,7 @@
     "test": "tsx --test packages/domain/test/*.test.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/api/tsconfig.json",
     "check": "npm run typecheck && npm test && npm run test:admin-export",
-    "test:admin-export": "node --test apps/admin/test/*.test.mjs",
+    "test:admin-export": "tsx --test apps/admin/test/*.test.mjs apps/admin/test/*.test.jsx",
     "mobile": "npm run start --workspace @sls/mobile",
     "api": "npm run dev --workspace @sls/api",
     "admin": "npm run dev --workspace @sls/admin",
