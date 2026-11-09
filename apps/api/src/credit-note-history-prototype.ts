@@ -1,6 +1,6 @@
 /** Vue d'historique préparatoire : ne pas exposer avant raccordement de toutes
  * les écritures, références, interfaces et exports au protocole d'avoirs. */
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {canonicalJson,summarizePreInvoice} from '@sls/domain';
 import {readPrototypeCreditReferenceInTransaction} from './credit-note-reference-prototype.js';
 import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
@@ -15,10 +15,7 @@ function tunisDay(value:string) {
 /** Les mouvements, facture et solde proviennent d'un même instantané MVCC.
  * L'historique garde les montants d'origine ; il ne transforme jamais l'avoir
  * en règlement de l'ancienne dette. */
-export async function readPrototypeCreditHistory(pool:Pool) {
- const db=await pool.connect();
- try {
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
+export async function readPrototypeCreditHistoryInTransaction(db:PoolClient) {
   const reference=await readPrototypeCreditReferenceInTransaction(db);
   const clients=new Map(reference.clients.map(c=>[c.id,c.name]));
   const sales=await db.query(`SELECT n.operation_id,n.invoice_id,n.event,
@@ -44,6 +41,13 @@ export async function readPrototypeCreditHistory(pool:Pool) {
   }
   if(records.length!==reference.saleStates.filter(s=>s.creditNote).length+reference.journalStates.filter(j=>j.creditNote).length)throw new RangeError('Historique d’avoirs incomplet.');
   records.sort((a,b)=>b.recordedAt.localeCompare(a.recordedAt)||a.operationId.localeCompare(b.operationId));
+  return records;
+}
+export async function readPrototypeCreditHistory(pool:Pool) {
+ const db=await pool.connect();
+ try {
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
+  const records=await readPrototypeCreditHistoryInTransaction(db);
   await db.query('COMMIT');return records;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

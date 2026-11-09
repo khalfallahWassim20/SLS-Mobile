@@ -9,6 +9,7 @@ import {creditNotePrototypeSchema,storePrototypeCreditNote} from '../../../apps/
 import {preInvoiceCreditPrototypeSchema,storePrototypePreInvoiceCredit} from '../../../apps/api/src/pre-invoice-credit-registry-prototype.js';
 import {readPrototypeCreditReference} from '../../../apps/api/src/credit-note-reference-prototype.js';
 import {readPrototypeCreditHistory} from '../../../apps/api/src/credit-note-history-prototype.js';
+import {readPrototypeCreditJournal} from '../../../apps/api/src/credit-note-journal-prototype.js';
 import {readIdentifiedReference} from '../../../apps/api/src/identified-reference.js';
 import {readIdentifiedJournalDay} from '../../../apps/api/src/identified-journal-day.js';
 import {readServerJournalDay} from '../../../apps/api/src/journal-day.js';
@@ -59,6 +60,12 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   assert.equal(history.length,2);
   assert.deepEqual(history.find(x=>x.kind==='sale'),{kind:'sale',operationId:saleCommand.operationId,invoiceId:saleId,invoiceDay:day,recordedAt:saleCommand.recordedAt,recordedDay:day,clientId,clientName:'Client fictif',ownerId:c.id,actor:{id:c.id,role:'commercial'},version:1,invoiceTotal:119000,netPaid:50000,oldDebtPaid:0,wasDeclared:true,refund:50000,retainedCredit:0,balanceDelta:-69000});
   assert.deepEqual(history.find(x=>x.kind==='preinvoice'),{kind:'preinvoice',operationId:preCommand.operationId,invoiceId,invoiceDay:day,recordedAt:preCommand.recordedAt,recordedDay:day,clientId,clientName:'Client fictif',ownerId:c.id,actor:{id:c.id,role:'commercial'},version:3,invoiceTotal:600000,netPaid:250000,oldDebtPaid:400000,wasDeclared:true,refund:0,retainedCredit:250000,balanceDelta:-600000});
+  const journal=await readPrototypeCreditJournal(pool,c.id,day);
+  assert.equal(journal.totalBilled,719000);assert.equal(journal.totalCollected,700000);
+  assert.equal(journal.creditNoteTotal,719000);assert.equal(journal.creditRefundTotal,50000);assert.equal(journal.creditRetainedTotal,250000);
+  assert.equal(journal.billedAfterCredits,0);assert.equal(journal.collectedAfterRefunds,650000);
+  assert.equal(journal.rows[0].oldDebtPaid,400000);assert.equal(journal.rows[0].preInvoiceCancelled,true);assert.equal(journal.rows[0].cancelledSaleCount,1);
+  const nextDay=await readPrototypeCreditJournal(pool,c.id,'2026-11-09');assert.equal(nextDay.creditEvents.length,0);assert.equal(nextDay.billedAfterCredits,0);
   const result=await readPrototypeCreditReference(pool);
   assert.equal(result.experimental,true);assert.equal(result.version,5);assert.equal(result.clients[0].serverBalance,'350000');
   const cache=new DatabaseSync(':memory:');
@@ -174,9 +181,20 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   assert.equal(result.saleStates[0].total,'0');assert.equal(result.saleStates[0].paid,'0');assert.equal(result.saleStates[0].version,2);assert.equal(result.saleStates[0].cancelled,true);
   assert.equal(result.journalStates[0].creditNote?.operationId,preCommand.operationId);assert.equal(result.journalStates[0].version,3);
   assert.equal(result.journalStates[0].receipts[0].oldDebtPaid,300000);assert.equal(result.journalStates[0].receipts[1].oldDebtPaid,100000);
+  // Une annulation faite par l'admin le lendemain est attribuée à la journée
+  // de sa création, tout en conservant la facture sur sa journée d'origine.
+  const secondId=randomUUID(),secondSale={...sale,clientId:otherClient,clientName:'Z autre client fictif',syncSaleId:secondId};
+  await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId:secondId,version:1,recordedAt:at,sale:secondSale,refund:0},auth);
+  const adminCommand={operationId:randomUUID(),invoiceId:secondId,expectedVersion:1,recordedAt:'2026-11-09T10:00:00.000Z',choice:'refund' as const};
+  await storePrototypeCreditNote(pool,adminCommand,{kind:'admin',actorId:'admin'});
+  const originalDay=await readPrototypeCreditJournal(pool,c.id,day),laterDay=await readPrototypeCreditJournal(pool,c.id,'2026-11-09');
+  assert.equal(originalDay.rows.find(r=>r.clientId===otherClient)?.cancelledSaleCount,1);
+  assert.equal(laterDay.creditEvents.length,1);assert.equal(laterDay.creditEvents[0].actor.role,'admin');
+  assert.equal(laterDay.billedAfterCredits,-119000);assert.equal(laterDay.collectedAfterRefunds,-50000);
   await db.query("UPDATE pre_invoice_credit_prototype_movements SET balance_delta=1 WHERE operation_id=$1 AND kind='invoice_cancellation'",[preCommand.operationId]);
   await assert.rejects(readPrototypeCreditReference(pool),/Mouvements/);
   await assert.rejects(readPrototypeCreditHistory(pool),/Mouvements/);
+  await assert.rejects(readPrototypeCreditJournal(pool,c.id,day),/Mouvements/);
   await db.query("UPDATE pre_invoice_credit_prototype_movements SET balance_delta=-600000 WHERE operation_id=$1 AND kind='invoice_cancellation'",[preCommand.operationId]);
   const r3={...r2,id:randomUUID(),createdAt:'2026-11-08T13:00:00.000Z',prePaid:10000,oldDebtPaid:0};
   // Simule une corruption directe en base, sans passer par le chemin protégé.

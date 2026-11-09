@@ -22,13 +22,19 @@ function data(records,day,commercialId){
  const rows=selected(records,day,commercialId),sum=key=>{const v=rows.reduce((n,r)=>n+BigInt(r[key]),0n);if(v>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Total trop élevé.');return amount(Number(v));};
  return {rows:rows.map(r=>[r.clientName,r.kind==='sale'?'Vente SLS':'Facture préétablie',r.invoiceId,r.invoiceDay,r.recordedAt,r.actor.role==='admin'?'Administrateur':'Commercial',r.actor.id,amount(r.invoiceTotal),amount(r.netPaid),amount(r.refund),amount(r.retainedCredit),amount(r.oldDebtPaid),amount(r.balanceDelta),r.wasDeclared?'Oui':'Non']),count:rows.length,notes:sum('invoiceTotal'),refund:sum('refund'),retained:sum('retainedCredit')};
 }
-const headers=['Client','Origine','Facture','Date facture','Création UTC','Acteur','Identifiant acteur','Avoir DT','Paiement facture DT','Remboursement DT','Crédit client DT','Ancienne dette réglée DT','Variation du solde DT','Facture déclarée'];
+export const creditHeaders=['Client','Origine','Facture','Date facture','Création UTC','Acteur','Identifiant acteur','Avoir DT','Paiement facture DT','Remboursement DT','Crédit client DT','Ancienne dette réglée DT','Variation du solde DT','Facture déclarée'];
+/** Appelé avec les seuls avoirs déjà filtrés par commercial et date. */
+export function creditJournalExportRows(records,day,commercialId){
+ const selectedRecords=selected(records,day,commercialId);
+ if(selectedRecords.length!==records.length)throw Error('Avoir hors du périmètre du journal.');
+ return data(records,day,commercialId).rows;
+}
 const explanation='Données fictives reçues au serveur. Avoirs créés à la date sélectionnée, pour les factures du commercial sélectionné ; un autre acteur peut avoir créé l’avoir. Les autres appareils non synchronisés sont exclus. Le règlement d’ancienne dette reste conservé. Une facture préétablie doit aussi être corrigée séparément dans le système principal. Numérotation et fiscalité à valider.';
 export function prototypeCreditCsv(records,day,commercialId,commercialName){
- const d=data(records,day,commercialId),rows=[['Historique des avoirs — démonstration'],['Date',day,'Commercial propriétaire',commercialName],['Périmètre',explanation],[],headers,...d.rows,[],['Nombre d’avoirs',String(d.count)],['Total avoirs DT',d.notes],['Total remboursé DT',d.refund],['Total conservé en crédit DT',d.retained]];
+ const d=data(records,day,commercialId),rows=[['Historique des avoirs — démonstration'],['Date',day,'Commercial propriétaire',commercialName],['Périmètre',explanation],[],creditHeaders,...d.rows,[],['Nombre d’avoirs',String(d.count)],['Total avoirs DT',d.notes],['Total remboursé DT',d.refund],['Total conservé en crédit DT',d.retained]];
  return '\uFEFF'+rows.map(r=>r.map(cell).join(';')).join('\r\n')+'\r\n';
 }
 export function prototypeCreditHtml(records,day,commercialId,commercialName){
  const d=data(records,day,commercialId),table=(head,rows)=>`<table><thead><tr>${head.map(v=>`<th>${esc(v)}</th>`).join('')}</tr></thead><tbody>${rows.map(r=>`<tr>${r.map(v=>`<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
- return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Historique des avoirs</title><style>@page{size:landscape;margin:10mm}body{font:11px Arial}table{border-collapse:collapse;width:100%}th,td{border:1px solid #aaa;padding:4px;text-align:left;overflow-wrap:anywhere}th{background:#e3f2e8}tr{break-inside:avoid}</style></head><body><h1>Historique des avoirs — démonstration</h1><p>${esc(day)} · ${esc(commercialName)}</p><p>${esc(explanation)}</p>${table(headers,d.rows)}${table(['Indicateur','Valeur'],[['Nombre d’avoirs',d.count],['Total avoirs DT',d.notes],['Total remboursé DT',d.refund],['Total conservé en crédit DT',d.retained]])}</body></html>`;
+ return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Historique des avoirs</title><style>@page{size:landscape;margin:10mm}body{font:11px Arial}table{border-collapse:collapse;width:100%}th,td{border:1px solid #aaa;padding:4px;text-align:left;overflow-wrap:anywhere}th{background:#e3f2e8}tr{break-inside:avoid}</style></head><body><h1>Historique des avoirs — démonstration</h1><p>${esc(day)} · ${esc(commercialName)}</p><p>${esc(explanation)}</p>${table(creditHeaders,d.rows)}${table(['Indicateur','Valeur'],[['Nombre d’avoirs',d.count],['Total avoirs DT',d.notes],['Total remboursé DT',d.refund],['Total conservé en crédit DT',d.retained]])}</body></html>`;
 }

@@ -5,7 +5,8 @@ import type {Pool} from 'pg';
 import {readIdentifiedJournalDay} from './identified-journal-day.js';
 import {readJournalPaymentHistory} from './journal-payment-history.js';
 import {CreditProtocolUpgradeRequired} from './credit-note-active-guards.js';
-export function identifiedAdminReadRoutes(pool:Pool) {
+import {readPrototypeCreditJournal} from './credit-note-journal-prototype.js';
+export function identifiedAdminReadRoutes(pool:Pool,options:{allowCreditProtocol?:boolean}={}) {
  const r=Router();
  r.get('/:commercialId/:day/payments',async(req,res,next)=>{
   try {const data=await readJournalPaymentHistory(pool,req.params.commercialId,req.params.day);res.set('Cache-Control','no-store').json(data);}
@@ -13,7 +14,7 @@ export function identifiedAdminReadRoutes(pool:Pool) {
  });
  r.get('/:commercialId/:day',async(req,res,next)=>{
   try {
-   const day=await readIdentifiedJournalDay(pool,req.params.commercialId,req.params.day);
+   const day=options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5'?await readPrototypeCreditJournal(pool,req.params.commercialId,req.params.day):await readIdentifiedJournalDay(pool,req.params.commercialId,req.params.day);
    res.set('Cache-Control','no-store').json(day);
   } catch(error) {
    if(error instanceof CreditProtocolUpgradeRequired){res.status(409).json({error:error.message});return;}

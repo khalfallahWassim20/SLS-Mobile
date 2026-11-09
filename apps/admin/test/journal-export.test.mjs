@@ -7,3 +7,14 @@ test('export serveur : chiffres séparés, formules et caractères spéciaux',()
  const html=journalServerHtml(day,'2026-11-08T12:00:00Z');assert.match(html,/&lt;Nom&gt;/);assert.doesNotMatch(html,/<Nom>/);assert.match(html,/850,000/);assert.match(html,/Clôturée/);assert.match(html,/non synchronisées/);
 });
 test('journal vide',()=>{const empty={...day,rows:[],inheritedJournalPayments:[],clientCount:0};assert.match(journalServerHtml(empty,'maintenant'),/Aucune donnée reçue/);assert.match(journalServerCsv(empty,'maintenant'),/Clients du journal/);});
+test('journal serveur avec avoir : facture, ancienne dette et mouvements restent distincts',async()=>{
+ const {randomUUID}=await import('node:crypto'),owner=randomUUID();
+ const entry={kind:'preinvoice',operationId:randomUUID(),invoiceId:randomUUID(),invoiceDay:'2026-11-08',recordedAt:'2026-11-08T12:00:00.000Z',recordedDay:'2026-11-08',clientId:randomUUID(),clientName:'=Fictif',ownerId:owner,actor:{id:'admin',role:'admin'},version:2,invoiceTotal:600000,netPaid:250000,oldDebtPaid:400000,wasDeclared:true,refund:0,retainedCredit:250000,balanceDelta:-600000};
+ const report={...day,commercial:{id:owner,name:'<Commercial>'},creditVersion:5,creditEvents:[entry],creditNoteTotal:600000,creditRefundTotal:0,creditRetainedTotal:250000,billedAfterCredits:250000,collectedAfterRefunds:680000};
+ const csv=journalServerCsv(report,'2026-11-08T12:00:00Z'),html=journalServerHtml(report,'2026-11-08T12:00:00Z');
+ assert.match(csv,/Avoirs créés ce jour/);assert.match(csv,/Facturé moins avoirs du jour/);assert.match(csv,/400,000/);assert.match(csv,/250,000/);assert.match(csv,/'=Fictif/);
+ assert.match(html,/système principal/);assert.match(html,/&lt;Commercial&gt;/);assert.match(html,/Avoirs créés ce jour/);
+ assert.throws(()=>journalServerCsv({...report,billedAfterCredits:1},'maintenant'),/incohérents/);
+ assert.throws(()=>journalServerCsv({...report,creditEvents:[{...entry,ownerId:randomUUID()}]},'maintenant'),/périmètre/);
+ assert.throws(()=>journalServerHtml({...report,creditEvents:undefined},'maintenant'),/invalide/);
+});

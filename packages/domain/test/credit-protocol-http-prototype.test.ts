@@ -8,6 +8,7 @@ import {schemaSql} from '../../../apps/api/src/schema.js';
 import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {identifiedCommercialRoutes,identifiedAdminRoutes} from '../../../apps/api/src/identified-tour-routes.js';
+import {identifiedAdminReadRoutes} from '../../../apps/api/src/identified-admin-read.js';
 import {validatePrototypeCreditReference} from '../../../apps/mobile/credit-note-reference-prototype.js';
 
 test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et sources annulées protégées',async()=>{
@@ -23,6 +24,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   await db.query('INSERT INTO clients(id,name,opening_balance,active) VALUES($1,$2,1000000,true),($3,$4,0,false)',[clientId,'Client fictif',inactive,'Client inactif']);
   assert.throws(()=>identifiedCommercialRoutes(pool,secret,{enforceMode:false,allowCreditProtocol:true}),/exige/);
   const app=express();app.use(express.json());app.use('/old',identifiedCommercialRoutes(pool,secret));app.use('/new',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));
+  app.use('/admin-read',(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},identifiedAdminReadRoutes(pool,{allowCreditProtocol:true}));
   app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin',{allowCreditProtocol:true}));
   server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
   const a=server.address();assert.ok(a&&typeof a!=='string');const url=`http://127.0.0.1:${a.port}`;
@@ -52,6 +54,13 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   assert.equal((await post('/new/credit-notes/preinvoices',pre)).status,201);
   const receipt={id:randomUUID(),preInvoiceId:invoice.id,clientId,journalDate:invoice.journalDate,createdAt:'2026-11-08T13:00:00.000Z',prePaid:1,oldDebtPaid:0,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1000000};
   assert.equal((await post('/new/journal',{operationId:randomUUID(),version:2,invoice,receipts:[receipt]})).status,409);
+  assert.equal((await get('/new/day/2026-11-08/details',{...headers,'X-SLS-Reference-Version':'4'})).status,409);
+  const mobileDay=await (await get('/new/day/2026-11-08/details')).json() as any;
+  assert.equal(mobileDay.creditVersion,5);assert.equal(mobileDay.creditEvents.length,2);assert.equal(mobileDay.creditNoteTotal,719000);assert.equal(mobileDay.creditRefundTotal,50000);assert.equal(mobileDay.rows[0].preInvoiceCancelled,true);assert.equal(mobileDay.rows[0].cancelledSaleCount,1);assert.equal(mobileDay.closureEvents,undefined);
+  assert.equal((await get(`/admin-read/${c.id}/2026-11-08`)).status,401);
+  const adminHeaders={...headers,Authorization:'Bearer admin-test'};
+  assert.equal((await get(`/admin-read/${c.id}/2026-11-08`,{...adminHeaders,'X-SLS-Reference-Version':'4'})).status,409);
+  const adminDay=await (await get(`/admin-read/${c.id}/2026-11-08`,adminHeaders)).json() as any;assert.equal(adminDay.creditEvents.length,2);assert.ok(Array.isArray(adminDay.closureEvents));
   const result=validatePrototypeCreditReference(await (await get('/new/reference')).json());
   assert.equal(result.clients[0].serverBalance,'1059000');assert.equal(result.saleStates.find(s=>s.saleId===saleId)?.cancelled,true);assert.ok(result.journalStates.find(j=>j.id===invoice.id)?.creditNote);
   assert.equal((await post('/new/close',{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0})).status,201);

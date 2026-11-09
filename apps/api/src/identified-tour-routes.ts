@@ -12,6 +12,7 @@ import {readIdentifiedJournalDay} from './identified-journal-day.js';
 import {IdentifiedOverlap} from './identified-overlap.js';
 import {CreditProtocolUpgradeRequired} from './credit-note-active-guards.js';
 import {readPrototypeCreditReference} from './credit-note-reference-prototype.js';
+import {readPrototypeCreditJournal} from './credit-note-journal-prototype.js';
 import {prototypeCommercialCreditRoutes} from './credit-note-routes-prototype.js';
 import {IdentifiedSyncDisabled,assertIdentifiedMode,readSyncMode} from './tour-sync-mode.js';
 
@@ -34,7 +35,7 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  // Expérimental uniquement : cette option ne doit pas être activée par server.ts
  // avant le raccordement complet des écrans, soldes, historiques et exports.
  if(options.allowCreditProtocol===true)r.use('/credit-notes',(req,res,next)=>{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}next();},prototypeCommercialCreditRoutes(pool,secret));
- r.get('/day/:day/details',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}const {closureEvents:_adminHistory,...details}=await readIdentifiedJournalDay(pool,actor.id,req.params.day,enforceMode);res.json(details);}catch(e){errorHandler(e,res,next);}});
+ r.get('/day/:day/details',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}const {closureEvents:_adminHistory,...details}=supportsCredit(req)?await readPrototypeCreditJournal(pool,actor.id,req.params.day):await readIdentifiedJournalDay(pool,actor.id,req.params.day,enforceMode);res.json(details);}catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}if(enforceMode)assertIdentifiedMode(await readSyncMode(pool));res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});
  r.post('/close',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))},enforceMode,supportsCredit(req));res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
  for(const kind of ['journal','sales','settlements'] as const) r.post('/'+kind,async(req,res,next)=>{try{

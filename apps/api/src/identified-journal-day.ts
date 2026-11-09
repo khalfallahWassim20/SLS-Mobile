@@ -1,18 +1,15 @@
 /** Vue interne par commercial, limitée aux données identifiées et non exposée. */
-import type {Pool} from 'pg';
+import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
 import {buildServerJournalDay} from './journal-day.js';
 import {journalDateSchema,parseJournalSnapshot} from './journal-protocol.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 
-export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day:string,enforceMode=false) {
+/** L'appelant doit fournir un instantané REPEATABLE READ ; cette fonction ne
+ * vérifie pas le protocole et ne doit pas être utilisée seule par une route. */
+export async function readIdentifiedJournalDayInTransaction(db:PoolClient,commercialId:string,day:string) {
  z.string().uuid().parse(commercialId);journalDateSchema.parse(day);
- const db=await pool.connect();
- try {
-  await db.query(enforceMode?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
-  if(enforceMode)assertIdentifiedMode(await lockSyncMode(db));
-  await assertOldCreditProtocolSafe(db);
   const commercial=await db.query('SELECT id,name FROM commercials WHERE id=$1 AND deleted_at IS NULL',[commercialId]);
   if(!commercial.rows.length)throw new RangeError('Commercial introuvable.');
   const invoices=await db.query(`SELECT DISTINCT ON (e.invoice_id) e.payload FROM identified_journal_events e
@@ -46,8 +43,16 @@ export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day
    FROM tour_closure_events WHERE commercial_id=$1 AND journal_date=$2::date ORDER BY version DESC LIMIT 200`,[commercialId,day]);
   const inheritedPayments=[...inheritedByClient.values()].map(p=>{if(p.prePaid>BigInt(Number.MAX_SAFE_INTEGER)||p.oldDebtPaid>BigInt(Number.MAX_SAFE_INTEGER))throw new RangeError('Total encaissé trop élevé.');return {clientId:p.clientId,clientName:p.clientName,prePaid:Number(p.prePaid),oldDebtPaid:Number(p.oldDebtPaid)};});
   const state=closure.rows[0];
-  await db.query('COMMIT');
   return {...dayResult,commercial:commercial.rows[0],closure:{status:state?.status??'open',version:state?.version??0,closedAt:state?.closed_at?new Date(state.closed_at).toISOString():null},
    journalCollected:dayResult.totalCollected,inheritedJournalPayments:inheritedPayments,inheritedJournalTotal:Number(inheritedTotal),globalSettlementCount:settlements.rows[0].count,globalSettlementTotal:Number(settlements.rows[0].amount),totalCollected:Number(total),closureEvents:events.rows};
+}
+export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day:string,enforceMode=false) {
+ const db=await pool.connect();
+ try {
+  await db.query(enforceMode?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  if(enforceMode)assertIdentifiedMode(await lockSyncMode(db));
+  await assertOldCreditProtocolSafe(db);
+  const result=await readIdentifiedJournalDayInTransaction(db,commercialId,day);
+  await db.query('COMMIT');return result;
  } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
