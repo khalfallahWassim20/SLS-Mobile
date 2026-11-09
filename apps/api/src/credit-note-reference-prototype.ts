@@ -80,6 +80,22 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    client.serverBalance=safeString(BigInt(client.serverBalance)+BigInt(result.balanceDelta));
    preById.set(row.invoice_id,{command,actor,version:source.version});
   }
+  // Sources identifiées reconnues pour un autre appareil. Les anciens
+  // espaces restent exclus : ils ne sont pas automatiquement annulables.
+  const eligibleSales=await db.query(`WITH latest AS (SELECT DISTINCT ON (sale_id) sale_id,version,client_id,payload FROM identified_sale_events ORDER BY sale_id,version DESC)
+   SELECT l.sale_id,l.version,l.client_id,l.payload FROM latest l
+   WHERE NOT EXISTS(SELECT 1 FROM demo_sale_events d WHERE d.sale_id=l.sale_id)
+    AND (SELECT count(*) FROM identified_sale_events e WHERE e.sale_id=l.sale_id)=l.version`);
+  const eligibleSaleProofs=eligibleSales.rows.map(row=>{
+   const state=saleStates.find(s=>s.saleId===row.sale_id),sale=row.payload?.sale;
+   if(!state||state.creditNote)return null;
+   if(!sale||sale.syncSaleId!==row.sale_id||sale.syncVersion!==row.version||sale.clientId!==row.client_id||state.clientId!==row.client_id||state.version!==row.version||String(sale.total)!==state.total||String(sale.paid)!==state.paid)throw new RangeError('Source de vente identifiée incohérente.');
+   return {saleId:row.sale_id,version:row.version,hash:createHash('sha256').update(canonicalJson(sale)).digest('hex')};
+  }).filter((p):p is {saleId:string;version:number;hash:string}=>p!==null);
+  const eligibleJournals=await db.query(`SELECT i.id FROM identified_journal_invoices i
+   WHERE i.commercial_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM sync_journal_invoices s WHERE s.id=i.id)`);
+  const knownJournals=new Set(base.journalStates.map(s=>s.id));
+  const eligibleJournalIds=eligibleJournals.rows.map(r=>r.id as string).filter(id=>knownJournals.has(id)&&!preById.has(id));
   const proofs=new Map(base.journalProofs.map(p=>[p.id,p]));
   const journalStates=base.journalStates.map(s=>{
    const item=preById.get(s.id),proof=proofs.get(s.id);
@@ -96,7 +112,7 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    if(!status||typeof status.active!=='boolean'||typeof status.statusRevision!=='string'||!/^\d+$/.test(status.statusRevision)||BigInt(status.statusRevision)<1n)throw new RangeError('Statut client indisponible.');
    return {...c,active:status.active,statusRevision:status.statusRevision as string};
   });
-  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
+  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,eligibleSaleProofs,eligibleJournalIds,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
 }
 /** En v5 les inactifs sont conservés pour le rapprochement, jamais pour la
  * sélection de nouveaux clients. La différence active/inactive est explicite. */

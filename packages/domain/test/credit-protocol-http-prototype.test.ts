@@ -40,6 +40,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   const first={operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0};
   assert.equal((await post('/new/sales',first)).status,201);
   const before=validatePrototypeCreditReference(await (await get('/new/reference')).json());assert.equal(before.clients.length,2);assert.equal(activePrototypeClients(before).length,1);assert.equal(before.clients.find(x=>x.id===clientId)?.serverBalance,'1069000');assert.equal(before.clients.find(x=>x.id===inactive)?.active,false);
+  assert.equal(before.eligibleSaleProofs.find(p=>p.saleId===saleId)?.version,1);
   const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'refund'};
   assert.equal((await post('/new/credit-notes/sales',command)).status,201);assert.equal((await post('/new/credit-notes/sales',command)).status,200);
   assert.equal((await get('/old/reference')).status,409);assert.equal((await get('/new/reference',{...headers,'X-SLS-Reference-Version':'4'})).status,409);
@@ -52,6 +53,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   assert.equal((await post('/new/settlements',payment)).status,201);
   const invoice={id:randomUUID(),clientId,clientName:'Client fictif',journalDate:'2026-11-08',createdAt:at,sector:'',amount:600000};
   const journal={operationId:randomUUID(),version:1,invoice,receipts:[]};assert.equal((await post('/new/journal',journal)).status,201);
+  const preReference=validatePrototypeCreditReference(await (await get('/new/reference')).json());assert.ok(preReference.eligibleJournalIds.includes(invoice.id));
   const pre={operationId:randomUUID(),invoiceId:invoice.id,expectedVersion:1,recordedAt:'2026-11-08T12:00:00.000Z',choice:null};
   assert.equal((await post('/new/credit-notes/preinvoices',pre)).status,201);
   const receipt={id:randomUUID(),preInvoiceId:invoice.id,clientId,journalDate:invoice.journalDate,createdAt:'2026-11-08T13:00:00.000Z',prePaid:1,oldDebtPaid:0,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1000000};
@@ -97,6 +99,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   const saleHistory=await (await get(`/admin-read/credit-sales/${saleId}/history`,adminHeaders)).json() as any;
   assert.equal(saleHistory.cancelled,true);assert.equal(saleHistory.creditNote.refund,50000);assert.equal(saleHistory.versions[0].sale.total,119000);assert.equal(saleHistory.versions[0].commercialId,c.id);
   const result=validatePrototypeCreditReference(await (await get('/new/reference')).json());
+  assert.ok(!result.eligibleSaleProofs.some(p=>p.saleId===saleId));assert.ok(!result.eligibleJournalIds.includes(invoice.id));
   assert.equal(result.clients.find(x=>x.id===clientId)?.serverBalance,'290000');assert.equal(result.saleStates.find(s=>s.saleId===saleId)?.cancelled,true);assert.ok(result.journalStates.find(j=>j.id===invoice.id)?.creditNote);
   assert.equal((await post('/new/close',{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0})).status,201);
   const reopen={requestId:randomUUID(),day:'2026-11-08',expectedVersion:1};

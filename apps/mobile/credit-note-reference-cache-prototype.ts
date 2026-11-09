@@ -30,6 +30,15 @@ export async function savePrototypeCreditReference(tx:Tx,identity:DeviceIdentity
    const updated=nextSales.get(sale.saleId);
    if(!updated||updated.clientId!==sale.clientId||updated.version<sale.version||(updated.version===sale.version&&canonicalJson(updated)!==canonicalJson(sale))|| (sale.creditNote&&(!updated.creditNote||canonicalJson(updated.creditNote)!==canonicalJson(sale.creditNote))))throw Error('Référence de vente périmée ou incohérente.');
   }
+  // Une preuve de source active ne peut changer sans nouvelle version ;
+  // lors d'un avoir, la preuve de la facture d'origine doit être identique.
+  const activeProofs=new Map(next.eligibleSaleProofs.map(p=>[p.saleId,p]));
+  const cancelledProofs=new Map(next.saleProofs.map(p=>[p.saleId,p]));
+  for(const p of old.eligibleSaleProofs){
+   const state=nextSales.get(p.saleId),updated=state?.creditNote?cancelledProofs.get(p.saleId):activeProofs.get(p.saleId);
+   if(updated&&updated.version===p.version&&canonicalJson(updated)!==canonicalJson(p))throw Error('Preuve de source vente incohérente.');
+   if(state?.creditNote&&(!updated||updated.version<p.version))throw Error('Preuve de vente annulée incohérente.');
+  }
   const nextSaleProofs=new Map(next.saleProofs.map(p=>[p.saleId,p]));
   for(const p of old.saleProofs)if(canonicalJson(nextSaleProofs.get(p.saleId))!==canonicalJson(p))throw Error('Preuve de vente périmée ou incohérente.');
   const nextJournals=new Map(next.journalStates.map(s=>[s.id,s]));

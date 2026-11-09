@@ -70,7 +70,7 @@ export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,c
 export async function prepareBalancedLocalCredit(tx:Tx,identity:DeviceIdentity,clientId:string,kind:Kind,command:import('@sls/domain').CreditNoteCommand,digest?:(data:string)=>Promise<string>) {
  const before=await readPrototypeCreditBalance(tx,identity,clientId,digest);
  if(before.conflict)throw Error('Solde en conflit : avoir refusé.');
- const note=await prepareOfflineCreditPrototype(tx,identity,kind,command);
+ const note=await prepareOfflineCreditPrototype(tx,identity,kind,command,digest);
  const source=note.source as {clientId?:unknown;invoice?:{clientId?:unknown}};
  if((kind==='sale'?source.clientId:source.invoice?.clientId)!==clientId)throw Error('Client de la facture incohérent.');
  const after=await readPrototypeCreditBalance(tx,identity,clientId,digest);

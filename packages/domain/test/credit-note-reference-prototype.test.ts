@@ -79,6 +79,7 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    // Deuxième appareil : la transition vers une annulation distante est
    // acceptée, mais une source modifiée à version identique est refusée.
    await savePrototypeCreditReference(tx,identity,identity,before);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...before,eligibleSaleProofs:before.eligibleSaleProofs.map(p=>p.saleId===saleId?{...p,hash:'0'.repeat(64)}:p)}),/Preuve de source/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalProofs:result.journalProofs.map(p=>p.id===invoiceId?{...p,hash:'0'.repeat(64)}:p)}),/Preuve de préétablie/);
    await savePrototypeCreditReference(tx,identity,identity,result);
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
@@ -148,6 +149,23 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    localDb.exec('BEGIN');await assert.rejects(prepareBalancedLocalCredit(tx,identity,otherClient,'sale',saleCommand),/Client/);localDb.exec('ROLLBACK');
    assert.equal(localDb.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,0);
    const sha=async(value:string)=>createHash('sha256').update(value).digest('hex');
+   // Sur un autre appareil, une facture identifiée peut être annulée sans
+   // opération locale seulement avec la preuve exacte et sans file en attente.
+   localDb.exec('BEGIN');localDb.prepare('DELETE FROM identified_local_operations').run();
+   const secondIdentity={...identity,commercialId:randomUUID()};
+   localDb.prepare('UPDATE identified_device SET commercial_id=?').run(secondIdentity.commercialId);
+   localDb.prepare('UPDATE credit_reference_prototype_cache SET commercial_id=?').run(secondIdentity.commercialId);
+   const remoteSale=await previewLocalCredit(tx,secondIdentity,clientId,'sale',{...saleCommand,operationId:randomUUID()},sha);
+   const remotePre=await previewLocalCredit(tx,secondIdentity,clientId,'preinvoice',{...preCommand,operationId:randomUUID()},sha);
+   assert.equal(remoteSale.afterBalance,950000);assert.equal(remotePre.afterBalance,419000);
+   localDb.prepare('INSERT INTO sales_outbox VALUES(?)').run(saleId);
+   await assert.rejects(previewLocalCredit(tx,secondIdentity,clientId,'sale',{...saleCommand,operationId:randomUUID()},sha),/preuve serveur/);
+   localDb.prepare('DELETE FROM sales_outbox').run();localDb.prepare('INSERT INTO journal_sync_outbox VALUES(?)').run(invoiceId);
+   await assert.rejects(previewLocalCredit(tx,secondIdentity,clientId,'preinvoice',{...preCommand,operationId:randomUUID()},sha),/preuve serveur/);
+   localDb.prepare('DELETE FROM journal_sync_outbox').run();
+   localDb.prepare('UPDATE sales SET payload=? WHERE id=1').run(JSON.stringify({...sale,lines:[{...sale.lines[0],name:'Source différente'}]}));
+   await assert.rejects(previewLocalCredit(tx,secondIdentity,clientId,'sale',{...saleCommand,operationId:randomUUID()},sha),/preuve serveur/);
+   localDb.exec('ROLLBACK');
    // Les aperçus appliquent les mêmes règles sans écrire d'avoir : deux choix
    // affichent bien les effets distincts et la dette ancienne reste intacte.
    localDb.exec('BEGIN');

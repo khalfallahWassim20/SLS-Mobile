@@ -95,3 +95,24 @@ test('PostgreSQL : lecture admin et avoir concurrent gardent un instantané coh�
   }finally{resume();await conn.query('ROLLBACK').catch(()=>{});conn.release();}
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });
+
+test('PostgreSQL : un autre commercial annule une vente identifiée avec sa propre identité',async()=>{
+ const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL manquante');
+ const root=new pg.Pool({connectionString:url}),schema='sls_cross_'+randomUUID().replaceAll('-','');let pool:pg.Pool|undefined,created=false;
+ try {
+  await root.query(`CREATE SCHEMA "${schema}"`);created=true;pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`,max:6});
+  await pool.query(schemaSql);await pool.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+  const first=await saveCommercial(pool,'admin',{name:'Premier fictif',active:true}),second=await saveCommercial(pool,'admin',{name:'Deuxième fictif',active:true}),secret='secret fictif assez long pour les tests';
+  await setCommercialCredentials(pool,'admin',first.id,{login:'first.test',password:'mot de passe fictif'});
+  await setCommercialCredentials(pool,'admin',second.id,{login:'second.test',password:'mot de passe fictif'});
+  const a=await loginCommercial(pool,secret,{login:'first.test',password:'mot de passe fictif'}),b=await loginCommercial(pool,secret,{login:'second.test',password:'mot de passe fictif'});assert.ok(a&&b);
+  const clientId=randomUUID(),saleId=randomUUID(),at='2026-11-08T09:00:00.000Z';await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,1000000)',[clientId,'Client fictif']);
+  const sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
+  await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0},{secret,token:a.token,enforceMode:true,creditAware:true});
+  const before=validatePrototypeCreditReference(await readPrototypeCreditReference(pool));assert.equal(before.eligibleSaleProofs[0].saleId,saleId);
+  const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'credit' as const};
+  const result=await storePrototypeCreditNote(pool,command,{kind:'commercial',secret,token:b.token});assert.equal(result.status,'received');assert.equal(result.event.actor.id,second.id);
+  const after=validatePrototypeCreditReference(await readPrototypeCreditReference(pool));assert.equal(after.clients[0].serverBalance,'950000');assert.equal(after.saleStates[0].creditNote?.actor.id,second.id);assert.equal(after.eligibleSaleProofs.length,0);
+  const {readPrototypeCreditHistory}=await import('../src/credit-note-history-prototype.js');const history=await readPrototypeCreditHistory(pool);assert.equal(history[0].ownerId,first.id);assert.equal(history[0].actor.id,second.id);
+ }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
+});

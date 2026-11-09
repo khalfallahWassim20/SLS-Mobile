@@ -52,9 +52,18 @@ export function validatePrototypeCreditReference(value:unknown) {
   if(result.creditNote){const id=result.creditNote.operationId;if(seen.has(id)||settlements.has(id))throw Error('Avoir dupliqué.');seen.add(id);}
   return {...state,version:result.version,creditNote:result.creditNote};
  });
+ if(!Array.isArray(raw.eligibleSaleProofs)||!Array.isArray(raw.eligibleJournalIds))throw Error('Sources identifiées absentes.');
+ const availableSales=new Map(sales.filter(s=>!s.creditNote).map(s=>[s.saleId,s])),availableJournals=new Set(journals.filter(j=>!j.creditNote).map(j=>j.id)),eligibleIds=new Set<string>();
+ const eligibleSaleProofs=raw.eligibleSaleProofs.map(value=>{
+  const proof=obj(value),sale=proof&&typeof proof.saleId==='string'?availableSales.get(proof.saleId):undefined;
+  if(!proof||!sale||eligibleIds.has(sale.saleId)||proof.version!==sale.version||typeof proof.hash!=='string'||!/^[0-9a-f]{64}$/.test(proof.hash)||Object.keys(proof).length!==3)throw Error('Source de vente identifiée invalide.');
+  eligibleIds.add(sale.saleId);return {saleId:sale.saleId,version:sale.version,hash:proof.hash};
+ });
+ const seenJournals=new Set<string>();
+ const eligibleJournalIds=raw.eligibleJournalIds.map(id=>{if(typeof id!=='string'||!availableJournals.has(id)||seenJournals.has(id))throw Error('Source préétablie identifiée invalide.');seenJournals.add(id);return id;});
  // Vérifie aussi les identifiants de reçus et d'avoirs entre préétablies.
  reconcilePreInvoiceCredits(0,[],journals);
- return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,journalStates:journals};
+ return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,eligibleSaleProofs,eligibleJournalIds,journalStates:journals};
 }
 
 /** Seule cette liste est destinée au choix d'un client pour une nouvelle
