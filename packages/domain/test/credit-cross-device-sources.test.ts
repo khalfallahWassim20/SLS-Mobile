@@ -28,6 +28,7 @@ import {journalCsv} from '../../../apps/mobile/journal-export.js';
 import {describeCreditJournalPrototype} from '../../../apps/mobile/credit-note-journal-view-model-prototype.js';
 import {assertLegacyMobileCreditSafe,assertCreditWritePrototype} from '../../../apps/mobile/credit-note-write-guard-prototype.js';
 import {bindAndCacheCreditReferencePrototype} from '../../../apps/mobile/credit-note-binding-prototype.js';
+import {readCreditClientsPrototype} from '../../../apps/mobile/credit-client-view-prototype.js';
 
 test('deuxième appareil : avoirs distants sans copier les factures dans les tables actives',async()=>{
  const db=new PGlite(),mobile=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
@@ -38,7 +39,8 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   const first=await saveCommercial(pool,'admin',{name:'Premier',active:true}),second=await saveCommercial(pool,'admin',{name:'Deuxième',active:true});
   await setCommercialCredentials(pool,'admin',first.id,{login:'first.test',password:'mot de passe fictif'});await setCommercialCredentials(pool,'admin',second.id,{login:'second.test',password:'mot de passe fictif'});
   const a=await loginCommercial(pool,secret,{login:'first.test',password:'mot de passe fictif'}),b=await loginCommercial(pool,secret,{login:'second.test',password:'mot de passe fictif'});assert.ok(a&&b);
-  const clientId=randomUUID();await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,1000000)',[clientId,'Client fictif']);
+  const clientId=randomUUID(),client2=randomUUID();await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,1000000),($3,$4,0)',[clientId,'Client fictif',client2,'Z Client fictif']);
+  await db.query('INSERT INTO articles(id,code,name,purchase_ttc,sale_ttc) VALUES($1,$2,$3,$4,$5)',[randomUUID(),'ART-TEST','Huile fictive',42000,60000]);
   const app=express();app.use(express.json());app.use('/v5',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin',{allowCreditProtocol:true}));server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
   const addr=server.address();assert.ok(addr&&typeof addr!=='string');const origin=`http://127.0.0.1:${addr.port}`,identity={commercialId:second.id,serverOrigin:'https://sync.example.test'};
   const headers=(token:string)=>({Authorization:`Bearer ${token}`,'Content-Type':'application/json','X-SLS-Reference-Version':'5'});
@@ -94,6 +96,10 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   await transaction(()=>assertLegacyMobileCreditSafe(tx,identity));
   const context={identity,expectedBalance:1019000};
   assert.equal((await transaction(()=>assertCreditWritePrototype(tx,context,{kind:'sale',clientId},digest))).balance,1019000);
+  const initialView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(initialView.version,5);assert.equal(initialView.clients[0].balance,1019000);assert.equal(initialView.clients[0].saleBlocked,false);assert.equal(initialView.pendingCredits,0);assert.equal(initialView.articles[0].saleTtc,'60000');assert.equal('purchaseTtc' in initialView.articles[0],false);
+  const counted:string[]=[],txCount={...tx,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>{counted.push(sql);return tx.getAllAsync<T>(sql,...args);}};const multiView=await transaction(()=>readCreditClientsPrototype(txCount,identity,digest));assert.equal(multiView.clients.length,2);assert.equal(multiView.clients.find(c=>c.id===client2)?.balance,0);assert.equal(counted.filter(sql=>sql.includes('FROM sales ORDER BY id')).length,1);
+  const unknownClient=randomUUID();mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(unknownClient,JSON.stringify({...sale,clientId:unknownClient}));
+  await assert.rejects(transaction(()=>readCreditClientsPrototype(tx,identity,digest)),/absent de la référence/);mobile.exec('DELETE FROM sales');
   await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,{...context,expectedBalance:1018999},{kind:'sale',clientId},digest)),/Solde modifié/);
   await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,{...context,identity:{...identity,commercialId:randomUUID()}},{kind:'sale',clientId},digest)),/Identité|incohérent/);
   await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,context,{kind:'preinvoice',clientId,day},digest)),/existe déjà/);
@@ -101,6 +107,7 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   const rawCache=mobile.prepare('SELECT payload FROM credit_reference_prototype_cache WHERE id=1').get()!.payload as string,changed=JSON.parse(rawCache);changed.clients.find((x:{id:string})=>x.id===clientId).creditLimit='1019000';mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(JSON.stringify(changed));
   await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,context,{kind:'sale',clientId},digest)),/Limite de crédit/);
   changed.clients.find((x:{id:string})=>x.id===clientId).active=false;mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(JSON.stringify(changed));
+  const disabledView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(disabledView.clients[0].blockReason,'client-inactif');assert.equal(disabledView.clients[0].balance,1019000);
   await assert.rejects(transaction(()=>assertCreditWritePrototype(tx,context,{kind:'preinvoice',clientId,day:'2026-11-09'},digest)),/désactivé/);
   mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(rawCache);
   const saleCommand={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T11:00:00.000Z',choice:'refund' as const};
@@ -113,6 +120,7 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   await transaction(()=>confirmLocalCreditReview(tx,identity,preReview,preCommand,digest));
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);assert.equal(mobile.prepare('SELECT count(*) AS n FROM tour_pre_invoices').get()?.n,0);
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:350000,conflict:false});
+  const preparedView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(preparedView.clients[0].balance,350000);assert.equal(preparedView.pendingCredits,2);assert.equal(preparedView.pendingOperations,0);
   const exportBefore=await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest));
   const exportModel=describeCreditJournalPrototype(exportBefore);assert.equal(exportModel.totals.creditNotes,719000);assert.equal(exportModel.totals.refunds,50000);assert.equal(exportModel.totals.retainedCredit,250000);assert.equal(exportModel.totals.billedAfterLocalCredits,-719000);
   const exportCsv=journalCsv(exportBefore);assert.match(exportCsv,/AVOIRS CRÉÉS CE JOUR/);assert.match(exportCsv,/en attente/);assert.match(exportCsv,/719,000/);assert.match(exportCsv,/'-719,000/);assert.match(exportCsv,/50,000/);assert.match(exportCsv,/250,000/);
@@ -208,6 +216,7 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   await assert.rejects(controller.synchronize(),/Version de facture périmée/);
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,1);
   assert.equal((await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest))).conflict,true);
+  const conflictView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(conflictView.clients[0].balance,null);assert.equal(conflictView.clients[0].saleBlocked,true);assert.equal(conflictView.clients[0].canSettle,false);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);
 
  } finally {if(server)await new Promise<void>(r=>server!.close(()=>r()));mobile.close();await db.close();}

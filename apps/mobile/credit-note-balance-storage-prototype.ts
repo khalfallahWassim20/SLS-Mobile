@@ -16,7 +16,7 @@ function object(json:string):Record<string,any> {
 }
 /** Toutes les sources, y compris le cache, sont lues dans la même transaction.
  * Une ligne orpheline ou un instantané divergent interrompt le calcul. */
-export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,clientId:string,digest?:(data:string)=>Promise<string>) {
+export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceIdentity,digest?:(data:string)=>Promise<string>) {
  const reference=await readPrototypeCreditReferenceCache(tx,identity);
  if(!reference)throw Error('Référence d’avoirs indisponible.');
  const notes=(await readAllOfflineCreditPrototype(tx,identity)).map(x=>x.note);
@@ -81,8 +81,15 @@ export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,c
    if(proof&&remote?.creditNote&&remote.clientId===journal.clientId&&proof.version===journal.version&&await digest(canonicalJson(journal.snapshot))===proof.hash)verifiedRemoteJournals.add(journal.id);
   }
  }
- const balance=prototypeCreditBalance({clientId,identity,reference,sales,journals,settlements,notes,verifiedRemoteSales,verifiedRemoteJournals});
- return {...balance,conflict:balance.conflict||sourceConflict};
+ // Les données ne sont pas exposées aux appelants : une capture peut servir à
+ // plusieurs clients sans relire SQLite ou recalculer les empreintes.
+ return {reference,balanceFor:(clientId:string)=>{
+  const balance=prototypeCreditBalance({clientId,identity,reference,sales,journals,settlements,notes,verifiedRemoteSales,verifiedRemoteJournals});
+  return {...balance,conflict:balance.conflict||sourceConflict};
+ }};
+}
+export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,clientId:string,digest?:(data:string)=>Promise<string>) {
+ return (await loadCreditBalanceSnapshotPrototype(tx,identity,digest)).balanceFor(clientId);
 }
 
 /** Préparation atomique expérimentale : l'appelant doit ouvrir une transaction

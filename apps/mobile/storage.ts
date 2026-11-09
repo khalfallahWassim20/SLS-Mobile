@@ -26,6 +26,7 @@ import {readCreditJournalExportPrototype} from './credit-note-journal-export-pro
 import {describeCreditJournalPrototype} from './credit-note-journal-view-model-prototype';
 import {assertLegacyMobileCreditSafe,assertCreditWritePrototype,assertCreditReceiptPrototype,type CreditWriteContext} from './credit-note-write-guard-prototype';
 import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-prototype';
+import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import type {CommercialSession} from './commercial-login';
 
 export type SavedSale = {
@@ -427,4 +428,11 @@ export async function getCreditJournalExportPrototype(identity:DeviceIdentity,da
 export async function getCreditJournalViewPrototype(identity:DeviceIdentity,day:string,commercial:string) {
  const snapshot=await getCreditJournalExportPrototype(identity,day,commercial);
  return {snapshot,view:describeCreditJournalPrototype(snapshot)};
+}
+
+/** Clients, soldes et articles v5 sur un seul instantané ; les écrans v3 ne
+ * doivent jamais utiliser ou réduire ce résultat. */
+export async function getCreditClientsPrototype(identity:DeviceIdentity) {
+ const database=await db();let result:Awaited<ReturnType<typeof readCreditClientsPrototype>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditClientsPrototype(tx,identity,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
 }

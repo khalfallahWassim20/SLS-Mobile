@@ -4,7 +4,7 @@ import type {DeviceIdentity} from './identified-device';
 import {readIdentifiedOutbox} from './identified-outbox';
 import {readAllOfflineCreditPrototype} from './credit-note-offline-prototype';
 import {saveVerifiedCreditReference} from './credit-note-sync-reference';
-import {readPrototypeCreditBalance} from './credit-note-balance-storage-prototype';
+import {loadCreditBalanceSnapshotPrototype} from './credit-note-balance-storage-prototype';
 
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
@@ -19,8 +19,9 @@ export async function saveAndVerifyFinalCreditReference(tx:Tx,identity:DeviceIde
  const clients=await tx.getAllAsync<{clientId:string}>(`SELECT client_id AS clientId FROM sales UNION SELECT client_id AS clientId FROM settlements UNION SELECT client_id AS clientId FROM tour_pre_invoices`);
  const clientIds=new Set(clients.map(x=>x.clientId));
  for(const {note} of notes){const source=note.source as {clientId?:unknown;invoice?:{clientId?:unknown}},id=note.kind==='sale'?source.clientId:source.invoice?.clientId;if(typeof id!=='string')throw Error('Client de l’avoir indisponible.');clientIds.add(id);}
+ const snapshot=await loadCreditBalanceSnapshotPrototype(tx,identity,digest);
  for(const clientId of clientIds){
-  const balance=await readPrototypeCreditBalance(tx,identity,clientId,digest);
+  const balance=snapshot.balanceFor(clientId);
   if(balance.conflict)throw Error('Solde client en conflit : rapprochement nécessaire avant de terminer la synchronisation.');
  }
 }

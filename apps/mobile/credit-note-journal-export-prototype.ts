@@ -4,7 +4,7 @@ import type {DeviceIdentity} from './identified-device';
 import type {SavedSale,TourPreInvoice,TourJournalReceipt} from './storage';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {readAllOfflineCreditPrototype} from './credit-note-offline-prototype';
-import {readPrototypeCreditBalance} from './credit-note-balance-storage-prototype';
+import {loadCreditBalanceSnapshotPrototype} from './credit-note-balance-storage-prototype';
 import {buildJournal,tunisDay} from './journal';
 import type {JournalExport} from './journal-export';
 
@@ -33,7 +33,8 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   clientIds.add(receipt.clientId);
  }
  for(const {note} of credits){const src=note.source as {clientId?:string;invoice?:{clientId?:string}};const id=note.kind==='sale'?src.clientId:src.invoice?.clientId;if(!id)throw Error('Client de l’avoir indisponible.');if(tunisDay(new Date(note.command.recordedAt))===day)clientIds.add(id);}
- for(const id of clientIds){const balance=await readPrototypeCreditBalance(tx,identity,id,digest);if(balance.conflict)throw Error('Solde en conflit : export refusé.');}
+ const snapshot=await loadCreditBalanceSnapshotPrototype(tx,identity,digest);
+ for(const id of clientIds){const balance=snapshot.balanceFor(id);if(balance.conflict)throw Error('Solde en conflit : export refusé.');}
  const remoteCancellations:NonNullable<JournalExport['remoteCancellations']>=[];
  for(const row of rows){
   for(const sale of row.sales){
