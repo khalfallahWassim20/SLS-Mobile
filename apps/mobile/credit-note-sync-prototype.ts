@@ -17,6 +17,7 @@ type IO={
  sendCredit:(path:string,body:string)=>Promise<Response>;
  fetchReference:()=>Promise<unknown>;
  saveReference:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown)=>Promise<void>;
+ saveFinalReference:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown)=>Promise<void>;
 };
 const uuid=(v:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 /** N'efface que les opérations explicitement acquittées. Toute erreur interrompt
@@ -35,6 +36,6 @@ export async function syncCreditPrototype(identity:DeviceIdentity,verified:Devic
  const credits=await uploadPrototypeCreditNotes(notes,identity,verified,io.sendCredit,io.acknowledgeCredit);
  if((await io.readAllCredits()).some(n=>n.pending))throw Error('Un avoir reste en attente : synchronisation incomplète.');
  if((await io.readOperations()).length)throw Error('Une opération reste en attente : synchronisation incomplète.');
- await io.saveReference(identity,verified,await io.fetchReference());
+ await io.saveFinalReference(identity,verified,await io.fetchReference());
  return {operations,credits};
 }

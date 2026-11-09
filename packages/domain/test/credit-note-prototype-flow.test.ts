@@ -63,7 +63,8 @@ test('avoir expérimental de bout en bout : file locale, HTTP, reprise et clôtu
    readReadyCredits:()=>readReadyOfflineCreditPrototype(tx,identity),readAllCredits:()=>readAllOfflineCreditPrototype(tx,identity),
    acknowledgeCredit:ack,sendOperation:async()=>{throw Error('Aucun envoi attendu');},sendCredit:send,
    fetchReference:async()=>{const response=await fetch(`${origin}/reference`,{headers:{Authorization:`Bearer ${session.token}`}});if(!response.ok)throw Error('Référence indisponible');return response.json();},
-   saveReference:async(a,b,value)=>{mobile.exec('BEGIN');try{await saveVerifiedCreditReference(tx,a,b,value,digest);mobile.exec('COMMIT');}catch(e){mobile.exec('ROLLBACK');throw e;}}
+   saveReference:async(a,b,value)=>{mobile.exec('BEGIN');try{await saveVerifiedCreditReference(tx,a,b,value,digest);mobile.exec('COMMIT');}catch(e){mobile.exec('ROLLBACK');throw e;}},
+   saveFinalReference:async(a,b,value)=>{mobile.exec('BEGIN');try{await saveVerifiedCreditReference(tx,a,b,value,digest);mobile.exec('COMMIT');}catch(e){mobile.exec('ROLLBACK');throw e;}}
   });assert.deepEqual(synced,{operations:0,credits:1});
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,0);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,1);

@@ -15,6 +15,7 @@ import {assertNoLocalCreditNote,assertNoRemoteCreditNote} from './credit-note-lo
 import {creditReferencePrototypeSchema,readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {saveVerifiedCreditReference} from './credit-note-sync-reference';
 import {syncCreditPrototype} from './credit-note-sync-prototype';
+import {saveAndVerifyFinalCreditReference} from './credit-note-sync-final-prototype';
 import {preparePrototypeClose} from './credit-note-close-prototype';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from './credit-note-balance-storage-prototype';
 
@@ -350,7 +351,8 @@ export async function synchronizeCreditPrototype(identity:DeviceIdentity,verifie
    readReadyCredits:()=>getReadyLocalCreditPrototypes(identity),readAllCredits:()=>getLocalCreditPrototypes(identity),
    acknowledgeCredit:(note,response)=>acknowledgeLocalCreditPrototype(identity,note,response),
    sendOperation:transport.sendOperation,sendCredit:transport.sendCredit,fetchReference:transport.fetchReference,
-   saveReference:(id,session,value)=>cacheCreditReferencePrototype(id,session,value)
+   saveReference:(id,session,value)=>cacheCreditReferencePrototype(id,session,value),
+   saveFinalReference:async(id,session,value)=>{const database=await db();await database.withExclusiveTransactionAsync(tx=>saveAndVerifyFinalCreditReference(tx,id,session,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data)));}
   });
  } finally {creditSyncRunning=false;}
 }

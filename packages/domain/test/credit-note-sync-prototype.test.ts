@@ -20,7 +20,8 @@ function fixture(){
   sendOperation:async(path:string,body:string)=>{events.push('send-'+path);return response(201,{status:'received',operationId:JSON.parse(body).operationId});},
   sendCredit:async(path:string,body:string)=>{events.push('credit-'+path);const status=serverCredit?'duplicate':'received';serverCredit=true;if(loseResponse){loseResponse=false;throw Error('réponse perdue');}return response(status==='received'?201:200,{status,operationId:JSON.parse(body).operationId});},
   fetchReference:async()=>{events.push('reference');reads++;if(failFinal&&reads===2)throw Error('référence indisponible');return {serverCredit};},
-  saveReference:async(a:typeof identity,b:typeof identity,value:unknown)=>{assert.deepEqual(a,b);events.push('cache-'+(value as any).serverCredit);}
+  saveReference:async(a:typeof identity,b:typeof identity,value:unknown)=>{assert.deepEqual(a,b);events.push('cache-'+(value as any).serverCredit);},
+  saveFinalReference:async(a:typeof identity,b:typeof identity,value:unknown)=>{assert.deepEqual(a,b);events.push('cache-final-'+(value as any).serverCredit);}
  };
  return {identity,note,entry,events,io,lose:()=>{loseResponse=true;},failFinal:()=>{failFinal=true;},isPending:()=>creditPending};
 }
@@ -31,7 +32,7 @@ test('synchronisation préparatoire : dépendances, réponse perdue, reprise et 
  assert.deepEqual(f.events,['reference','cache-false','send-sales','ack-operation','credit-sales']);
  const result=await syncCreditPrototype(f.identity,f.identity,f.io);
  assert.deepEqual(result,{operations:0,credits:1});assert.equal(f.isPending(),false);
- assert.deepEqual(f.events.slice(5),['reference','cache-true','credit-sales','ack-credit','reference','cache-true']);
+ assert.deepEqual(f.events.slice(5),['reference','cache-true','credit-sales','ack-credit','reference','cache-final-true']);
 });
 test('synchronisation préparatoire : identité, référence finale et dépendance non prête',async()=>{
  const f=fixture();await assert.rejects(syncCreditPrototype(f.identity,{...f.identity,serverOrigin:'https://other.test'},f.io),/Session/);assert.deepEqual(f.events,[]);

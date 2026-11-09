@@ -16,6 +16,7 @@ import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-r
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from '../../../apps/mobile/identified-outbox.js';
 import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync-reference.js';
 import {prepareBalancedLocalCredit,readPrototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
+import {saveAndVerifyFinalCreditReference} from '../../../apps/mobile/credit-note-sync-final-prototype.js';
 import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
 
 test('parcours v5 isolé : vente hors ligne, avoir, perte de réponse et reprise SQLite–HTTP',async()=>{
@@ -63,7 +64,8 @@ test('parcours v5 isolé : vente hors ligne, avoir, perte de réponse et reprise
    sendOperation:(path:string,body:string)=>fetch(`${origin}/v5/${path}`,{method:'POST',headers,body}),
    sendCredit:async(path:string,body:string)=>{const r=await fetch(`${origin}/v5/credit-notes/${path}`,{method:'POST',headers,body});if(loseResponse){loseResponse=false;assert.equal(r.status,201);throw Error('réponse perdue');}return r;},
    fetchReference:getReference,
-   saveReference:(a:typeof identity,b:typeof identity,value:unknown)=>transaction(async()=>{await saveVerifiedCreditReference(tx,a,b,value,digest);})
+   saveReference:(a:typeof identity,b:typeof identity,value:unknown)=>transaction(async()=>{await saveVerifiedCreditReference(tx,a,b,value,digest);}),
+   saveFinalReference:(a:typeof identity,b:typeof identity,value:unknown)=>transaction(()=>saveAndVerifyFinalCreditReference(tx,a,b,value,digest))
   };
   await assert.rejects(syncCreditPrototype(identity,identity,io),/réponse perdue/);
   assert.equal((await transaction(()=>readIdentifiedOutbox(tx,identity))).length,0);
@@ -73,5 +75,23 @@ test('parcours v5 isolé : vente hors ligne, avoir, perte de réponse et reprise
   assert.equal((await transaction(()=>readReadyOfflineCreditPrototype(tx,identity))).length,0);
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:1000000,conflict:false});
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,1);
+  // Une nouvelle opération apparue pendant le téléchargement final empêche
+  // l'annonce de succès et reste dans la file ; la référence ne doit pas
+  // être validée sans contrôle dans la même transaction.
+  const extraOp=randomUUID();
+  mobile.prepare('INSERT INTO sales_outbox VALUES(2,?,?,1,?)').run(extraOp,saleId,JSON.stringify({...event,operationId:extraOp}));
+  mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(extraOp,c.id,'sale',saleId,at);
+  const reference=await getReference();
+  await assert.rejects(transaction(()=>saveAndVerifyFinalCreditReference(tx,identity,identity,reference,digest)),/opération reste en attente/);
+  assert.equal((await transaction(()=>readIdentifiedOutbox(tx,identity))).length,1);
+  mobile.prepare('DELETE FROM sales_outbox WHERE operation_id=?').run(extraOp);
+  mobile.prepare('DELETE FROM identified_local_operations WHERE operation_id=?').run(extraOp);
+  // Un avoir déjà acquitté dont la facture locale a été modifiée est un
+  // conflit, même si toutes les requêtes HTTP ont répondu avec succès.
+  mobile.prepare('UPDATE sales SET payload=? WHERE id=1').run(JSON.stringify({...sale,lines:[{...sale.lines[0],name:'Modification locale'}]}));
+  await assert.rejects(transaction(()=>saveAndVerifyFinalCreditReference(tx,identity,identity,reference,digest)),/modifiée après avoir/);
+  mobile.prepare('UPDATE sales SET payload=? WHERE id=1').run(JSON.stringify(sale));
+  await transaction(()=>saveAndVerifyFinalCreditReference(tx,identity,identity,reference,digest));
+
  }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));mobile.close();await db.close();}
 });
