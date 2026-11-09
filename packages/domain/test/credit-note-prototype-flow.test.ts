@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {PGlite} from '@electric-sql/pglite';
 import express from 'express';
@@ -13,13 +13,16 @@ import {storeIdentifiedSale} from '../../../apps/api/src/identified-operations.j
 import {storeJournalSnapshot} from '../../../apps/api/src/journal-store.js';
 import {changeTourClosure} from '../../../apps/api/src/tour-closure-store.js';
 import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
-import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
+import {loginCommercial,verifyCommercialSession} from '../../../apps/api/src/commercial-session.js';
+import {readPrototypeCreditReference} from '../../../apps/api/src/credit-note-reference-prototype.js';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
-import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
+import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readReadyOfflineCreditPrototype,readAllOfflineCreditPrototype,acknowledgeOfflineCreditPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {uploadPrototypeCreditNotes} from '../../../apps/mobile/credit-note-upload-prototype.js';
 import {ClosedDaySyncError} from '../../../apps/mobile/identified-upload.js';
+import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
+import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync-reference.js';
 
 test('avoir expérimental de bout en bout : file locale, HTTP, reprise et clôture',async()=>{
  const db=new PGlite(),mobile=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
@@ -31,6 +34,7 @@ test('avoir expérimental de bout en bout : file locale, HTTP, reprise et clôtu
   await setCommercialCredentials(pool,'admin',c.id,{login:'credit.test',password:'mot de passe fictif'});
   const session=await loginCommercial(pool,secret,{login:'credit.test',password:'mot de passe fictif'});assert.ok(session);
   const app=express();app.use(express.json());app.use('/commercial',prototypeCommercialCreditRoutes(pool,secret));
+  app.get('/reference',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,req.get('Authorization')?.replace(/^Bearer /,'')??'');if(!actor){res.sendStatus(401);return;}res.json(await readPrototypeCreditReference(pool));}catch(error){next(error);}});
   app.use('/admin',prototypeAdminCreditRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.status(401).json({error:'Admin requis'});else next();},'admin'));
   server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
   const address=server.address();assert.ok(address&&typeof address!=='string');const origin=`http://127.0.0.1:${address.port}`,identity={commercialId:c.id,serverOrigin:origin};
@@ -53,7 +57,14 @@ test('avoir expérimental de bout en bout : file locale, HTTP, reprise et clôtu
   // Le serveur reçoit la commande, mais le téléphone perd la réponse.
   await assert.rejects(uploadPrototypeCreditNotes([note],identity,identity,async(path,body)=>{const response=await send(path,body);assert.equal(response.status,201);throw Error('réponse perdue');},ack),/perdue/);
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,1);
-  assert.equal(await uploadPrototypeCreditNotes([note],identity,identity,send,ack),1);
+  const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');
+  const synced=await syncCreditPrototype(identity,identity,{
+   readOperations:async()=>[],acknowledgeOperation:async()=>{throw Error('Aucune opération attendue');},
+   readReadyCredits:()=>readReadyOfflineCreditPrototype(tx,identity),readAllCredits:()=>readAllOfflineCreditPrototype(tx,identity),
+   acknowledgeCredit:ack,sendOperation:async()=>{throw Error('Aucun envoi attendu');},sendCredit:send,
+   fetchReference:async()=>{const response=await fetch(`${origin}/reference`,{headers:{Authorization:`Bearer ${session.token}`}});if(!response.ok)throw Error('Référence indisponible');return response.json();},
+   saveReference:async(a,b,value)=>{mobile.exec('BEGIN');try{await saveVerifiedCreditReference(tx,a,b,value,digest);mobile.exec('COMMIT');}catch(e){mobile.exec('ROLLBACK');throw e;}}
+  });assert.deepEqual(synced,{operations:0,credits:1});
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,0);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,1);
   // Un administrateur non authentifié ne peut pas utiliser le routeur de test.

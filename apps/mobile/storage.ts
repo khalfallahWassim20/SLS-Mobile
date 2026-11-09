@@ -12,7 +12,9 @@ import {tunisDay} from './journal';
 import {resetLocalTestOperations} from './reset-test-operations';
 import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readAllOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Kind,type Note} from './credit-note-offline-prototype';
 import {assertNoLocalCreditNote,assertNoRemoteCreditNote} from './credit-note-local-guard';
-import {creditReferencePrototypeSchema,savePrototypeCreditReference,readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
+import {creditReferencePrototypeSchema,readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
+import {saveVerifiedCreditReference} from './credit-note-sync-reference';
+import {syncCreditPrototype} from './credit-note-sync-prototype';
 import {preparePrototypeClose} from './credit-note-close-prototype';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from './credit-note-balance-storage-prototype';
 
@@ -303,7 +305,7 @@ export async function acknowledgeLocalCreditPrototype(identity:DeviceIdentity,no
 
 /** Référence future non reliée au cache ni aux écrans actuels. */
 export async function cacheCreditReferencePrototype(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown):Promise<void> {
- const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await savePrototypeCreditReference(tx,identity,verified,value);});
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await saveVerifiedCreditReference(tx,identity,verified,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
 }
 export async function getCreditReferencePrototype(identity:DeviceIdentity) {
  const database=await db();let result:Awaited<ReturnType<typeof readPrototypeCreditReferenceCache>>=null;
@@ -330,4 +332,25 @@ export async function createBalancedLocalCreditPrototype(identity:DeviceIdentity
  let result:Awaited<ReturnType<typeof prepareBalancedLocalCredit>>|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{result=await prepareBalancedLocalCredit(tx,identity,clientId,kind,{operationId:randomUUID(),invoiceId,expectedVersion,recordedAt:new Date().toISOString(),choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
  return result!;
+}
+
+/** Connecteur de synchronisation préparatoire, non appelé par l'interface.
+ * Le transport doit authentifier la session et cibler un serveur compatible v5. */
+let creditSyncRunning=false;
+export async function synchronizeCreditPrototype(identity:DeviceIdentity,verified:DeviceIdentity,transport:{
+ fetchReference:()=>Promise<unknown>;
+ sendOperation:(path:string,body:string)=>Promise<{ok:boolean;status:number;json:()=>Promise<unknown>}>;
+ sendCredit:(path:string,body:string)=>Promise<{ok:boolean;status:number;json:()=>Promise<unknown>}>;
+}) {
+ if(creditSyncRunning)throw Error('Synchronisation déjà en cours.');
+ creditSyncRunning=true;
+ try {
+  return await syncCreditPrototype(identity,verified,{
+   readOperations:()=>getIdentifiedOutbox(identity),acknowledgeOperation:entry=>acknowledgeIdentifiedEntry(identity,entry),
+   readReadyCredits:()=>getReadyLocalCreditPrototypes(identity),readAllCredits:()=>getLocalCreditPrototypes(identity),
+   acknowledgeCredit:(note,response)=>acknowledgeLocalCreditPrototype(identity,note,response),
+   sendOperation:transport.sendOperation,sendCredit:transport.sendCredit,fetchReference:transport.fetchReference,
+   saveReference:(id,session,value)=>cacheCreditReferencePrototype(id,session,value)
+  });
+ } finally {creditSyncRunning=false;}
 }

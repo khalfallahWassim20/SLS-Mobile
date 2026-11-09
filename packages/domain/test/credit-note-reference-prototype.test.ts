@@ -25,6 +25,7 @@ import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,type Note} fr
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
 import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
 import {assertNoRemoteCreditNote} from '../../../apps/mobile/credit-note-local-guard.js';
+import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync-reference.js';
 
 test('projection intégrée isolée : soldes, crédits, factures et refus en cas de corruption',async()=>{
  const db=new PGlite();try{
@@ -119,7 +120,16 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    localDb.exec('BEGIN');const createdPre=await prepareBalancedLocalCredit(tx,identity,clientId,'preinvoice',preCommand);assert.equal(createdPre.balance,350000);localDb.exec('COMMIT');
    assert.deepEqual(createdSale.note,localSale);assert.deepEqual(createdPre.note,localPre);
    localDb.exec('BEGIN');assert.deepEqual(await readPrototypeCreditBalance(tx,identity,clientId),{balance:350000,conflict:false});localDb.exec('COMMIT');
-   await savePrototypeCreditReference(tx,identity,identity,result);
+   const sha=async(value:string)=>createHash('sha256').update(value).digest('hex');
+   // Une référence d'avant l'accusé ne doit pas effacer les preuves déjà reçues.
+   localDb.prepare('UPDATE offline_credit_prototype SET pending=0').run();
+   await assert.rejects(saveVerifiedCreditReference(tx,identity,identity,before,sha),/déjà confirmé/);
+   assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'1019000');
+   localDb.prepare('UPDATE offline_credit_prototype SET pending=1 WHERE operation_id=?').run(saleCommand.operationId);
+   await assert.rejects(saveVerifiedCreditReference(tx,identity,identity,before,sha),/préétabli déjà confirmé/);
+   localDb.prepare('UPDATE offline_credit_prototype SET pending=0 WHERE operation_id=?').run(saleCommand.operationId);
+   await saveVerifiedCreditReference(tx,identity,identity,result,sha);
+   await assert.rejects(saveVerifiedCreditReference(tx,identity,identity,{...result,saleProofs:[{...result.saleProofs[0],hash:'0'.repeat(64)}]},sha),/déjà confirmé/);
    await assert.rejects(assertNoRemoteCreditNote(tx,identity,'sale',saleId),/annulée/);
    await assert.rejects(assertNoRemoteCreditNote(tx,identity,'preinvoice',invoiceId),/annulée/);
    await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',{...saleCommand,operationId:randomUUID()}),/annulée/);
