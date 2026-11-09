@@ -1,6 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
 import express from 'express';
 import {PGlite} from '@electric-sql/pglite';
 import type {Pool} from 'pg';
@@ -9,6 +10,9 @@ import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/com
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {identifiedCommercialRoutes,identifiedAdminRoutes} from '../../../apps/api/src/identified-tour-routes.js';
 import {identifiedAdminReadRoutes} from '../../../apps/api/src/identified-admin-read.js';
+import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
+import {creditReferencePrototypeSchema,savePrototypeCreditReference} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
+import {creditSourcesPrototypeSchema,saveCreditSourcesPrototype,readCreditSourcesPrototype} from '../../../apps/mobile/credit-note-sources-prototype.js';
 import {validatePrototypeCreditReference,activePrototypeClients} from '../../../apps/mobile/credit-note-reference-prototype.js';
 
 test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et sources annulées protégées',async()=>{
@@ -41,6 +45,13 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   assert.equal((await post('/new/sales',first)).status,201);
   const before=validatePrototypeCreditReference(await (await get('/new/reference')).json());assert.equal(before.clients.length,2);assert.equal(activePrototypeClients(before).length,1);assert.equal(before.clients.find(x=>x.id===clientId)?.serverBalance,'1069000');assert.equal(before.clients.find(x=>x.id===inactive)?.active,false);
   assert.equal(before.eligibleSaleProofs.find(p=>p.saleId===saleId)?.version,1);
+  assert.equal((await get(`/new/credit-sources/${clientId}`,{...headers,Authorization:'Bearer invalide'})).status,401);
+  assert.equal((await get(`/new/credit-sources/${clientId}`,{...headers,'X-SLS-Reference-Version':'4'})).status,409);
+  assert.equal((await get(`/old/credit-sources/${clientId}`)).status,404);
+  const sources=await (await get(`/new/credit-sources/${clientId}`)).json() as any;
+  assert.equal(sources.clientId,clientId);assert.equal(sources.items.length,1);assert.equal(sources.items[0].source.total,119000);
+  assert.equal(sources.items[0].hash,before.eligibleSaleProofs[0].hash);assert.equal(sources.truncated,false);
+
   const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'refund'};
   assert.equal((await post('/new/credit-notes/sales',command)).status,201);assert.equal((await post('/new/credit-notes/sales',command)).status,200);
   assert.equal((await get('/old/reference')).status,409);assert.equal((await get('/new/reference',{...headers,'X-SLS-Reference-Version':'4'})).status,409);
@@ -53,7 +64,37 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   assert.equal((await post('/new/settlements',payment)).status,201);
   const invoice={id:randomUUID(),clientId,clientName:'Client fictif',journalDate:'2026-11-08',createdAt:at,sector:'',amount:600000};
   const journal={operationId:randomUUID(),version:1,invoice,receipts:[]};assert.equal((await post('/new/journal',journal)).status,201);
+  // Un champ inattendu dans la base ne doit jamais être renvoyé au mobile.
+  const rawBefore=(await db.query<{payload:unknown}>('SELECT payload FROM identified_sale_events WHERE sale_id=$1',[otherId])).rows[0].payload;
+  await db.query(`UPDATE identified_sale_events SET payload=jsonb_set(payload,'{sale,purchaseTtc}','123'::jsonb) WHERE sale_id=$1`,[otherId]);
+  assert.equal((await get(`/new/credit-sources/${clientId}`)).status,400);
+  await db.query('UPDATE identified_sale_events SET payload=$2::jsonb WHERE sale_id=$1',[otherId,JSON.stringify(rawBefore)]);
   const preReference=validatePrototypeCreditReference(await (await get('/new/reference')).json());assert.ok(preReference.eligibleJournalIds.includes(invoice.id));
+  const preSources=await (await get(`/new/credit-sources/${clientId}`)).json() as any;assert.equal(preSources.items.find((x:any)=>x.invoiceId===invoice.id).source.invoice.amount,600000);
+  // Cache séparé : jamais d'insertion dans les ventes ou le journal actifs.
+  const mobile=new DatabaseSync(':memory:');
+  try{
+   mobile.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}`);
+   const identity={commercialId:c.id,serverOrigin:url},sha=async(text:string)=>createHash('sha256').update(text).digest('hex');
+   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{mobile.prepare(sql).run(...args)}};
+   mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(c.id,url);
+   await savePrototypeCreditReference(tx,identity,identity,preReference);
+   await saveCreditSourcesPrototype(tx,identity,identity,clientId,preSources,sha);
+   assert.equal((await readCreditSourcesPrototype(tx,identity,clientId,sha))?.items.length,2);
+   const bad=structuredClone(preSources);bad.items[0].source.clientName='Modifié';
+   await assert.rejects(saveCreditSourcesPrototype(tx,identity,identity,clientId,bad,sha),/Empreinte/);
+   await assert.rejects(saveCreditSourcesPrototype(tx,identity,identity,clientId,{...preSources,truncated:true},sha),/Trop de factures/);
+   await assert.rejects(saveCreditSourcesPrototype(tx,identity,identity,clientId,{...preSources,items:preSources.items.slice(1)},sha),/incomplètes/);
+   await assert.rejects(saveCreditSourcesPrototype(tx,identity,identity,clientId,{...preSources,items:[...preSources.items,preSources.items[0]]},sha),/invalide/);
+   await assert.rejects(saveCreditSourcesPrototype(tx,identity,identity,randomUUID(),preSources,sha),/invalides/);
+   await assert.rejects(saveCreditSourcesPrototype(tx,identity,{...identity,commercialId:randomUUID()},clientId,preSources,sha),/Session/);
+   assert.equal((await readCreditSourcesPrototype(tx,identity,clientId,sha))?.items.length,2);
+   await db.query('UPDATE clients SET active=false WHERE id=$1',[clientId]);
+   const newer=await (await get('/new/reference')).json();await savePrototypeCreditReference(tx,identity,identity,newer);
+   await assert.rejects(readCreditSourcesPrototype(tx,identity,clientId,sha),/invalides/);
+   await db.query('UPDATE clients SET active=true WHERE id=$1',[clientId]);
+  }finally{mobile.close();}
+
   const pre={operationId:randomUUID(),invoiceId:invoice.id,expectedVersion:1,recordedAt:'2026-11-08T12:00:00.000Z',choice:null};
   assert.equal((await post('/new/credit-notes/preinvoices',pre)).status,201);
   const receipt={id:randomUUID(),preInvoiceId:invoice.id,clientId,journalDate:invoice.journalDate,createdAt:'2026-11-08T13:00:00.000Z',prePaid:1,oldDebtPaid:0,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1000000};

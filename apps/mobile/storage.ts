@@ -19,6 +19,7 @@ import {saveAndVerifyFinalCreditReference} from './credit-note-sync-final-protot
 import {preparePrototypeClose} from './credit-note-close-prototype';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from './credit-note-balance-storage-prototype';
 import {previewLocalCredit,confirmLocalCreditReview,type CreditReview} from './credit-note-review-prototype';
+import {creditSourcesPrototypeSchema,saveCreditSourcesPrototype,readCreditSourcesPrototype} from './credit-note-sources-prototype';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -44,7 +45,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -312,6 +313,15 @@ export async function cacheCreditReferencePrototype(identity:DeviceIdentity,veri
 export async function getCreditReferencePrototype(identity:DeviceIdentity) {
  const database=await db();let result:Awaited<ReturnType<typeof readPrototypeCreditReferenceCache>>=null;
  await database.withExclusiveTransactionAsync(async tx=>{result=await readPrototypeCreditReferenceCache(tx,identity);});return result;
+}
+
+/** Copies distantes isolées ; ne pas les mélanger aux vues actuelles v3. */
+export async function cacheCreditSourcesPrototype(identity:DeviceIdentity,verified:DeviceIdentity,clientId:string,value:unknown) {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await saveCreditSourcesPrototype(tx,identity,verified,clientId,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
+}
+export async function getCreditSourcesPrototype(identity:DeviceIdentity,clientId:string) {
+ const database=await db();let result:Awaited<ReturnType<typeof readCreditSourcesPrototype>>=null;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditSourcesPrototype(tx,identity,clientId,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result;
 }
 
 /** Effacement explicite des données fictives de ce téléphone seulement. */

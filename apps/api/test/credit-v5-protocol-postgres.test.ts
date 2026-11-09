@@ -110,9 +110,11 @@ test('PostgreSQL : un autre commercial annule une vente identifiée avec sa prop
   const sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
   await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0},{secret,token:a.token,enforceMode:true,creditAware:true});
   const before=validatePrototypeCreditReference(await readPrototypeCreditReference(pool));assert.equal(before.eligibleSaleProofs[0].saleId,saleId);
+  const {readPrototypeCreditSources}=await import('../src/credit-note-sources-prototype.js');const sources=await readPrototypeCreditSources(pool,clientId);assert.equal(sources?.items[0].invoiceId,saleId);assert.equal(sources?.items[0].hash,before.eligibleSaleProofs[0].hash);
   const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'credit' as const};
   const result=await storePrototypeCreditNote(pool,command,{kind:'commercial',secret,token:b.token});assert.equal(result.status,'received');assert.equal(result.event.actor.id,second.id);
   const after=validatePrototypeCreditReference(await readPrototypeCreditReference(pool));assert.equal(after.clients[0].serverBalance,'950000');assert.equal(after.saleStates[0].creditNote?.actor.id,second.id);assert.equal(after.eligibleSaleProofs.length,0);
+  assert.equal((await readPrototypeCreditSources(pool,clientId))?.items.length,0);
   const {readPrototypeCreditHistory}=await import('../src/credit-note-history-prototype.js');const history=await readPrototypeCreditHistory(pool);assert.equal(history[0].ownerId,first.id);assert.equal(history[0].actor.id,second.id);
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });
