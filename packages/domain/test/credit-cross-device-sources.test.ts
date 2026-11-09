@@ -8,9 +8,10 @@ import type {Pool} from 'pg';
 import {schemaSql} from '../../../apps/api/src/schema.js';
 import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
-import {identifiedCommercialRoutes} from '../../../apps/api/src/identified-tour-routes.js';
+import {identifiedCommercialRoutes,identifiedAdminRoutes} from '../../../apps/api/src/identified-tour-routes.js';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
-import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
+import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,assertLocalTourWritable} from '../../../apps/mobile/tour-close-queue.js';
+import {preparePrototypeClose} from '../../../apps/mobile/credit-note-close-prototype.js';
 import {offlineCreditPrototypeSchema,readReadyOfflineCreditPrototype,readAllOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {creditSourcesPrototypeSchema,saveCreditSourcesPrototype,readCreditSourcesPrototype} from '../../../apps/mobile/credit-note-sources-prototype.js';
@@ -26,6 +27,7 @@ import {readCreditJournalExportPrototype} from '../../../apps/mobile/credit-note
 import {journalCsv} from '../../../apps/mobile/journal-export.js';
 import {describeCreditJournalPrototype} from '../../../apps/mobile/credit-note-journal-view-model-prototype.js';
 import {assertLegacyMobileCreditSafe,assertCreditWritePrototype} from '../../../apps/mobile/credit-note-write-guard-prototype.js';
+import {bindAndCacheCreditReferencePrototype} from '../../../apps/mobile/credit-note-binding-prototype.js';
 
 test('deuxième appareil : avoirs distants sans copier les factures dans les tables actives',async()=>{
  const db=new PGlite(),mobile=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
@@ -37,7 +39,7 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   await setCommercialCredentials(pool,'admin',first.id,{login:'first.test',password:'mot de passe fictif'});await setCommercialCredentials(pool,'admin',second.id,{login:'second.test',password:'mot de passe fictif'});
   const a=await loginCommercial(pool,secret,{login:'first.test',password:'mot de passe fictif'}),b=await loginCommercial(pool,secret,{login:'second.test',password:'mot de passe fictif'});assert.ok(a&&b);
   const clientId=randomUUID();await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,1000000)',[clientId,'Client fictif']);
-  const app=express();app.use(express.json());app.use('/v5',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
+  const app=express();app.use(express.json());app.use('/v5',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin',{allowCreditProtocol:true}));server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
   const addr=server.address();assert.ok(addr&&typeof addr!=='string');const origin=`http://127.0.0.1:${addr.port}`,identity={commercialId:second.id,serverOrigin:'https://sync.example.test'};
   const headers=(token:string)=>({Authorization:`Bearer ${token}`,'Content-Type':'application/json','X-SLS-Reference-Version':'5'});
   const post=(token:string,path:string,body:unknown)=>fetch(`${origin}/v5/${path}`,{method:'POST',headers:headers(token),body:JSON.stringify(body)});
@@ -56,7 +58,21 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{mobile.prepare(sql).run(...args)}};
   const transaction=async<T>(action:()=>Promise<T>)=>{mobile.exec('BEGIN');try{const v=await action();mobile.exec('COMMIT');return v;}catch(e){mobile.exec('ROLLBACK');throw e;}};
   const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(second.id,identity.serverOrigin);
-  const reference=await get('reference');await transaction(()=>saveVerifiedCreditReference(tx,identity,identity,reference,digest));
+  const reference=await get('reference');
+  // Un nouveau téléphone peut se lier directement en v5, sans créer de
+  // référence v3 qui ignorerait les avoirs. Tout échec annule aussi la liaison.
+  mobile.exec('DELETE FROM identified_device');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,{...reference,version:3},digest,()=>{})),/Référence/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,{...identity,commercialId:randomUUID()},reference,digest,()=>{})),/Session/);
+  mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,1,'{}');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/opérations en attente/);mobile.exec('DELETE FROM sales_outbox');
+  let checks=0;await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{if(++checks===2)throw Error('session expirée');})),/session expirée/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
+  await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,1);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_reference_cache').get()?.n,0);
+  await transaction(()=>saveVerifiedCreditReference(tx,identity,identity,reference,digest));
   const sources=await get(`credit-sources/${clientId}`);await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   // Même hors ligne et sans cache des autres appareils, les factures locales
   // identifiées restent sélectionnables, y compris leurs versions en file.
@@ -109,18 +125,24 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
    fetchReference:()=>get('reference'),saveReference:(x:typeof identity,y:typeof identity,v:unknown)=>transaction(async()=>{await saveVerifiedCreditReference(tx,x,y,v,digest);}),saveFinalReference:(x:typeof identity,y:typeof identity,v:unknown)=>transaction(()=>saveAndVerifyFinalCreditReference(tx,x,y,v,digest))};
   // Le contrôleur de transport utilise les véritables échanges HTTP et les
   // wrappers SQLite, mais le nom de serveur public est routé vers le test local.
-  let clock=Date.now(),expireDuringAck=false;
+  let clock=Date.now(),expireDuringAck=false,loseClose=false,expireCloseAck=false;
   const makeController=()=>{
    const expiry=clock+3600000,session={id:second.id,name:'Deuxième',serverOrigin:identity.serverOrigin,token:b.token,expiresAt:new Date(expiry).toISOString()};
    return createCreditTransportPrototype(session,identity,{
     now:()=>clock,
-    request:async(url,options)=>{const response=await fetch(url.replace(identity.serverOrigin+'/api/mobile/identified',origin+'/v5'),options);if(options.method==='POST'&&url.includes('/credit-notes/')&&lose){lose=false;assert.equal(response.status,201);throw Error('réponse perdue');}return response;},
+    request:async(url,options)=>{const response=await fetch(url.replace(identity.serverOrigin+'/api/mobile/identified',origin+'/v5'),options);if(options.method==='POST'&&url.includes('/credit-notes/')&&lose){lose=false;assert.equal(response.status,201);throw Error('réponse perdue');}if(options.method==='POST'&&url.endsWith('/close')&&loseClose){loseClose=false;assert.equal(response.status,201);throw Error('clôture réponse perdue');}return response;},
     cacheReference:(x,y,v,guard)=>transaction(async()=>{guard();await saveVerifiedCreditReference(tx,x,y,v,digest);guard();}),
     cacheSources:(x,y,id,v,guard)=>transaction(async()=>{guard();await saveCreditSourcesPrototype(tx,x,y,id,v,digest);guard();}),
     synchronize:(x,y,transport,guard)=>syncCreditPrototype(x,y,{...io,...transport,
      acknowledgeCredit:(note,response)=>transaction(async()=>{guard();await acknowledgeOfflineCreditPrototype(tx,identity,note,response);if(expireDuringAck){expireDuringAck=false;clock=expiry;}guard();}),
      saveReference:(id,verified,value)=>transaction(async()=>{guard();await saveVerifiedCreditReference(tx,id,verified,value,digest);guard();}),
-     saveFinalReference:(id,verified,value)=>transaction(async()=>{guard();await saveAndVerifyFinalCreditReference(tx,id,verified,value,digest);guard();})})
+     saveFinalReference:(id,verified,value)=>transaction(async()=>{guard();await saveAndVerifyFinalCreditReference(tx,id,verified,value,digest);guard();})}),
+    tour:{
+     getAttempt:(id,date,guard)=>transaction(async()=>{guard();const value=await findTourCloseAttempt(tx,id.commercialId,date);guard();return value;}),
+     prepare:(id,date,version,guard)=>transaction(async()=>{guard();const value=await preparePrototypeClose(tx,id,date,version,randomUUID);guard();return value;}),
+     acknowledge:(id,date,response,guard)=>transaction(async()=>{guard();await acknowledgeTourClose(tx,id.commercialId,date,response);if(expireCloseAck){expireCloseAck=false;clock=expiry;}guard();}),
+     observe:(id,date,response,guard)=>transaction(async()=>{guard();await observeVerifiedTourState(tx,id.commercialId,date,response);guard();})
+    }
    });
   };
   let controller=makeController();
@@ -157,6 +179,22 @@ test('deuxième appareil : avoirs distants sans copier les factures dans les tab
   await assert.rejects(transaction(()=>readCreditSourcesPrototype(tx,identity,clientId,digest)),/non confirmée|incomplètes/);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,1);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM pre_invoice_credit_prototype_events')).rows[0].n,1);
+  // Clôture v5 après les avoirs : le serveur reçoit la demande mais la réponse
+  // est perdue. La reprise garde le même UUID et les écritures restent bloquées.
+  const closedDay='2026-11-08';loseClose=true;await assert.rejects(controller.closeDay(closedDay),/réponse perdue/);
+  const attempt=await transaction(()=>findTourCloseAttempt(tx,identity.commercialId,closedDay));assert.equal(attempt?.status,'closing');
+  await assert.rejects(transaction(()=>assertLocalTourWritable(tx,identity.commercialId,closedDay)),/Clôture en attente/);
+  const waiting=randomUUID();mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(waiting,saleId,1,'{}');
+  await assert.rejects(controller.closeDay(closedDay),/opération est en attente/);mobile.prepare('DELETE FROM sales_outbox WHERE operation_id=?').run(waiting);
+  expireCloseAck=true;await assert.rejects(controller.closeDay(closedDay),/expirée/);
+  assert.equal((await transaction(()=>findTourCloseAttempt(tx,identity.commercialId,closedDay)))?.status,'closing');
+  controller=makeController();assert.deepEqual(await controller.closeDay(closedDay),{status:'closed',version:1});
+  assert.equal((await transaction(()=>findTourCloseAttempt(tx,identity.commercialId,closedDay)))?.requestId,attempt?.requestId);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int n FROM tour_closure_requests')).rows[0].n,1);
+  const reopen=await fetch(`${origin}/admin/${second.id}/reopen`,{method:'POST',headers:{...headers('admin-test'),Authorization:'Bearer admin-test'},body:JSON.stringify({requestId:randomUUID(),day:closedDay,expectedVersion:1})});assert.equal(reopen.status,201);
+  assert.deepEqual(await controller.refreshDay(closedDay),{status:'open',version:2});assert.equal(await transaction(()=>findTourCloseAttempt(tx,identity.commercialId,closedDay)),null);
+  await transaction(()=>assertLocalTourWritable(tx,identity.commercialId,closedDay));
+
   // Une modification faite par le premier appareil après le téléchargement
   // ne doit jamais être écrasée ; l'avoir du second reste dans sa file.
   const sale3Id=randomUUID(),sale3={...sale,syncSaleId:sale3Id};

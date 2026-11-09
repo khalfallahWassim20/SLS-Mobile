@@ -21,5 +21,9 @@ test('clôture expérimentale : refuse tout avoir en attente et conserve les don
   db.prepare('UPDATE offline_credit_prototype SET pending=0').run();
   const result=await preparePrototypeClose(tx,identity,'2026-11-08',0,randomUUID);
   assert.equal(result.status,'closing');assert.equal(db.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,1);
+  db.prepare('INSERT INTO sales_outbox(operation_id) VALUES(?)').run(randomUUID());
+  await assert.rejects(preparePrototypeClose(tx,identity,'2026-11-08',0,randomUUID),/opération est en attente/);
+  assert.equal((await prepareAfterDelete()).requestId,result.requestId);
+  async function prepareAfterDelete(){db.exec('DELETE FROM sales_outbox');return preparePrototypeClose(tx,identity,'2026-11-08',0,randomUUID);}
  }finally{db.close();}
 });

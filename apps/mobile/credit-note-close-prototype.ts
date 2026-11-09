@@ -10,5 +10,9 @@ export async function preparePrototypeClose(tx:Tx,identity:DeviceIdentity,day:st
  // Conservateur sur tous les jours : aucun avoir en attente ne doit être oublié.
  const pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM offline_credit_prototype WHERE pending=1) AS n');
  if(!pending||pending.n)throw Error('Un avoir est en attente : synchronisez ou rapprochez-le avant clôture.');
+ // Une reprise après réponse perdue doit aussi refuser une nouvelle opération
+ // arrivée depuis la première tentative, sans effacer la demande initiale.
+ const writes=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM sales_outbox) OR EXISTS(SELECT 1 FROM journal_sync_outbox) AS n');
+ if(!writes||writes.n)throw Error('Une opération est en attente : synchronisez avant clôture.');
  return prepareTourClose(tx,identity.commercialId,day,expectedVersion,uuid);
 }

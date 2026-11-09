@@ -42,3 +42,18 @@ test('session et identité copiées : mutation extérieure ne redirige pas le je
  f.identity.serverOrigin='https://autre.example.test';f.session.serverOrigin='https://autre.example.test';f.session.token='autre jeton';
  await controller.refreshReference();assert.match(f.calls[0].url,/^https:\/\/api\.example\.test\//);assert.equal(f.calls[0].options.headers.Authorization,'Bearer jeton fictif');
 });
+
+test('transport v5 : date de clôture stricte et dépendances exigées',async()=>{
+ const f=fixture(),controller=createCreditTransportPrototype(f.session,f.identity,f.io);
+ await assert.rejects(controller.refreshDay('2026-02-30'),/Date de tournée invalide/);
+ await assert.rejects(controller.closeDay('../close'),/Date de tournée invalide/);
+ await assert.rejects(controller.closeDay('2026-11-08'),/Clôture v5 indisponible/);
+ assert.equal(f.calls.length,0);
+});
+
+test('liaison v5 : référence authentifiée avant liaison et refus sans prise en charge',async()=>{
+ const f=fixture();const noBinding=createCreditTransportPrototype(f.session,f.identity,f.io);await assert.rejects(noBinding.connect(),/Liaison v5 indisponible/);assert.equal(f.calls.length,0);
+ let stored=false;const controller=createCreditTransportPrototype(f.session,f.identity,{...f.io,bindReference:async(id,verified,value,guard)=>{guard();assert.deepEqual(id,verified);assert.deepEqual(value,{clientId:'test',error:'Session refusée'});stored=true;guard();}});
+ await controller.connect();assert.equal(stored,true);assert.match(f.calls[0].url,/\/reference$/);assert.equal(f.calls[0].options.headers['X-SLS-Reference-Version'],'5');
+ const bad=fixture();bad.reject();let bound=false;const denied=createCreditTransportPrototype(bad.session,bad.identity,{...bad.io,bindReference:async()=>{bound=true;}});await assert.rejects(denied.connect(),/Session refusée/);assert.equal(bound,false);
+});
