@@ -310,8 +310,8 @@ export async function acknowledgeLocalCreditPrototype(identity:DeviceIdentity,no
 }
 
 /** Référence future non reliée au cache ni aux écrans actuels. */
-export async function cacheCreditReferencePrototype(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown):Promise<void> {
- const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await saveVerifiedCreditReference(tx,identity,verified,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
+export async function cacheCreditReferencePrototype(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown,guard:()=>void=()=>{}):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await saveVerifiedCreditReference(tx,identity,verified,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));guard();});
 }
 export async function getCreditReferencePrototype(identity:DeviceIdentity) {
  const database=await db();let result:Awaited<ReturnType<typeof readPrototypeCreditReferenceCache>>=null;
@@ -319,8 +319,8 @@ export async function getCreditReferencePrototype(identity:DeviceIdentity) {
 }
 
 /** Copies distantes isolées ; ne pas les mélanger aux vues actuelles v3. */
-export async function cacheCreditSourcesPrototype(identity:DeviceIdentity,verified:DeviceIdentity,clientId:string,value:unknown) {
- const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await saveCreditSourcesPrototype(tx,identity,verified,clientId,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
+export async function cacheCreditSourcesPrototype(identity:DeviceIdentity,verified:DeviceIdentity,clientId:string,value:unknown,guard:()=>void=()=>{}) {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await saveCreditSourcesPrototype(tx,identity,verified,clientId,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));guard();});
 }
 export async function getCreditSourcesPrototype(identity:DeviceIdentity,clientId:string) {
  const database=await db();let result:Awaited<ReturnType<typeof readCreditSourcesPrototype>>=null;
@@ -374,17 +374,17 @@ export async function synchronizeCreditPrototype(identity:DeviceIdentity,verifie
  fetchReference:()=>Promise<unknown>;
  sendOperation:(path:string,body:string)=>Promise<{ok:boolean;status:number;json:()=>Promise<unknown>}>;
  sendCredit:(path:string,body:string)=>Promise<{ok:boolean;status:number;json:()=>Promise<unknown>}>;
-}) {
+},guard:()=>void=()=>{}) {
  if(creditSyncRunning)throw Error('Synchronisation déjà en cours.');
  creditSyncRunning=true;
  try {
   return await syncCreditPrototype(identity,verified,{
-   readOperations:()=>getIdentifiedOutbox(identity),acknowledgeOperation:entry=>acknowledgeIdentifiedEntry(identity,entry),
+   readOperations:()=>getIdentifiedOutbox(identity),acknowledgeOperation:async entry=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeIdentifiedOutbox(tx,identity,entry);guard();});},
    readReadyCredits:()=>getReadyLocalCreditPrototypes(identity),readAllCredits:()=>getLocalCreditPrototypes(identity),
-   acknowledgeCredit:(note,response)=>acknowledgeLocalCreditPrototype(identity,note,response),
+   acknowledgeCredit:async(note,response)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeOfflineCreditPrototype(tx,identity,note,response);guard();});},
    sendOperation:transport.sendOperation,sendCredit:transport.sendCredit,fetchReference:transport.fetchReference,
-   saveReference:(id,session,value)=>cacheCreditReferencePrototype(id,session,value),
-   saveFinalReference:async(id,session,value)=>{const database=await db();await database.withExclusiveTransactionAsync(tx=>saveAndVerifyFinalCreditReference(tx,id,session,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data)));}
+   saveReference:(id,session,value)=>cacheCreditReferencePrototype(id,session,value,guard),
+   saveFinalReference:async(id,session,value)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await saveAndVerifyFinalCreditReference(tx,id,session,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));guard();});}
   });
  } finally {creditSyncRunning=false;}
 }

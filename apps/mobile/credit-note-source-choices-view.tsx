@@ -9,11 +9,12 @@ export function CreditSourceChoicesView({choices,busy,onSelect,onRefresh}:{choic
  return <View style={styles.list}>
   <Text style={styles.title}>Choisir une facture à annuler</Text>
   <Text style={styles.notice}>L’avoir annule la facture entière. Actualisez quand le réseau est disponible ; hors ligne, d’autres appareils ont pu modifier ces données.</Text>
+  {!choices.remoteAvailable&&<Text style={styles.notice}>Factures des autres appareils indisponibles sur ce téléphone : actualisez en ligne pour les consulter.</Text>}
   {!choices.active&&<Text style={styles.notice}>Client inactif : son historique reste consultable.</Text>}
   <TouchableOpacity accessibilityRole="button" disabled={busy} onPress={onRefresh} style={styles.refresh}><Text style={styles.refreshText}>Actualiser les factures</Text></TouchableOpacity>
   {choices.items.length===0&&<Text style={styles.notice}>Aucune facture éligible dans les données disponibles.</Text>}
   {choices.items.map(item=><View key={`${item.kind}:${item.invoiceId}`} style={styles.card}>
-   <Text style={styles.name}>{item.kind==='sale'?'Vente SLS':'Facture préétablie'} · {item.invoiceDay}</Text>
+   <Text style={styles.name}>{item.kind==='sale'?'Vente SLS':'Facture préétablie'} · {item.invoiceDay} · {item.origin==='local'?'Ce téléphone':'Autre appareil'}</Text>
    <Text>Montant : {money(item.total)} · Payé : {money(item.paid)}</Text>
    {item.kind==='preinvoice'&&<Text>Ancienne dette réglée : {money(item.oldDebtPaid)} (conservée)</Text>}
    {item.blocked&&<Text style={styles.notice}>{item.blocked==='avoir-existant'?'Un avoir existe déjà sur ce téléphone.':'Modification locale à synchroniser ou à rapprocher avant de continuer.'}</Text>}
