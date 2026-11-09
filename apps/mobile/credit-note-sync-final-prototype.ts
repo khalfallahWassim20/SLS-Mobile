@@ -14,9 +14,12 @@ type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsy
 export async function saveAndVerifyFinalCreditReference(tx:Tx,identity:DeviceIdentity,verified:DeviceIdentity,value:unknown,digest:(data:string)=>Promise<string>) {
  await saveVerifiedCreditReference(tx,identity,verified,value,digest);
  if((await readIdentifiedOutbox(tx,identity)).length)throw Error('Une opération reste en attente : synchronisation incomplète.');
- if((await readAllOfflineCreditPrototype(tx,identity)).some(n=>n.pending))throw Error('Un avoir reste en attente : synchronisation incomplète.');
+ const notes=await readAllOfflineCreditPrototype(tx,identity);
+ if(notes.some(n=>n.pending))throw Error('Un avoir reste en attente : synchronisation incomplète.');
  const clients=await tx.getAllAsync<{clientId:string}>(`SELECT client_id AS clientId FROM sales UNION SELECT client_id AS clientId FROM settlements UNION SELECT client_id AS clientId FROM tour_pre_invoices`);
- for(const {clientId} of clients){
+ const clientIds=new Set(clients.map(x=>x.clientId));
+ for(const {note} of notes){const source=note.source as {clientId?:unknown;invoice?:{clientId?:unknown}},id=note.kind==='sale'?source.clientId:source.invoice?.clientId;if(typeof id!=='string')throw Error('Client de l’avoir indisponible.');clientIds.add(id);}
+ for(const clientId of clientIds){
   const balance=await readPrototypeCreditBalance(tx,identity,clientId,digest);
   if(balance.conflict)throw Error('Solde client en conflit : rapprochement nécessaire avant de terminer la synchronisation.');
  }

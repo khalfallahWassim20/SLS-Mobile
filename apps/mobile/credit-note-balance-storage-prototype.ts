@@ -5,6 +5,7 @@ import type {DeviceIdentity} from './identified-device';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {readAllOfflineCreditPrototype,prepareOfflineCreditPrototype,type Kind} from './credit-note-offline-prototype';
 import {prototypeCreditBalance} from './credit-note-balance-prototype';
+import {readCreditSourcesPrototype} from './credit-note-sources-prototype';
 
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
@@ -40,6 +41,25 @@ export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,c
   if(invoice.id!==row.id||invoice.clientId!==row.clientId||invoice.journalDate!==row.journalDate||snapshot.version!==state.version||canonicalJson(snapshot.invoice)!==canonicalJson(invoice)||canonicalJson(snapshot.receipts)!==canonicalJson(items))throw Error('Historique local du journal incohérent.');
   return {id:row.id,clientId:row.clientId,journalDate:row.journalDate,version:state.version,total:invoice.amount,receipts:items as Parameters<typeof prototypeCreditBalance>[0]['journals'][number]['receipts'],snapshot};
  });
+ // Les sources d'un autre appareil ne sont jamais copiées dans les tables
+ // actives. Pour calculer un avoir local, elles sont utilisées en mémoire,
+ // exclusivement si leur empreinte correspond à la référence courante.
+ let sourceConflict=false;
+ for(const note of notes){
+  const src=note.source as Record<string,any>,id=note.command.invoiceId;
+  const exists=note.kind==='sale'?sales.some(s=>s.syncSaleId===id):journals.some(j=>j.id===id);
+  if(exists)continue;
+  if(!digest)throw Error('Preuve de facture distante indispensable.');
+  if(note.kind==='sale'){
+   const state=reference.saleStates.find(s=>s.saleId===id),proof=state?.creditNote?reference.saleProofs.find(p=>p.saleId===id):reference.eligibleSaleProofs.find(p=>p.saleId===id);
+   if(!state||!proof||proof.version!==note.command.expectedVersion||await digest(canonicalJson(src))!==proof.hash)sourceConflict=true;
+   sales.push(src as Parameters<typeof prototypeCreditBalance>[0]['sales'][number]);
+  }else{
+   const state=reference.journalStates.find(s=>s.id===id),proof=reference.journalProofs.find(p=>p.id===id),invoice=src.invoice;
+   if(!state||!proof||proof.version!==note.command.expectedVersion||await digest(canonicalJson(src))!==proof.hash)sourceConflict=true;
+   journals.push({id,clientId:invoice.clientId,journalDate:invoice.journalDate,version:src.version,total:invoice.amount,receipts:src.receipts,snapshot:src});
+  }
+ }
  // Une annulation distante n'est acceptée automatiquement qu'après preuve
  // exacte du contenu complet et absence de toute version locale en attente.
  const verifiedRemoteSales=new Set<string>(),verifiedRemoteJournals=new Set<string>();
@@ -61,7 +81,8 @@ export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,c
    if(proof&&remote?.creditNote&&remote.clientId===journal.clientId&&proof.version===journal.version&&await digest(canonicalJson(journal.snapshot))===proof.hash)verifiedRemoteJournals.add(journal.id);
   }
  }
- return prototypeCreditBalance({clientId,identity,reference,sales,journals,settlements,notes,verifiedRemoteSales,verifiedRemoteJournals});
+ const balance=prototypeCreditBalance({clientId,identity,reference,sales,journals,settlements,notes,verifiedRemoteSales,verifiedRemoteJournals});
+ return {...balance,conflict:balance.conflict||sourceConflict};
 }
 
 /** Préparation atomique expérimentale : l'appelant doit ouvrir une transaction
@@ -70,7 +91,14 @@ export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,c
 export async function prepareBalancedLocalCredit(tx:Tx,identity:DeviceIdentity,clientId:string,kind:Kind,command:import('@sls/domain').CreditNoteCommand,digest?:(data:string)=>Promise<string>) {
  const before=await readPrototypeCreditBalance(tx,identity,clientId,digest);
  if(before.conflict)throw Error('Solde en conflit : avoir refusé.');
- const note=await prepareOfflineCreditPrototype(tx,identity,kind,command,digest);
+ let remoteSource:unknown;
+ const local=kind==='sale'?await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM sales WHERE json_valid(payload) AND json_extract(payload,'$.syncSaleId')=?) AS n`,command.invoiceId):await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_pre_invoices WHERE id=?) AS n',command.invoiceId);
+ if(!local)throw Error('État local indisponible.');
+ if(!local.n&&digest){
+  const sources=await readCreditSourcesPrototype(tx,identity,clientId,digest);
+  remoteSource=sources?.items.find(item=>item.kind===kind&&item.invoiceId===command.invoiceId&&item.version===command.expectedVersion)?.source;
+ }
+ const note=await prepareOfflineCreditPrototype(tx,identity,kind,command,digest,remoteSource);
  const source=note.source as {clientId?:unknown;invoice?:{clientId?:unknown}};
  if((kind==='sale'?source.clientId:source.invoice?.clientId)!==clientId)throw Error('Client de la facture incohérent.');
  const after=await readPrototypeCreditBalance(tx,identity,clientId,digest);

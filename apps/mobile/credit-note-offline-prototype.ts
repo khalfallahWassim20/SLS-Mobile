@@ -25,7 +25,7 @@ async function bound(tx:Tx,identity:DeviceIdentity){
 /** L'état est lu depuis SQLite et non depuis l'écran. Ne s'applique qu'aux
  * factures dont une opération locale est liée à cette identité ; les anciennes
  * factures sans preuve restent refusées. Aucun solde actif n'est modifié. */
-export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentity,kind:Kind,command:CreditNoteCommand,digest?:(data:string)=>Promise<string>):Promise<Note> {
+export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentity,kind:Kind,command:CreditNoteCommand,digest?:(data:string)=>Promise<string>,remoteSource?:unknown):Promise<Note> {
  await bound(tx,identity);
  if(kind!=='sale'&&kind!=='preinvoice')throw Error('Type de facture invalide.');
  if(!command||!uuid(command.operationId)||!uuid(command.invoiceId)||!Number.isSafeInteger(command.expectedVersion)||command.expectedVersion<1||command.expectedVersion>=1000000||!['refund','credit',null].includes(command.choice)||typeof command.recordedAt!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(command.recordedAt)||!Number.isFinite(Date.parse(command.recordedAt))||new Date(command.recordedAt).toISOString()!==command.recordedAt)throw Error('Demande invalide.');
@@ -39,8 +39,8 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
  let source:unknown,balanceDelta:number,refund:number,retainedCredit:number,invoiceDay:string;
  if(kind==='sale') {
   const row=await tx.getFirstAsync<{payload:string}>(`SELECT payload FROM sales WHERE json_valid(payload) AND json_extract(payload,'$.syncSaleId')=?`,command.invoiceId);
-  if(!row)throw Error('Vente locale introuvable.');
-  const sale=JSON.parse(row.payload);
+  if(!row&&(!remoteSource||proof))throw Error('Vente locale introuvable.');
+  const sale=row?JSON.parse(row.payload):remoteSource as Record<string,any>;
   if(sale.syncSaleId!==command.invoiceId||sale.syncVersion!==command.expectedVersion||!Number.isFinite(Date.parse(sale.createdAt)))throw Error('Version ou date de vente incohérente.');
   invoiceDay=tunisDay(new Date(sale.createdAt));
   const lastChange=await tx.getFirstAsync<{at:string|null}>('SELECT MAX(recorded_at) AS at FROM identified_local_operations WHERE entity_id=? AND operation_kind=?',command.invoiceId,'sale');
@@ -52,9 +52,10 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
   const row=await tx.getFirstAsync<{payload:string;version:number}>(`SELECT payload,version FROM journal_sync_state WHERE invoice_id=?`,command.invoiceId);
   const invoice=await tx.getFirstAsync<{payload:string}>(`SELECT payload FROM tour_pre_invoices WHERE id=?`,command.invoiceId);
   const receipts=await tx.getAllAsync<{payload:string}>(`SELECT payload FROM tour_journal_receipts WHERE pre_invoice_id=? ORDER BY rowid`,command.invoiceId);
-  if(!row||!invoice||row.version!==command.expectedVersion)throw Error('Version de facture préétablie incohérente.');
-  const snapshot=JSON.parse(row.payload),localInvoice=JSON.parse(invoice.payload),localReceipts=receipts.map(r=>JSON.parse(r.payload));
-  if(snapshot.version!==row.version||snapshot.invoice?.id!==command.invoiceId||canonicalJson(snapshot.invoice)!==canonicalJson(localInvoice)||canonicalJson(snapshot.receipts)!==canonicalJson(localReceipts))throw Error('Historique du journal incohérent.');
+  if((!row||!invoice)&&(row||invoice||receipts.length||!remoteSource||proof))throw Error('Version de facture préétablie incohérente.');
+  const snapshot=row?JSON.parse(row.payload):remoteSource as Record<string,any>;
+  const localInvoice=invoice?JSON.parse(invoice.payload):snapshot.invoice,localReceipts=row?receipts.map(r=>JSON.parse(r.payload)):snapshot.receipts;
+  if(!Array.isArray(localReceipts)||snapshot.version!==command.expectedVersion||(row&&snapshot.version!==row.version)||snapshot.invoice?.id!==command.invoiceId||canonicalJson(snapshot.invoice)!==canonicalJson(localInvoice)||canonicalJson(snapshot.receipts)!==canonicalJson(localReceipts))throw Error('Historique du journal incohérent.');
   if(!/^\d{4}-\d{2}-\d{2}$/.test(snapshot.invoice.journalDate))throw Error('Date du journal invalide.');
   invoiceDay=snapshot.invoice.journalDate;
   const times=[snapshot.invoice.createdAt,...localReceipts.map(r=>r.createdAt)].map(s=>Date.parse(s));
