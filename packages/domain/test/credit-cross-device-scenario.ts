@@ -153,6 +153,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   mobile.prepare('UPDATE tour_journal_receipts SET payload=? WHERE id=?').run(JSON.stringify({...localReceipt,oldDebtPaid:1}),localReceipt.id);await assert.rejects(transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest)),/Historique local/);mobile.prepare('UPDATE tour_journal_receipts SET payload=? WHERE id=?').run(JSON.stringify(localReceipt),localReceipt.id);
   await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   assert.equal((await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest))).items.length,4);
+  const mixedHistory=await transaction(()=>readCreditHistoryPrototype(tx,identity,clientId,digest));assert.equal(mixedHistory.remoteAvailable,true);assert.equal(mixedHistory.remoteSales.length,1);assert.equal(mixedHistory.remoteSales[0].invoiceId,saleId);assert.equal(mixedHistory.remoteSales[0].total,119000);assert.equal(mixedHistory.sales.length,1);assert.equal(mixedHistory.articles[0].code,'ART-TEST');
   mobile.exec('DELETE FROM sales;DELETE FROM sales_outbox;DELETE FROM tour_journal_receipts;DELETE FROM tour_pre_invoices;DELETE FROM journal_sync_state;DELETE FROM identified_local_operations');
   // Dès la liaison v5, aucune écriture v3 ne doit utiliser un calcul ancien,
   // même avant le premier avoir. Les sources historiques sont vérifiées sur

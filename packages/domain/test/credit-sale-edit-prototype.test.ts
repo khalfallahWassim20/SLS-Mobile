@@ -27,3 +27,14 @@ test('la validation avant écriture refuse remboursement et métadonnées altér
  assert.throws(()=>validateCreditSaleEdit(sale,{...value.updated,createdAt:'2026-01-01T00:00:00.000Z'},value.refund),/incohérente/);
  assert.throws(()=>validateCreditSaleEdit(sale,{...value.updated,total:1},value.refund),/incohérente/);
 });
+test('ajout dans une révision : prix catalogue contrôlé, y compris à la sauvegarde',async()=>{
+ const {validateCreditSaleEdit}=await import('../../../apps/mobile/credit-sale-edit-prototype.js');
+ const article={id:randomUUID(),name:'Filtre',code:'F1',barcode:'',saleTtc:'59500',vatRate:1900,unitsPerCarton:1};
+ const added={name:'Filtre',code:'F1',quantity:1,unitPrice:50000,discount:0,vat:1900},lines=[...sale.lines,added];
+ const revised=prepareCreditSaleEdit(client,context,sale,lines,undefined,[article]);assert.equal(revised.updated.total,297500);assert.equal(revised.balanceAfter,1059500);
+ assert.doesNotThrow(()=>validateCreditSaleEdit(sale,revised.updated,0,[article]));
+ assert.throws(()=>validateCreditSaleEdit(sale,revised.updated,0,[{...article,saleTtc:'60000'}]),/prix/);
+ assert.throws(()=>prepareCreditSaleEdit(client,context,sale,lines,undefined,[]),/prix/);
+ assert.throws(()=>prepareCreditSaleEdit(client,context,sale,lines,undefined,[article,{...article,id:randomUUID()}]),/prix/);
+ assert.throws(()=>prepareCreditSaleEdit(client,context,sale,[...sale.lines,{...added,unitPrice:1}],undefined,[article]),/prix/);
+});

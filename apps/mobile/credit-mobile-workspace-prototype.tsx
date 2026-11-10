@@ -60,7 +60,7 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
  const selectCredit=(id:string)=>{if(!busy)setCreditClient({id,scope:context});};
  const writeContext=(client:Client):CreditWriteContext=>{if(client.balance===null||client.conflict)throw Error('Solde en conflit.');return {identity:{...identity},expectedBalance:client.balance};};
  const currentSnapshot=snapshot&&snapshot.identity.commercialId===identity.commercialId&&snapshot.identity.serverOrigin===identity.serverOrigin&&snapshot.view.day===day&&snapshot.view.commercial===commercialName?snapshot:null;
- if(historyClient?.scope===context)return <CreditHistoryViewPrototype key={`${context}:${historyClient.id}`} identity={identity} clientId={historyClient.id} onBack={()=>{setHistoryClient(null);refresh();}} onChanged={()=>setSnapshot(null)}/>;
+ if(historyClient?.scope===context)return <CreditHistoryViewPrototype key={`${context}:${historyClient.id}`} identity={identity} clientId={historyClient.id} refreshSources={transport?(clientId)=>transport.refreshSources(clientId):null} onBack={()=>{setHistoryClient(null);refresh();}} onChanged={()=>setSnapshot(null)}/>;
  if(form?.scope===context){
   const props={client:form.client,context:form.context,onCancel:()=>setForm(null),onDone:()=>{setForm(null);setSnapshot(null);refresh();}};
   return form.kind==='sale'||form.kind==='settlement'?<CreditSaleSettlementViewPrototype key={`${context}:${form.kind}:${form.client.id}`} kind={form.kind} articles={form.articles} {...props}/>:

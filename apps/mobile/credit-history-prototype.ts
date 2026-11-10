@@ -24,5 +24,6 @@ export async function readCreditHistoryPrototype(tx:Tx,identity:DeviceIdentity,c
  const settlements=(await tx.getAllAsync<{id:number;payload:string}>('SELECT id,payload FROM settlements WHERE client_id=? ORDER BY id DESC',clientId)).map(r=>({...parse<Omit<Settlement,'id'>>(r.payload),id:r.id}));
  const receipts=(await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_journal_receipts WHERE client_id=? ORDER BY rowid DESC',clientId)).map(r=>parse<TourJournalReceipt>(r.payload));
  if(settlements.some(p=>p.clientId!==clientId)||receipts.some(p=>p.clientId!==clientId))throw Error('Paiement local incohérent.');
- return {client,identity:{...identity},sales,settlements,receipts};
+ const remoteSales=choices.items.filter(x=>x.kind==='sale'&&x.origin==='remote');
+ return {client,identity:{...identity},articles:snapshot.articles,sales,settlements,receipts,remoteSales,remoteAvailable:choices.remoteAvailable};
 }

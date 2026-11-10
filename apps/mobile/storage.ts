@@ -101,14 +101,13 @@ export async function getRevisions(saleId: number): Promise<Revision[]> {
   return rows.map(r => ({ id: r.id, createdAt: r.created_at, previous: JSON.parse(r.previous_payload), current: JSON.parse(r.new_payload), refund: r.refund }));
 }
 export async function updateSale(previous: SavedSale, updated: SavedSale, refund: number, credit?:CreditWriteContext): Promise<void> {
-  if(credit)validateCreditSaleEdit(previous,updated,refund);
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
     await assertNoLocalCreditNote(tx,'sale',previous.syncSaleId);
     const row = await tx.getFirstAsync<{payload: string}>('SELECT payload FROM sales WHERE id = ?', previous.id);
     if (!row || JSON.stringify({ ...JSON.parse(row.payload), id: previous.id }) !== JSON.stringify(previous)) throw new Error('La vente a changé. Veuillez rouvrir son détail.');
     const recordedAt=new Date().toISOString(),identity=await getDeviceIdentity(tx);
-    if(credit){if(previous.clientId!==updated.clientId)throw Error('Client de la facture modifié.');await assertCreditWritePrototype(tx,credit,{kind:'edit',clientId:previous.clientId},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));}else await assertLegacyMobileCreditSafe(tx,identity);
+    if(credit){if(previous.clientId!==updated.clientId)throw Error('Client de la facture modifié.');await assertCreditWritePrototype(tx,credit,{kind:'edit',clientId:previous.clientId},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));const reference=await readPrototypeCreditReferenceCache(tx,credit.identity);if(!reference)throw Error('Référence v5 indisponible.');validateCreditSaleEdit(previous,updated,refund,reference.articles);}else await assertLegacyMobileCreditSafe(tx,identity);
     await assertNoRemoteCreditNote(tx,identity,'sale',previous.syncSaleId);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(previous.createdAt)),tunisDay(new Date(recordedAt))]);
     await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion??0,total:previous.total,paid:previous.paid,payload:row.payload,digest:(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)},undefined,!!credit);
