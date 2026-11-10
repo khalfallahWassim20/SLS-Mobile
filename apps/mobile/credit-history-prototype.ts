@@ -1,6 +1,7 @@
 /** Historique LOCAL v5 : ne prétend pas inclure les opérations d'autres téléphones. */
 import type {DeviceIdentity} from './identified-device';
 import type {SavedSale,Revision,Settlement,TourJournalReceipt} from './storage';
+import {readAbandonedRemoteEditsPrototype} from './credit-remote-sale-confirm-prototype';
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import {readCreditSourcesPrototype} from './credit-note-sources-prototype';
 import {readCreditSourceChoices} from './credit-note-source-choices-prototype';
@@ -27,5 +28,6 @@ export async function readCreditHistoryPrototype(tx:Tx,identity:DeviceIdentity,c
  if(settlements.some(p=>p.clientId!==clientId)||receipts.some(p=>p.clientId!==clientId))throw Error('Paiement local incohérent.');
  const sourceCache=await readCreditSourcesPrototype(tx,identity,clientId,digest);
  const remoteSales=choices.items.filter(x=>x.kind==='sale'&&x.origin==='remote').map(x=>{const source=sourceCache?.items.find(s=>s.kind==='sale'&&s.invoiceId===x.invoiceId);if(!source||source.version!==x.version)throw Error('Source distante incohérente.');return {...x,hash:source.hash};});
- return {client,identity:{...identity},articles:snapshot.articles,sales,settlements,receipts,remoteSales,remoteAvailable:choices.remoteAvailable};
+ const abandonedEdits=await readAbandonedRemoteEditsPrototype(tx,identity,clientId,digest);
+ return {client,identity:{...identity},articles:snapshot.articles,sales,settlements,receipts,remoteSales,abandonedEdits,remoteAvailable:choices.remoteAvailable};
 }

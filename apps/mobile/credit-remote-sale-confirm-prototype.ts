@@ -6,7 +6,9 @@ import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {saveVerifiedCreditReference} from './credit-note-sync-reference';
 import {readPrototypeCreditBalance} from './credit-note-balance-storage-prototype';
-import {previewRemoteSaleEditPrototype} from './credit-remote-sale-edit-prototype';
+import {previewRemoteSaleEditPrototype,validateRemoteSaleSourcePrototype} from './credit-remote-sale-edit-prototype';
+import {validateCreditSources} from './credit-note-sources-prototype';
+import type {SavedSale} from './storage';
 import type {RemoteEditDraftRequest} from './credit-remote-sale-draft-prototype';
 import {ClosedDaySyncError,OperationConflictSyncError,type IdentifiedEntry} from './identified-upload';
 type Bind=string|number|null;
@@ -137,4 +139,51 @@ export async function resolveRemoteAbandonPrototype(tx:Tx,identity:DeviceIdentit
  await tx.runAsync('DELETE FROM credit_sources_prototype_cache WHERE client_id=?',row.clientId);
  const balance=await readPrototypeCreditBalance(tx,identity,row.clientId,digest);if(balance.conflict)throw Error('Solde en conflit : rapprochement nécessaire.');
  return {operationId:entry.operationId};
+}
+
+/** Comparaison informative d'une révision non acquittée, sans fusion ni
+ * mutation durable. Les deux réponses authentifiées doivent correspondre au
+ * même instantané ; toute divergence impose une nouvelle lecture en ligne. */
+export async function comparePendingRemoteEditPrototype(tx:Tx,identity:DeviceIdentity,verified:DeviceIdentity,operationId:string,referenceValue:unknown,sourcesValue:unknown,digest:(text:string)=>Promise<string>){
+ await bound(tx,identity);const row=await tx.getFirstAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE operation_id=?`,operationId);
+ if(!row||row.acknowledged!==0)throw Error('Modification en attente introuvable ou déjà acquittée.');
+ const {request,original,revised}=parse(row,identity);
+ if(await digest(canonicalJson(original))!==request.key.hash)throw Error('Empreinte de la version d’origine incohérente.');
+ // Le cache existant contrôle le non-retour en arrière, mais la comparaison ne
+ // change rien à la référence réellement utilisée par les écritures locales.
+ await tx.runAsync('SAVEPOINT remote_compare');
+ try{
+  const reference=await saveVerifiedCreditReference(tx,identity,verified,referenceValue,digest);
+  const state=reference.saleStates.find(s=>s.saleId===row.invoiceId);
+  if(!state||state.clientId!==row.clientId||state.version<original.syncVersion)throw Error('Facture absente ou référence périmée.');
+  const sources=await validateCreditSources(sourcesValue,reference,row.clientId,digest);
+  const item=sources.items.find(i=>i.kind==='sale'&&i.invoiceId===row.invoiceId);
+  let current:SavedSale|null=null;
+  if(state.creditNote){if(item)throw Error('Facture annulée incohérente.');}
+  else{
+   if(!item||item.version!==state.version)throw Error('Version actuelle indisponible : réessayez.');
+   current=validateRemoteSaleSourcePrototype(item.source);
+   if(current.syncSaleId!==row.invoiceId||current.clientId!==row.clientId||current.syncVersion!==state.version)throw Error('Version actuelle incohérente.');
+  }
+  return {operationId:row.operationId,invoiceId:row.invoiceId,clientId:row.clientId,recordedAt:row.recordedAt,
+   original:validateRemoteSaleSourcePrototype(original),proposed:validateRemoteSaleSourcePrototype(revised),current,
+   currentVersion:state.version,cancelled:!!state.creditNote,refund:request.preview.refund as number,retainedCredit:request.preview.credit as number};
+ }finally{await tx.runAsync('ROLLBACK TO remote_compare');await tx.runAsync('RELEASE remote_compare');}
+}
+
+/** Archive locale indicative des demandes expressément abandonnées : ce ne
+ * sont ni des ventes enregistrées, ni des remboursements enregistrés. */
+export async function readAbandonedRemoteEditsPrototype(tx:Tx,identity:DeviceIdentity,clientId:string,digest:(text:string)=>Promise<string>){
+ await bound(tx,identity);
+ const rows=await tx.getAllAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE client_id=? AND EXISTS(SELECT 1 FROM credit_remote_sale_abandoned_prototype a WHERE a.operation_id=credit_remote_sale_confirm_prototype.operation_id) ORDER BY rowid DESC LIMIT 100`,clientId);
+ const result=[];
+ for(const row of rows){
+  const {request,original,revised,event}=parse(row,identity);
+  const receipt=await tx.getFirstAsync<{value:string;confirmedAt:string}>('SELECT server_receipt AS value,confirmed_at AS confirmedAt FROM credit_remote_sale_abandoned_prototype WHERE operation_id=?',row.operationId);
+  let r:Record<string,unknown>;try{r=JSON.parse(receipt?.value??'');}catch{throw Error('Accusé d’abandon illisible.');}
+  const time=new Date(receipt?.confirmedAt??'');
+  if(row.acknowledged!==2||!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).sort().join(',')!=='operationId,saleId,status,version'||r.status!=='abandoned'||r.operationId!==row.operationId||r.saleId!==row.invoiceId||r.version!==event.version||!Number.isFinite(time.getTime())||time.toISOString()!==receipt?.confirmedAt||await digest(canonicalJson(original))!==request.key.hash)throw Error('Archive d’abandon incohérente.');
+  result.push({operationId:row.operationId,invoiceId:row.invoiceId,recordedAt:row.recordedAt,confirmedAt:receipt.confirmedAt,original:validateRemoteSaleSourcePrototype(original),proposed:validateRemoteSaleSourcePrototype(revised),refund:request.preview.refund as number,retainedCredit:request.preview.credit as number});
+ }
+ return result;
 }

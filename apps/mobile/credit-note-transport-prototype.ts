@@ -2,6 +2,7 @@
  * courant. Les opérations locales et leurs accusés restent gérés par SQLite. */
 import {validSession} from './secure-commercial-session';
 import type {CommercialSession} from './commercial-login';
+import type {comparePendingRemoteEditPrototype} from './credit-remote-sale-confirm-prototype';
 import type {IdentifiedEntry} from './identified-upload';
 import type {DeviceIdentity} from './identified-device';
 import {sendPreparedTourClose,type Attempt} from './tour-close-queue';
@@ -15,6 +16,7 @@ type Dependencies={
  bindReference?:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown,guard:()=>void)=>Promise<void>;
  cacheSources:(identity:DeviceIdentity,verified:DeviceIdentity,clientId:string,value:unknown,guard:()=>void)=>Promise<void>;
  synchronize:(identity:DeviceIdentity,verified:DeviceIdentity,transport:Transport,guard:()=>void)=>Promise<{operations:number;credits:number}>;
+ remoteCompare?:(identity:DeviceIdentity,verified:DeviceIdentity,operationId:string,reference:unknown,sources:unknown,guard:()=>void)=>Promise<Awaited<ReturnType<typeof comparePendingRemoteEditPrototype>>>;
  remoteAbandon?:{
   read:(identity:DeviceIdentity,guard:()=>void)=>Promise<{entry:IdentifiedEntry;event:unknown}>;
   resolve:(identity:DeviceIdentity,verified:DeviceIdentity,entry:IdentifiedEntry,response:unknown,reference:unknown,guard:()=>void)=>Promise<void>;
@@ -68,6 +70,11 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
    if(!uuid(clientId))throw Error('Client invalide.');
    const reference=await fetchReference();check();await io.cacheReference(identity,identity,reference,check);check();
    const sources=await read(`credit-sources/${encodeURIComponent(clientId)}`);check();await io.cacheSources(identity,identity,clientId,sources,check);check();
+  }),
+  compareRemoteEdit:(operationId:string,clientId:string)=>exclusive(async()=>{
+   if(!io.remoteCompare||!uuid(operationId)||!uuid(clientId))throw Error('Comparaison indisponible.');check();
+   const reference=await fetchReference();check();const sources=await read(`credit-sources/${encodeURIComponent(clientId)}`);check();
+   return io.remoteCompare(identity,identity,operationId,reference,sources,check);
   }),
   abandonRemoteEdit:()=>exclusive(async()=>{
    if(!io.remoteAbandon)throw Error('Abandon sécurisé indisponible.');check();
