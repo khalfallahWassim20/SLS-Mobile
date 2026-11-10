@@ -187,3 +187,44 @@ export async function readAbandonedRemoteEditsPrototype(tx:Tx,identity:DeviceIde
  }
  return result;
 }
+
+/** Prouve qu'une révision a bien été reçue, même si une autre version ou un
+ * avoir l'a ensuite remplacée. Reçu et référence proviennent d'un instantané
+ * serveur unique. Toute écriture locale doit être dans la transaction exclusive. */
+export async function recoverReceivedRemoteEditPrototype(tx:Tx,identity:DeviceIdentity,verified:DeviceIdentity,operationId:string,value:unknown,digest:(text:string)=>Promise<string>){
+ await bound(tx,identity);
+ const row=await tx.getFirstAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE operation_id=?`,operationId);
+ if(!row||![0,1].includes(row.acknowledged))throw Error('Révision en attente introuvable ou déjà vérifiée.');
+ const {event,revised}=parse(row,identity),response=value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:null;
+ if(!response||Object.keys(response).sort().join(',')!=='commercialId,event,reference,status'||response.status!=='received'||response.commercialId!==identity.commercialId||canonicalJson(response.event)!==canonicalJson({...event,recordedAt:row.recordedAt}))throw Error('Preuve de révision différente ou invalide.');
+ const reference=await saveVerifiedCreditReference(tx,identity,verified,response.reference,digest),state=reference.saleStates.find(s=>s.saleId===row.invoiceId);
+ if(!state||state.clientId!==row.clientId||state.version<event.version)throw Error('Référence antérieure ou facture différente.');
+ const proof=state.creditNote?reference.saleProofs.find(p=>p.saleId===row.invoiceId):reference.eligibleSaleProofs.find(p=>p.saleId===row.invoiceId);
+ const lastVersion=state.creditNote?state.creditNote.command.expectedVersion:state.version;
+ if(!proof||lastVersion<event.version||proof.version!==lastVersion||(lastVersion===event.version&&await digest(canonicalJson(revised))!==proof.hash))throw Error('Historique ou preuve de vente incohérent.');
+ const receipt={status:response.status,commercialId:response.commercialId,event:response.event};
+ await tx.runAsync('INSERT INTO credit_remote_sale_receipt_prototype(operation_id,receipt,reference_version,confirmed_at) VALUES(?,?,?,?)',operationId,canonicalJson(receipt),state.version,new Date().toISOString());
+ await tx.runAsync('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=2 WHERE operation_id=?',operationId);
+ await tx.runAsync('DELETE FROM credit_remote_sale_draft_prototype WHERE operation_id=?',operationId);
+ await tx.runAsync('DELETE FROM credit_remote_sale_failure_prototype WHERE operation_id=?',operationId);
+ await tx.runAsync('DELETE FROM credit_sources_prototype_cache WHERE client_id=?',row.clientId);
+ if((await readPrototypeCreditBalance(tx,identity,row.clientId,digest)).conflict)throw Error('Solde en conflit : rapprochement nécessaire.');
+ return {operationId,status:state.creditNote?'cancelled' as const:state.version>event.version?'superseded' as const:'current' as const,currentVersion:state.version};
+}
+
+/** Reçus de révisions vérifiées par le parcours de récupération. Ils restent
+ * historiques : une version plus récente peut encore arriver depuis. */
+export async function readRecoveredRemoteEditsPrototype(tx:Tx,identity:DeviceIdentity,clientId:string,digest:(text:string)=>Promise<string>){
+ await bound(tx,identity);
+ const rows=await tx.getAllAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE client_id=? AND EXISTS(SELECT 1 FROM credit_remote_sale_receipt_prototype r WHERE r.operation_id=credit_remote_sale_confirm_prototype.operation_id) ORDER BY rowid DESC LIMIT 100`,clientId);
+ const result=[];
+ for(const row of rows){
+  const {request,original,revised,event}=parse(row,identity);
+  const receipt=await tx.getFirstAsync<{value:string;referenceVersion:number;confirmedAt:string}>('SELECT receipt AS value,reference_version AS referenceVersion,confirmed_at AS confirmedAt FROM credit_remote_sale_receipt_prototype WHERE operation_id=?',row.operationId);
+  let r:Record<string,unknown>;try{r=JSON.parse(receipt?.value??'');}catch{throw Error('Preuve de révision illisible.');}
+  const time=new Date(receipt?.confirmedAt??'');
+  if(row.acknowledged!==2||!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).sort().join(',')!=='commercialId,event,status'||r.status!=='received'||r.commercialId!==identity.commercialId||canonicalJson(r.event)!==canonicalJson({...event,recordedAt:row.recordedAt})||!Number.isSafeInteger(receipt?.referenceVersion)||receipt!.referenceVersion<event.version||!Number.isFinite(time.getTime())||time.toISOString()!==receipt?.confirmedAt||await digest(canonicalJson(original))!==request.key.hash)throw Error('Preuve de révision incohérente.');
+  result.push({operationId:row.operationId,invoiceId:row.invoiceId,recordedAt:row.recordedAt,confirmedAt:receipt.confirmedAt,referenceVersion:receipt.referenceVersion,original:validateRemoteSaleSourcePrototype(original),revised:validateRemoteSaleSourcePrototype(revised),refund:request.preview.refund as number,retainedCredit:request.preview.credit as number});
+ }
+ return result;
+}

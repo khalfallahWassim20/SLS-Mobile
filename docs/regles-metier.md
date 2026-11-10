@@ -168,3 +168,11 @@ Après un accusé d'abandon explicite, le téléphone actualise et vérifie la r
 Le prototype permet aussi de comparer en ligne, avant toute décision, la facture d'origine, la proposition en attente et la dernière version reçue du serveur, avec les articles et les montants. Si un avoir est apparu sur le serveur, la facture est signalée comme annulée. Cette comparaison ne confirme pas l'envoi, ne fusionne pas les modifications et ne change ni le cache de référence ni la file ; les données peuvent évoluer après la lecture. Deux réponses serveur incohérentes ou périmées sont refusées : il faut réessayer. Pour refaire la modification, le commercial doit d'abord abandonner celle en attente de façon sécurisée, puis récupérer la facture actuelle et ressaisir sa proposition.
 
 Après abandon confirmé, l’historique expérimental du client conserve sur ce téléphone les 100 dernières propositions abandonnées, avec leurs articles. Ce sont des archives indicatives, pas des ventes ni des remboursements enregistrés par ces demandes.
+
+### Vérification d'une modification reçue puis dépassée (prototype v5)
+
+Une réponse perdue ou une référence finale devenue plus récente ne doit pas laisser une révision bloquée indéfiniment. Le commercial peut demander une preuve en ligne : le serveur vérifie que la modification exacte a été reçue sous son identité et lit la référence et l'historique complet dans le même instantané. Si une autre modification ou un avoir est intervenu ensuite, le téléphone vérifie la preuve, enregistre la référence et libère la demande atomiquement, sans effacer l'historique ni rejouer la modification. Une preuve absente, incohérente ou liée à un autre commercial ne permet aucune libération ; une absence ne prouve jamais qu'une requête en vol a été refusée. Il faut vérifier séparément les mouvements et les remboursements physiques.
+
+Ce parcours reste expérimental, désactivé dans l'application courante et non testé sur téléphone. Il ne fusionne pas automatiquement des modifications concurrentes.
+
+Les 100 derniers reçus récupérés sont consultables dans l’historique expérimental du téléphone, avec le total avant et après, le remboursement ou crédit enregistré et la version observée lors de la vérification. Une version plus récente peut être intervenue ensuite.

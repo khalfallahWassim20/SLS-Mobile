@@ -31,7 +31,7 @@ import {readCreditClientsPrototype} from '../../../apps/mobile/credit-client-vie
 import {readLegacyRows} from '../../../apps/mobile/legacy-read-guard.js';
 import {readCreditMobileWorkspacePrototype} from '../../../apps/mobile/credit-mobile-workspace-reader-prototype.js';
 import {shareCreditJournalPrototype} from '../../../apps/mobile/credit-note-share-prototype.js';
-import {remoteSaleConfirmPrototypeSchema,confirmRemoteSaleEditPrototype,readRemoteEditBalancePrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype,readPendingRemoteEditPrototype,recordRemoteEditFailurePrototype,readRemoteAbandonCandidatePrototype,resolveRemoteAbandonPrototype,comparePendingRemoteEditPrototype,readAbandonedRemoteEditsPrototype} from '../../../apps/mobile/credit-remote-sale-confirm-prototype.js';
+import {remoteSaleConfirmPrototypeSchema,confirmRemoteSaleEditPrototype,readRemoteEditBalancePrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype,readPendingRemoteEditPrototype,recordRemoteEditFailurePrototype,readRemoteAbandonCandidatePrototype,resolveRemoteAbandonPrototype,comparePendingRemoteEditPrototype,readAbandonedRemoteEditsPrototype,recoverReceivedRemoteEditPrototype,readRecoveredRemoteEditsPrototype} from '../../../apps/mobile/credit-remote-sale-confirm-prototype.js';
 import {remoteSaleDraftPrototypeSchema,stageRemoteSaleEditDraftPrototype} from '../../../apps/mobile/credit-remote-sale-draft-prototype.js';
 import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype} from '../../../apps/mobile/credit-remote-sale-edit-prototype.js';
 import {readCreditHistoryPrototype} from '../../../apps/mobile/credit-history-prototype.js';
@@ -48,7 +48,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const a=await loginCommercial(pool,secret,{login:'first.test',password:'mot de passe fictif'}),b=await loginCommercial(pool,secret,{login:'second.test',password:'mot de passe fictif'});assert.ok(a&&b);
   const clientId=randomUUID(),client2=randomUUID();await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,1000000),($3,$4,0)',[clientId,'Client fictif',client2,'Z Client fictif']);
   await db.query('INSERT INTO articles(id,code,name,purchase_ttc,sale_ttc) VALUES($1,$2,$3,$4,$5)',[randomUUID(),'ART-TEST','Huile fictive',42000,60000]);
-  const app=express();app.use(express.json());app.use('/v5',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin',{allowCreditProtocol:true}));server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
+  const app=express();app.use(express.json());app.use('/v5',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:true}));app.use('/legacy',identifiedCommercialRoutes(pool,secret));app.use('/admin',identifiedAdminRoutes(pool,(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-test')res.sendStatus(401);else next();},'admin',{allowCreditProtocol:true}));server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));
   const addr=server.address();assert.ok(addr&&typeof addr!=='string');const origin=`http://127.0.0.1:${addr.port}`,identity={commercialId:second.id,serverOrigin:'https://sync.example.test'};
   const headers=(token:string)=>({Authorization:`Bearer ${token}`,'Content-Type':'application/json','X-SLS-Reference-Version':'5'});
   const post=(token:string,path:string,body:unknown)=>fetch(`${origin}/v5/${path}`,{method:'POST',headers:headers(token),body:JSON.stringify(body)});
@@ -461,6 +461,10 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    const checkAbandon=createCreditTransportPrototype(checkSession,identity,{now:()=>checkNow,request:(url,opts)=>fetch(url.replace(`${identity.serverOrigin}/api/mobile/identified/`,`${origin}/v5/`),opts),cacheReference:async()=>{},cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),remoteAbandon:{read:()=>isolatedTransaction(()=>readRemoteAbandonCandidatePrototype(isolatedTx,identity)),resolve:async()=>{throw Error('une modification reçue ne doit pas être effacée');}}});
    assert.equal(await checkAbandon.abandonRemoteEdit(),'already-received');
    assert.equal((await isolatedTransaction(()=>readRemoteEditQueuePrototype(isolatedTx,identity))).length,1);
+   const sameReceipt=await fetch(`${origin}/v5/remote-sale-edits/${remoteEvent.operationId}/receipt`,{headers:headers(b.token)});assert.equal(sameReceipt.status,200);const sameProof=await sameReceipt.json();
+   await assert.rejects(isolatedTransaction(async()=>{const result=await recoverReceivedRemoteEditPrototype(isolatedTx,identity,identity,remoteEvent.operationId,sameProof,digest);assert.equal(result.status,'current');throw Error('reprise simulée');}),/reprise simulée/);
+   assert.equal((await isolatedTransaction(()=>readRemoteEditQueuePrototype(isolatedTx,identity))).length,1);
+
 
    assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client2,digest))).conflict,true);
    await assert.rejects(syncCreditPrototype(identity,identity,syncIO),/session expirée pendant accusé/);
@@ -599,6 +603,68 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal(await isolatedTransaction(()=>readPendingRemoteEditPrototype(isolatedTx,identity)),null);
   assert.deepEqual(await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client2,digest)),{balance:0,conflict:false});
   const afterCreditArchive=await isolatedTransaction(()=>readAbandonedRemoteEditsPrototype(isolatedTx,identity,client2,digest));assert.equal(afterCreditArchive.length,2);assert.equal(afterCreditArchive[0].operationId,draft5.operationId);
+
+  // Une réponse perdue ne doit pas bloquer indéfiniment si une autre
+  // modification ou un avoir survient après l'enregistrement serveur.
+  const receiptSaleId=randomUUID(),receiptSale={...otherSale,syncSaleId:receiptSaleId};
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:receiptSaleId,version:1,recordedAt:otherAt,sale:receiptSale,refund:0})).status,201);
+  const beforeReceiptEdit=await get('reference');await isolatedTransaction(()=>saveVerifiedCreditReference(isolatedTx,identity,identity,beforeReceiptEdit,digest));
+  const receiptSources=await get(`credit-sources/${client2}`);await isolatedTransaction(()=>saveCreditSourcesPrototype(isolatedTx,identity,identity,client2,receiptSources,digest));
+  const receiptSource=receiptSources.items.find((x:{kind:string;invoiceId:string})=>x.kind==='sale'&&x.invoiceId===receiptSaleId);
+  const receiptKey={clientId:client2,invoiceId:receiptSaleId,version:receiptSource.version,hash:receiptSource.hash},receiptContext={identity,expectedBalance:69000},receiptAt='2026-11-07T10:00:00.000Z';
+  const receiptCapture=await isolatedTransaction(()=>captureRemoteSaleEditPrototype(isolatedTx,receiptContext,receiptKey,receiptAt,digest));const receiptLines=[{...receiptCapture.sale.lines[0],discount:6000}];
+  const receiptPreview=await isolatedTransaction(()=>previewRemoteSaleEditPrototype(isolatedTx,receiptContext,receiptKey,receiptAt,receiptLines,'refund',digest));
+  const receiptDraft={operationId:randomUUID(),context:receiptContext,key:receiptKey,recordedAt:receiptAt,lines:receiptLines,choice:'refund' as const,preview:receiptPreview};
+  await isolatedTransaction(()=>stageRemoteSaleEditDraftPrototype(isolatedTx,receiptDraft,digest));await isolatedTransaction(()=>confirmRemoteSaleEditPrototype(isolatedTx,receiptDraft,digest));
+  const pendingReceipt=await isolatedTransaction(()=>readRemoteAbandonCandidatePrototype(isolatedTx,identity));assert.equal((await post(b.token,'sales',pendingReceipt.event)).status,201);
+  const laterSale={...remoteModified,syncSaleId:receiptSaleId,syncVersion:3,lines:[{...remoteModified.lines[0],discount:5000}],total:59500,paid:47600,remaining:11900};
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:receiptSaleId,version:3,recordedAt:'2026-11-07T11:00:00.000Z',sale:laterSale,refund:0})).status,201);
+  const receiptUrl=`${origin}/v5/remote-sale-edits/${receiptDraft.operationId}/receipt`;
+  assert.equal((await fetch(`${origin}/legacy/remote-sale-edits/${receiptDraft.operationId}/receipt`,{headers:headers(b.token)})).status,404);
+  assert.equal((await fetch(receiptUrl,{headers:headers(a.token)})).status,404);
+  assert.equal((await fetch(receiptUrl,{headers:{...headers(b.token),'X-SLS-Reference-Version':'4'}})).status,409);
+  assert.equal((await fetch(receiptUrl,{headers:headers('invalid')})).status,401);
+  assert.equal((await fetch(`${origin}/v5/remote-sale-edits/${randomUUID()}/receipt`,{headers:headers(b.token)})).status,404);
+  const oldHash=await db.query<{payload_hash:string}>('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[receiptDraft.operationId]);
+  await db.query('UPDATE identified_sale_events SET payload_hash=$2 WHERE operation_id=$1',[receiptDraft.operationId,'x'.repeat(64)]);
+  assert.equal((await fetch(receiptUrl,{headers:headers(b.token)})).status,409);
+  await db.query('UPDATE identified_sale_events SET payload_hash=$2 WHERE operation_id=$1',[receiptDraft.operationId,oldHash.rows[0].payload_hash]);
+  const response=await fetch(receiptUrl,{headers:headers(b.token)});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');const proof=await response.json();
+  assert.equal(proof.event.operationId,receiptDraft.operationId);assert.equal(proof.commercialId,second.id);
+  const beforeRecovery=isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload;
+  await assert.rejects(isolatedTransaction(()=>recoverReceivedRemoteEditPrototype(isolatedTx,identity,identity,receiptDraft.operationId,{...proof,event:{...proof.event,refund:1}},digest)),/Preuve/);
+  await assert.rejects(isolatedTransaction(()=>recoverReceivedRemoteEditPrototype(isolatedTx,identity,identity,receiptDraft.operationId,{...proof,reference:beforeReceiptEdit},digest)),/antérieure|incohérent/);
+  await assert.rejects(isolatedTransaction(()=>recoverReceivedRemoteEditPrototype(isolatedTx,identity,{...identity,commercialId:first.id},receiptDraft.operationId,proof,digest)),/Session|serveur/i);
+  await assert.rejects(isolatedTransaction(async()=>{await recoverReceivedRemoteEditPrototype(isolatedTx,identity,identity,receiptDraft.operationId,proof,digest);throw Error('expiration pendant récupération');}),/expiration/);
+  assert.equal(isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,beforeRecovery);
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM credit_remote_sale_receipt_prototype').get()?.n,0);
+  assert.equal((await isolatedTransaction(()=>readRemoteEditQueuePrototype(isolatedTx,identity))).length,1);
+  const recoverTransport=createCreditTransportPrototype(session,identity,{now:()=>now,request:(url,opts)=>fetch(url.replace(`${identity.serverOrigin}/api/mobile/identified/`,`${origin}/v5/`),opts),cacheReference:async()=>{},cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),remoteRecover:(id,verified,op,body)=>isolatedTransaction(()=>recoverReceivedRemoteEditPrototype(isolatedTx,id,verified,op,body,digest))});
+  assert.deepEqual(await recoverTransport.recoverRemoteEdit(receiptDraft.operationId),{operationId:receiptDraft.operationId,status:'superseded',currentVersion:3});
+  assert.equal(await isolatedTransaction(()=>readPendingRemoteEditPrototype(isolatedTx,identity)),null);
+  assert.deepEqual(await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client2,digest)),{balance:11900,conflict:false});
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM credit_remote_sale_receipt_prototype').get()?.n,1);
+  // Une deuxième révision a été acquittée puis annulée par un autre acteur.
+  const nextSources=await get(`credit-sources/${client2}`);await isolatedTransaction(()=>saveCreditSourcesPrototype(isolatedTx,identity,identity,client2,nextSources,digest));
+  const nextSource=nextSources.items.find((x:{kind:string;invoiceId:string})=>x.kind==='sale'&&x.invoiceId===receiptSaleId);
+  const nextKey={clientId:client2,invoiceId:receiptSaleId,version:nextSource.version,hash:nextSource.hash},nextContext={identity,expectedBalance:11900},nextReceiptAt='2026-11-07T12:00:00.000Z';
+  const nextCapture=await isolatedTransaction(()=>captureRemoteSaleEditPrototype(isolatedTx,nextContext,nextKey,nextReceiptAt,digest)),nextReceiptLines=[{...nextCapture.sale.lines[0],discount:4000}];
+  const nextReceiptPreview=await isolatedTransaction(()=>previewRemoteSaleEditPrototype(isolatedTx,nextContext,nextKey,nextReceiptAt,nextReceiptLines,undefined,digest));
+  const nextReceiptDraft={operationId:randomUUID(),context:nextContext,key:nextKey,recordedAt:nextReceiptAt,lines:nextReceiptLines,preview:nextReceiptPreview};
+  await isolatedTransaction(()=>stageRemoteSaleEditDraftPrototype(isolatedTx,nextReceiptDraft,digest));await isolatedTransaction(()=>confirmRemoteSaleEditPrototype(isolatedTx,nextReceiptDraft,digest));
+  const nextPending=await isolatedTransaction(()=>readRemoteAbandonCandidatePrototype(isolatedTx,identity));assert.equal((await post(b.token,'sales',nextPending.event)).status,201);
+  await isolatedTransaction(()=>acknowledgeRemoteEditPrototype(isolatedTx,identity,nextPending.entry));
+  assert.equal((await post(a.token,'credit-notes/sales',{operationId:randomUUID(),invoiceId:receiptSaleId,expectedVersion:4,recordedAt:'2026-11-07T13:00:00.000Z',choice:'refund'})).status,201);
+  assert.deepEqual(await recoverTransport.recoverRemoteEdit(nextReceiptDraft.operationId),{operationId:nextReceiptDraft.operationId,status:'cancelled',currentVersion:5});
+  assert.equal(await isolatedTransaction(()=>readPendingRemoteEditPrototype(isolatedTx,identity)),null);
+  assert.deepEqual(await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client2,digest)),{balance:0,conflict:false});
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM credit_remote_sale_receipt_prototype').get()?.n,2);
+  const recoveredArchive=await isolatedTransaction(()=>readRecoveredRemoteEditsPrototype(isolatedTx,identity,client2,digest));assert.equal(recoveredArchive.length,2);
+  assert.equal(recoveredArchive[0].operationId,nextReceiptDraft.operationId);assert.equal(recoveredArchive[0].referenceVersion,5);
+  assert.equal(recoveredArchive[1].operationId,receiptDraft.operationId);assert.equal(recoveredArchive[1].refund,2400);assert.equal(recoveredArchive[1].referenceVersion,3);
+  isolated.exec('SAVEPOINT bad_recovery');isolated.prepare('UPDATE credit_remote_sale_receipt_prototype SET receipt=? WHERE operation_id=?').run('{}',receiptDraft.operationId);
+  await assert.rejects(readRecoveredRemoteEditsPrototype(isolatedTx,identity,client2,digest),/incohérente/);isolated.exec('ROLLBACK TO bad_recovery; RELEASE bad_recovery');
+
   }finally{isolated.close();}
 
  } finally {if(server)await new Promise<void>(r=>server!.close(()=>r()));mobile.close();firstPhone.close();}
