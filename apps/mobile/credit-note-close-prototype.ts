@@ -7,6 +7,8 @@ type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;runAsync(
 export async function preparePrototypeClose(tx:Tx,identity:DeviceIdentity,day:string,expectedVersion:number,uuid:()=>string) {
  const bound=await getDeviceIdentity(tx);
  if(!bound||bound.commercialId!==identity.commercialId||bound.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur incohérent.');
+ const remote=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n');
+ if(!remote||remote.n)throw Error('Une modification distante attend sa synchronisation : clôture refusée.');
  // Conservateur sur tous les jours : aucun avoir en attente ne doit être oublié.
  const pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM offline_credit_prototype WHERE pending=1) AS n');
  if(!pending||pending.n)throw Error('Un avoir est en attente : synchronisez ou rapprochez-le avant clôture.');

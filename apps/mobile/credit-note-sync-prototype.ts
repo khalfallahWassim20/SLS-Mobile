@@ -18,6 +18,10 @@ type IO={
  fetchReference:()=>Promise<unknown>;
  saveReference:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown)=>Promise<void>;
  saveFinalReference:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown)=>Promise<void>;
+ remoteEdits?:{
+  hasPending:()=>Promise<boolean>;readQueue:()=>Promise<IdentifiedEntry[]>;acknowledge:(entry:IdentifiedEntry)=>Promise<void>;
+  finalize:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown)=>Promise<void>;
+ };
 };
 const uuid=(v:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 /** N'efface que les opérations explicitement acquittées. Toute erreur interrompt
@@ -26,6 +30,14 @@ const uuid=(v:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-
 export async function syncCreditPrototype(identity:DeviceIdentity,verified:DeviceIdentity,io:IO) {
  if(!uuid(identity.commercialId)||identity.commercialId!==verified.commercialId||identity.serverOrigin!==verified.serverOrigin)throw Error('Session ou serveur différent du téléphone lié.');
  await io.saveReference(identity,verified,await io.fetchReference());
+ let remoteOperations=0;
+ if(io.remoteEdits&&await io.remoteEdits.hasPending()){
+  const remote=io.remoteEdits,entries=await remote.readQueue(),byId=new Map(entries.map(e=>[e.operationId,e]));
+  remoteOperations=await uploadIdentifiedOperations(entries,identity,verified,io.sendOperation,async(id,kind)=>{const entry=byId.get(id);if(!entry||entry.kind!==kind)throw Error('Révision distante introuvable.');await remote.acknowledge(entry);});
+  if((await remote.readQueue()).length)throw Error('Une modification distante reste en attente.');
+  await remote.finalize(identity,verified,await io.fetchReference());
+  if(await remote.hasPending())throw Error('Révision distante non confirmée.');
+ }
  const entries=await io.readOperations(),byId=new Map(entries.map(e=>[e.operationId,e]));
  const operations=await uploadIdentifiedOperations(entries,identity,verified,io.sendOperation,async(id,kind)=>{
   const entry=byId.get(id);
@@ -37,5 +49,5 @@ export async function syncCreditPrototype(identity:DeviceIdentity,verified:Devic
  if((await io.readAllCredits()).some(n=>n.pending))throw Error('Un avoir reste en attente : synchronisation incomplète.');
  if((await io.readOperations()).length)throw Error('Une opération reste en attente : synchronisation incomplète.');
  await io.saveFinalReference(identity,verified,await io.fetchReference());
- return {operations,credits};
+ return {operations:operations+remoteOperations,credits};
 }

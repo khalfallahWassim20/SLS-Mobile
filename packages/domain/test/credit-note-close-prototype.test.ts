@@ -5,11 +5,12 @@ import {DatabaseSync} from 'node:sqlite';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
 import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';
+import {remoteSaleConfirmPrototypeSchema} from '../../../apps/mobile/credit-remote-sale-schema-prototype.js';
 import {preparePrototypeClose} from '../../../apps/mobile/credit-note-close-prototype.js';
 
 test('clôture expérimentale : refuse tout avoir en attente et conserve les données',async()=>{
  const db=new DatabaseSync(':memory:');try{
-  db.exec(`CREATE TABLE sales_outbox(operation_id TEXT);CREATE TABLE journal_sync_outbox(operation_id TEXT);CREATE TABLE tour_pre_invoices(id TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT);CREATE TABLE sales(payload TEXT);CREATE TABLE settlements(payload TEXT);${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}`);
+  db.exec(`${remoteSaleConfirmPrototypeSchema}CREATE TABLE sales_outbox(operation_id TEXT);CREATE TABLE journal_sync_outbox(operation_id TEXT);CREATE TABLE tour_pre_invoices(id TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT);CREATE TABLE sales(payload TEXT);CREATE TABLE settlements(payload TEXT);${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}`);
   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{db.prepare(sql).run(...args)}};
   const identity={commercialId:randomUUID(),serverOrigin:'https://example.test'},operation=randomUUID(),invoice=randomUUID();
   db.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(identity.commercialId,identity.serverOrigin);

@@ -2,6 +2,7 @@
 import type {DeviceIdentity} from './identified-device';
 import type {SavedSale,Revision,Settlement,TourJournalReceipt} from './storage';
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
+import {readCreditSourcesPrototype} from './credit-note-sources-prototype';
 import {readCreditSourceChoices} from './credit-note-source-choices-prototype';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
@@ -24,6 +25,7 @@ export async function readCreditHistoryPrototype(tx:Tx,identity:DeviceIdentity,c
  const settlements=(await tx.getAllAsync<{id:number;payload:string}>('SELECT id,payload FROM settlements WHERE client_id=? ORDER BY id DESC',clientId)).map(r=>({...parse<Omit<Settlement,'id'>>(r.payload),id:r.id}));
  const receipts=(await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_journal_receipts WHERE client_id=? ORDER BY rowid DESC',clientId)).map(r=>parse<TourJournalReceipt>(r.payload));
  if(settlements.some(p=>p.clientId!==clientId)||receipts.some(p=>p.clientId!==clientId))throw Error('Paiement local incohérent.');
- const remoteSales=choices.items.filter(x=>x.kind==='sale'&&x.origin==='remote');
+ const sourceCache=await readCreditSourcesPrototype(tx,identity,clientId,digest);
+ const remoteSales=choices.items.filter(x=>x.kind==='sale'&&x.origin==='remote').map(x=>{const source=sourceCache?.items.find(s=>s.kind==='sale'&&s.invoiceId===x.invoiceId);if(!source||source.version!==x.version)throw Error('Source distante incohérente.');return {...x,hash:source.hash};});
  return {client,identity:{...identity},articles:snapshot.articles,sales,settlements,receipts,remoteSales,remoteAvailable:choices.remoteAvailable};
 }

@@ -1,12 +1,13 @@
 /** Cache expérimental : inutilisé par les écrans et la synchronisation active.
  * Utiliser une transaction SQLite exclusive et une réponse authentifiée. */
+import {remoteSaleDraftPrototypeSchema,remoteSaleConfirmPrototypeSchema} from './credit-remote-sale-schema-prototype';
 import {canonicalJson} from '@sls/domain';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {validatePrototypeCreditReference} from './credit-note-reference-prototype';
 type Tx={getFirstAsync<T>(sql:string,...params:(string|number|null)[]):Promise<T|null>;runAsync(sql:string,...params:(string|number|null)[]):Promise<unknown>};
 export const creditReferencePrototypeSchema=`CREATE TABLE IF NOT EXISTS credit_reference_prototype_cache (
  id INTEGER PRIMARY KEY CHECK(id=1),commercial_id TEXT NOT NULL,server_origin TEXT NOT NULL,payload TEXT NOT NULL
-);`;
+); ${remoteSaleDraftPrototypeSchema} ${remoteSaleConfirmPrototypeSchema}`;
 async function checkIdentity(tx:Tx,id:DeviceIdentity) {
  const bound=await getDeviceIdentity(tx);
  if(!bound||bound.commercialId!==id.commercialId||bound.serverOrigin!==id.serverOrigin)throw Error('Identité ou serveur incohérent.');

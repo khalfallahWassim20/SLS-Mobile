@@ -10,10 +10,7 @@ type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
 type Preview=Awaited<ReturnType<typeof previewRemoteSaleEditPrototype>>;
 export type RemoteEditDraftRequest={operationId:string;context:CreditWriteContext;key:RemoteSaleKey;recordedAt:string;lines:EditLine[];choice?:'refund'|'credit';preview:Preview};
-export const remoteSaleDraftPrototypeSchema=`CREATE TABLE IF NOT EXISTS credit_remote_sale_draft_prototype (
- operation_id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL UNIQUE, commercial_id TEXT NOT NULL,
- server_origin TEXT NOT NULL, request TEXT NOT NULL, preview TEXT NOT NULL
-);`;
+export {remoteSaleDraftPrototypeSchema} from './credit-remote-sale-schema-prototype';
 const uuid=(x:unknown):x is string=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(x);
 const rawRequest=(request:RemoteEditDraftRequest)=>({operationId:request.operationId,context:request.context,key:request.key,recordedAt:request.recordedAt,lines:request.lines,choice:request.choice??null,preview:request.preview});
 async function assertIdentity(tx:Tx,identity:DeviceIdentity){const actual=await getDeviceIdentity(tx);if(!actual||actual.commercialId!==identity.commercialId||actual.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur incohérent.');}

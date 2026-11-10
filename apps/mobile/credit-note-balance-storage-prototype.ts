@@ -16,7 +16,9 @@ function object(json:string):Record<string,any> {
 }
 /** Toutes les sources, y compris le cache, sont lues dans la même transaction.
  * Une ligne orpheline ou un instantané divergent interrompt le calcul. */
-export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceIdentity,digest?:(data:string)=>Promise<string>) {
+export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceIdentity,digest?:(data:string)=>Promise<string>,allowPendingRemote=false) {
+ const pendingRemote=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n');
+ if(!pendingRemote||(!allowPendingRemote&&pendingRemote.n))throw Error('Une modification distante attend sa synchronisation : écritures et soldes temporairement bloqués.');
  const reference=await readPrototypeCreditReferenceCache(tx,identity);
  if(!reference)throw Error('Référence d’avoirs indisponible.');
  const notes=(await readAllOfflineCreditPrototype(tx,identity)).map(x=>x.note);
@@ -88,8 +90,8 @@ export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceId
   return {...balance,conflict:balance.conflict||sourceConflict};
  }};
 }
-export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,clientId:string,digest?:(data:string)=>Promise<string>) {
- return (await loadCreditBalanceSnapshotPrototype(tx,identity,digest)).balanceFor(clientId);
+export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,clientId:string,digest?:(data:string)=>Promise<string>,allowPendingRemote=false) {
+ return (await loadCreditBalanceSnapshotPrototype(tx,identity,digest,allowPendingRemote)).balanceFor(clientId);
 }
 
 /** Préparation atomique expérimentale : l'appelant doit ouvrir une transaction

@@ -33,6 +33,8 @@ import {quarantineOnUpgrade} from './credit-protocol-quarantine';
 import type {CommercialSession} from './commercial-login';
 import {validateCreditSaleEdit} from './credit-sale-edit-prototype';
 import {readCreditHistoryPrototype} from './credit-history-prototype';
+import {stageRemoteSaleEditDraftPrototype,type RemoteEditDraftRequest} from './credit-remote-sale-draft-prototype';
+import {confirmRemoteSaleEditPrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype} from './credit-remote-sale-confirm-prototype';
 import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype,type RemoteSaleKey} from './credit-remote-sale-edit-prototype';
 import type {EditLine} from './credit-sale-edit-prototype';
 
@@ -413,6 +415,12 @@ export async function synchronizeCreditPrototype(identity:DeviceIdentity,verifie
  creditSyncRunning=true;
  try {
   return await syncCreditPrototype(identity,verified,{
+   remoteEdits:{
+    hasPending:async()=>{const database=await db();let pending=true;await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,identity);const value=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n');if(!value)throw Error('État des révisions indisponible.');pending=!!value.n;guard();});return pending;},
+    readQueue:async()=>{const database=await db();let result:IdentifiedEntry[]=[];await database.withExclusiveTransactionAsync(async tx=>{guard();result=await readRemoteEditQueuePrototype(tx,identity);guard();});return result;},
+    acknowledge:async entry=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeRemoteEditPrototype(tx,identity,entry);guard();});},
+    finalize:async(id,verified,value)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await finalizeRemoteEditReferencePrototype(tx,id,verified,value,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});}
+   },
    readOperations:()=>getIdentifiedOutbox(identity,true),acknowledgeOperation:async entry=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeIdentifiedOutbox(tx,identity,entry);guard();});},
    readReadyCredits:()=>getReadyLocalCreditPrototypes(identity),readAllCredits:()=>getLocalCreditPrototypes(identity),
    acknowledgeCredit:async(note,response)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeOfflineCreditPrototype(tx,identity,note,response);guard();});},
@@ -482,4 +490,15 @@ export async function getRemoteSaleEditCapturePrototype(context:CreditWriteConte
 export async function getRemoteSaleEditPreviewPrototype(context:CreditWriteContext,key:RemoteSaleKey,recordedAt:string,lines:EditLine[],choice?:'refund'|'credit') {
  const database=await db();let result:Awaited<ReturnType<typeof previewRemoteSaleEditPrototype>>|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{result=await previewRemoteSaleEditPrototype(tx,context,key,recordedAt,lines,choice,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result!;
+}
+
+/** Uniquement pour les futurs écrans v5 : toute révision confirmée bloque les
+ * autres soldes et écritures jusqu’à réception et preuve de la version serveur. */
+export async function stageRemoteSaleEditPrototype(request:RemoteEditDraftRequest){
+ const database=await db();let result:Awaited<ReturnType<typeof stageRemoteSaleEditDraftPrototype>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await stageRemoteSaleEditDraftPrototype(tx,request,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result!;
+}
+export async function commitRemoteSaleEditPrototype(request:RemoteEditDraftRequest){
+ const database=await db();let result:Awaited<ReturnType<typeof confirmRemoteSaleEditPrototype>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);await stageRemoteSaleEditDraftPrototype(tx,request,digest);result=await confirmRemoteSaleEditPrototype(tx,request,digest);});return result!;
 }
