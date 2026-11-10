@@ -54,9 +54,9 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
 
   const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'refund'};
   assert.equal((await post('/new/credit-notes/sales',command)).status,201);assert.equal((await post('/new/credit-notes/sales',command)).status,200);
-  assert.equal((await get('/old/reference')).status,409);assert.equal((await get('/new/reference',{...headers,'X-SLS-Reference-Version':'4'})).status,409);
+  const oldRef=await get('/old/reference');assert.equal(oldRef.status,409);assert.equal((await oldRef.json() as any).code,'CREDIT_PROTOCOL_UPGRADE_REQUIRED');assert.equal((await get('/new/reference',{...headers,'X-SLS-Reference-Version':'4'})).status,409);
   const otherId=randomUUID(),other={...first,operationId:randomUUID(),saleId:otherId,sale:{...sale,syncSaleId:otherId}};
-  assert.equal((await post('/old/sales',other)).status,409);assert.equal((await post('/new/sales',other)).status,201);
+  const oldWrite=await post('/old/sales',other);assert.equal(oldWrite.status,409);assert.equal((await oldWrite.json() as any).code,'CREDIT_PROTOCOL_UPGRADE_REQUIRED');assert.equal((await post('/new/sales',other)).status,201);
   assert.equal((await post('/new/sales',first)).status,200);
   const revision={...first,operationId:randomUUID(),version:2,recordedAt:'2026-11-08T11:00:00.000Z',sale:{...sale,syncVersion:2}};
   assert.equal((await post('/new/sales',revision)).status,409);

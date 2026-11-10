@@ -22,7 +22,8 @@ const bearer=(value:string|undefined)=>value?.match(/^Bearer (.+)$/)?.[1]??'';
 function errorHandler(error:unknown,res:import('express').Response,next:import('express').NextFunction) {
  if(error instanceof ClosureAuthenticationError || error instanceof JournalAuthenticationError) {res.status(401).json({error:'Session invalide ou expirée.'});return;}
  if(error instanceof TourDayClosed) {res.status(409).json({error:error.message,code:'TOUR_DAY_CLOSED',day:error.day,commercialId:error.commercialId});return;}
- if(error instanceof CreditProtocolUpgradeRequired || error instanceof ClosureConflict || error instanceof JournalConflict || error instanceof ReferenceOverlap || error instanceof IdentifiedOverlap || error instanceof IdentifiedSyncDisabled) {res.status(409).json({error:error.message});return;}
+ if(error instanceof CreditProtocolUpgradeRequired) {res.status(409).json({error:error.message,code:'CREDIT_PROTOCOL_UPGRADE_REQUIRED'});return;}
+ if(error instanceof ClosureConflict || error instanceof JournalConflict || error instanceof ReferenceOverlap || error instanceof IdentifiedOverlap || error instanceof IdentifiedSyncDisabled) {res.status(409).json({error:error.message});return;}
  if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données invalides.'});return;}
  next(error);
 }

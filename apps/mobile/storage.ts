@@ -28,6 +28,7 @@ import {assertLegacyMobileCreditSafe,assertCreditWritePrototype,assertCreditRece
 import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-prototype';
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import {readLegacyRows} from './legacy-read-guard';
+import {quarantineOnUpgrade} from './credit-protocol-quarantine';
 import type {CommercialSession} from './commercial-login';
 
 export type SavedSale = {
@@ -284,6 +285,12 @@ export async function bindAndCacheIdentified(identity:DeviceIdentity,reference:u
   const snapshot={...parsed,version:3,syncedAt:new Date().toISOString()};
   await tx.runAsync('INSERT INTO reference_snapshot(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',JSON.stringify(snapshot));
  });
+}
+/** N'enregistre que le refus explicite d'une réponse du serveur lié. */
+export async function recordCreditProtocolUpgrade(identity:DeviceIdentity,status:number,body:unknown):Promise<boolean> {
+ const database=await db();let blocked=false;
+ await database.withExclusiveTransactionAsync(async tx=>{blocked=await quarantineOnUpgrade(tx,identity,status,body);});
+ return blocked;
 }
 export async function getBoundIdentity():Promise<DeviceIdentity|null> {return getDeviceIdentity(await db());}
 export async function getIdentifiedOutbox(identity:DeviceIdentity,creditAware=false):Promise<IdentifiedEntry[]> {

@@ -13,7 +13,7 @@ import { tunisDay, buildJournal, journalTotal } from './journal';
 import { uploadJournalQueue } from './journal-upload';
 import { isIdentifiedDeviceBound } from './storage';
 import { testCommercialLogin,openCommercialSession, type CommercialSession } from './commercial-login';
-import { clearLocalTestOperations,bindAndCacheIdentified,getBoundIdentity,getIdentifiedOutbox,acknowledgeIdentifiedEntry,observeIdentifiedTour,getLocalCloseAttempt,prepareLocalClose,acknowledgeLocalClose } from './storage';
+import { clearLocalTestOperations,bindAndCacheIdentified,getBoundIdentity,recordCreditProtocolUpgrade,getIdentifiedOutbox,acknowledgeIdentifiedEntry,observeIdentifiedTour,getLocalCloseAttempt,prepareLocalClose,acknowledgeLocalClose } from './storage';
 import { uploadIdentifiedOperations, ClosedDaySyncError } from './identified-upload';
 import { sendPreparedTourClose } from './tour-close-queue';
 import { validateIdentifiedReference } from './identified-reference';
@@ -169,9 +169,20 @@ export default function App() {
     setSessionNotice('Session refusée ou expirée : reconnectez-vous pour synchroniser.');
     void secureSessions.clearIfToken(session.token).catch(()=>{});
   };
+  const checkProtocolUpgrade=async(session:CommercialSession,response:Response)=>{
+    if(response.status!==409)return;
+    const body=await response.clone().json().catch(()=>null);
+    if(body?.code!=='CREDIT_PROTOCOL_UPGRADE_REQUIRED')return;
+    // Masquer immédiatement même si SQLite ne peut pas enregistrer le blocage.
+    setReference(null);setSales([]);setOriginalSales([]);setSettlements([]);setPreInvoices([]);setTourReceipts([]);
+    setSelectedSale(null);setBalanceClient(null);setClient(null);setCart([]);setJournalClientId(null);
+    setStorageError(true);setReferenceError('Mise à jour et rapprochement v5 nécessaires. Les données restent sur ce téléphone.');
+    setJournalError('Mise à jour et rapprochement v5 nécessaires. Les données restent sur ce téléphone.');
+    await recordCreditProtocolUpgrade({commercialId:session.id,serverOrigin:session.serverOrigin},response.status,body);
+  };
   const individualRequest=async(session:NonNullable<typeof individual>,path:string,body?:unknown)=> {
     const response=await fetch(`${session.serverOrigin}/api/mobile/identified/${path}`,{method:body===undefined?'GET':'POST',headers:{Authorization:`Bearer ${session.token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
-    if(response.status===401)invalidateIndividual(session);return response;
+    if(response.status===401)invalidateIndividual(session);await checkProtocolUpgrade(session,response);return response;
   };
   const readIndividual=async(session:NonNullable<typeof individual>,path:string)=>{
     const response=await individualRequest(session,path),data=await response.json().catch(()=>null);
@@ -206,7 +217,7 @@ export default function App() {
     try {
       const identity={commercialId:individual.id,serverOrigin:individual.serverOrigin},entries=await getIdentifiedOutbox(identity);
       const byId=new Map(entries.map(entry=>[entry.operationId,entry]));
-      const count=await uploadIdentifiedOperations(entries,identity,identity,async(path,payload)=>{const response=await fetch(`${individual.serverOrigin}/api/mobile/identified/${path}`,{method:'POST',headers:{Authorization:`Bearer ${individual.token}`,'Content-Type':'application/json'},body:payload});if(response.status===401)invalidateIndividual(individual);return response;},async(id)=>{const entry=byId.get(id);if(!entry)throw Error('Opération introuvable.');await acknowledgeIdentifiedEntry(identity,entry);});
+      const count=await uploadIdentifiedOperations(entries,identity,identity,async(path,payload)=>{const response=await fetch(`${individual.serverOrigin}/api/mobile/identified/${path}`,{method:'POST',headers:{Authorization:`Bearer ${individual.token}`,'Content-Type':'application/json'},body:payload});if(response.status===401)invalidateIndividual(individual);await checkProtocolUpgrade(individual,response);return response;},async(id)=>{const entry=byId.get(id);if(!entry)throw Error('Opération introuvable.');await acknowledgeIdentifiedEntry(identity,entry);});
       await refreshIndividual(individual);await updateIndividualDay(individual);await loadSales();await loadJournal(journalDate);
       Alert.alert('Synchronisation terminée',`${count} opération(s) envoyée(s).`);
     }catch(error){
@@ -270,9 +281,9 @@ export default function App() {
   const [chequeDue, setChequeDue] = useState('');
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
-  const loadSales = async () => { try { const [current, original, payments, pending] = await Promise.all([getSales(), getOriginalSales(), getSettlements(), getOutbox()]); setSales(current); setOriginalSales(original); setSettlements(payments); setOutbox(pending); setStorageError(false); } catch { setStorageError(true); } finally { setLoading(false); } };
+  const loadSales = async () => { try { const [current, original, payments, pending] = await Promise.all([getSales(), getOriginalSales(), getSettlements(), getOutbox()]); setSales(current); setOriginalSales(original); setSettlements(payments); setOutbox(pending); setStorageError(false); } catch { setSales([]);setOriginalSales([]);setSettlements([]);setStorageError(true); } finally { setLoading(false); } };
   useEffect(() => { const timer = setInterval(() => setJournalDate(tunisDay(new Date())), 60000); return () => clearInterval(timer); }, []);
-  const loadJournal = async (_day: string) => { setJournalLoading(true); try { const [invoices, receipts] = await Promise.all([getAllPreInvoices(), getTourReceipts()]); const pending = await getJournalOutbox(); setPreInvoices(invoices); setTourReceipts(receipts); setJournalOutbox(pending); setJournalError(''); } catch { setJournalError('Impossible de lire le journal local.'); } finally { setJournalLoading(false); } };
+  const loadJournal = async (_day: string) => { setJournalLoading(true); try { const [invoices, receipts] = await Promise.all([getAllPreInvoices(), getTourReceipts()]); const pending = await getJournalOutbox(); setPreInvoices(invoices); setTourReceipts(receipts); setJournalOutbox(pending); setJournalError(''); } catch { setPreInvoices([]);setTourReceipts([]);setJournalError('Impossible de lire le journal local.'); } finally { setJournalLoading(false); } };
   useEffect(() => { void loadJournal(journalDate); }, [journalDate]);
   useEffect(() => { void loadSales(); void (async () => { try { const raw = await getReference(); if (raw) { const parsed = JSON.parse(raw); const valid = validateReference(parsed); if (typeof parsed.syncedAt !== 'string') throw Error('Date absente'); setReference({ ...valid, syncedAt: parsed.syncedAt }); } } catch { setReferenceError('Impossible de lire les données de référence locales.'); } })(); }, []);
   const clearPhoneTestHistory=async()=>{

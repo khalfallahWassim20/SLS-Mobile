@@ -9,6 +9,9 @@ export type DeviceIdentity={commercialId:string;serverOrigin:string};
 export const identifiedDeviceSchema=`CREATE TABLE IF NOT EXISTS identified_device (
  id INTEGER PRIMARY KEY CHECK(id=1), commercial_id TEXT NOT NULL, server_origin TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS credit_protocol_quarantine (
+ id INTEGER PRIMARY KEY CHECK(id=1), commercial_id TEXT NOT NULL, server_origin TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS identified_local_operations (
  operation_id TEXT PRIMARY KEY, commercial_id TEXT NOT NULL, operation_kind TEXT NOT NULL CHECK(operation_kind IN ('sale','settlement','journal')),
  entity_id TEXT NOT NULL, recorded_at TEXT NOT NULL

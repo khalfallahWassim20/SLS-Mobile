@@ -13,6 +13,8 @@ type Intent={kind:'sale'|'preinvoice'|'edit'|'settlement'|'receipt';clientId:str
  * Une liaison v5 interdit aussi les écritures v3 avant le premier avoir :
  * leurs calculs ne vérifient pas atomiquement le solde v5. */
 export async function assertLegacyMobileCreditSafe(tx:Tx,identity:DeviceIdentity|null) {
+ const quarantine=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_protocol_quarantine) AS n');
+ if(!quarantine||quarantine.n)throw Error('Mise à jour et rapprochement v5 nécessaires : anciennes données temporairement indisponibles.');
  const row=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM offline_credit_prototype) AS n');
  if(!row||row.n)throw Error('Des avoirs existent : mise à jour des écrans et synchronisation v5 nécessaires.');
  if(!identity)return;
