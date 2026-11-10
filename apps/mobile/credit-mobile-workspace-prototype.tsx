@@ -16,7 +16,7 @@ import {CreditClientsViewPrototype} from './credit-clients-view-prototype';
 import {CreditJournalViewPrototype} from './credit-note-journal-view-prototype';
 import {CreditNoteWorkflowView} from './credit-note-workflow-view';
 import {shareCreditJournalPrototype} from './credit-note-share-prototype';
-import {getCreditMobileWorkspacePrototype,getCreditSourceChoicesPrototype,previewCreditReviewPrototype,confirmCreditReviewPrototype,createExperimentalCreditMobileTransport} from './storage';
+import {getPendingRemoteEditPrototype,getCreditMobileWorkspacePrototype,getCreditSourceChoicesPrototype,previewCreditReviewPrototype,confirmCreditReviewPrototype,createExperimentalCreditMobileTransport} from './storage';
 
 type Snapshot=Awaited<ReturnType<typeof getCreditMobileWorkspacePrototype>>;
 type Client=Snapshot['clients']['clients'][number];
@@ -25,6 +25,7 @@ type Props={identity:DeviceIdentity;day:string;commercialName:string;session:Com
  * et l'identité dans la transaction avant d'enregistrer l'opération. */
 export function CreditMobileWorkspacePrototype({identity,day,commercialName,session,onUnauthorized}:Props){
  const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[tab,setTab]=useState<'clients'|'journal'>('journal'),[creditClient,setCreditClient]=useState<{id:string;scope:string}|null>(null),[form,setForm]=useState<{kind:'sale'|'settlement'|'preinvoice'|'receipt';client:Client;context:CreditWriteContext;articles:Snapshot['clients']['articles'];scope:string;invoice?:TourPreInvoice;receipts?:TourJournalReceipt[]}|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [pendingRemote,setPendingRemote]=useState<Awaited<ReturnType<typeof getPendingRemoteEditPrototype>>>(null);
  const [historyClient,setHistoryClient]=useState<{id:string;scope:string}|null>(null);
  const mounted=useRef(false),running=useRef(false),generation=useRef(0);
  const context=`${identity.serverOrigin}\n${identity.commercialId}\n${day}\n${commercialName}`,live=useRef(context);live.current=context;
@@ -38,11 +39,11 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
   });
  },[session?.token,session?.serverOrigin,session?.id,session?.expiresAt,identity.commercialId,identity.serverOrigin,onUnauthorized]);
  const alive=(seq:number)=>mounted.current&&generation.current===seq&&live.current===context;
- const run=async(fn:(seq:number)=>Promise<void>)=>{if(running.current)return;running.current=true;const seq=++generation.current;setBusy(true);setError('');try{await fn(seq);}catch(e){if(alive(seq)){setSnapshot(null);setError(e instanceof Error?e.message:'Opération impossible.');}}finally{running.current=false;if(mounted.current)setBusy(false);}};
- const load=async(seq:number)=>{const value=await getCreditMobileWorkspacePrototype(identity,day,commercialName);if(alive(seq))setSnapshot(value);};
+ const run=async(fn:(seq:number)=>Promise<void>)=>{if(running.current)return;running.current=true;const seq=++generation.current;setBusy(true);setError('');try{await fn(seq);}catch(e){if(alive(seq)){setSnapshot(null);setError(e instanceof Error?e.message:'Opération impossible.');try{const pending=await getPendingRemoteEditPrototype(identity);if(alive(seq))setPendingRemote(pending);}catch{/* conserver l’erreur principale */}}}finally{running.current=false;if(mounted.current)setBusy(false);}};
+ const load=async(seq:number)=>{const pending=await getPendingRemoteEditPrototype(identity);if(!alive(seq))return;setPendingRemote(pending);if(pending){setSnapshot(null);return;}const value=await getCreditMobileWorkspacePrototype(identity,day,commercialName);if(alive(seq))setSnapshot(value);};
  useEffect(()=>{
-  mounted.current=true;const seq=++generation.current;setSnapshot(null);setCreditClient(null);setForm(null);setHistoryClient(null);setError('');setBusy(true);
-  void getCreditMobileWorkspacePrototype(identity,day,commercialName).then(value=>{if(alive(seq))setSnapshot(value);}).catch(e=>{if(alive(seq))setError(e instanceof Error?e.message:'Données v5 indisponibles.');}).finally(()=>{if(alive(seq)&&!running.current)setBusy(false);});
+  mounted.current=true;const seq=++generation.current;setSnapshot(null);setPendingRemote(null);setCreditClient(null);setForm(null);setHistoryClient(null);setError('');setBusy(true);
+  void load(seq).catch(e=>{if(alive(seq))setError(e instanceof Error?e.message:'Données v5 indisponibles.');}).finally(()=>{if(alive(seq)&&!running.current)setBusy(false);});
   return()=>{mounted.current=false;generation.current++;};
  },[identity.commercialId,identity.serverOrigin,day,commercialName]);
  const refresh=()=>void run(load);
@@ -72,7 +73,18 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
  return <ScrollView contentContainerStyle={styles.container}>
   <Text style={styles.title}>Tournée v5 · {commercialName}</Text><Text style={styles.notice}>Données de ce téléphone. Les opérations des autres appareils ne sont visibles qu’après synchronisation ; une préétablie doit aussi être corrigée dans le système principal.</Text>
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-  <View style={styles.actions}><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={refresh}><Text style={styles.link}>Actualiser localement</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy||!transport} onPress={synchronize}><Text style={styles.link}>Synchroniser</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy||!transport} onPress={close}><Text style={styles.link}>Clôturer</Text></TouchableOpacity></View>
+  <View style={styles.actions}><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={refresh}><Text style={styles.link}>Actualiser localement</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy||!transport} onPress={synchronize}><Text style={styles.link}>Synchroniser</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy||!transport||!!pendingRemote} onPress={close}><Text style={styles.link}>Clôturer</Text></TouchableOpacity></View>
+  {pendingRemote&&<View style={styles.pending}>
+   <Text style={styles.heading}>Modification en attente · {pendingRemote.clientName}</Text>
+   <Text>Facture {pendingRemote.invoiceId} · opération {pendingRemote.operationId}</Text>
+   <Text>Ancien total : {(pendingRemote.originalTotal/1000).toFixed(3)} DT · nouveau total : {(pendingRemote.newTotal/1000).toFixed(3)} DT</Text>
+   {pendingRemote.refund>0&&<Text>Remboursement prévu (non effectué) : {(pendingRemote.refund/1000).toFixed(3)} DT</Text>}{pendingRemote.retainedCredit>0&&<Text>Crédit prévu : {(pendingRemote.retainedCredit/1000).toFixed(3)} DT</Text>}
+   <Text>{pendingRemote.status==='awaiting-reference'?'Envoi acquitté ; la vérification finale du serveur reste nécessaire.':'Envoi non confirmé. Reconnectez-vous et utilisez Synchroniser pour reprendre la même opération.'}</Text>
+   {pendingRemote.failure?.reason==='closed'&&<Text>Dernier refus du serveur : journée {pendingRemote.failure.day} clôturée (commercial : {pendingRemote.failure.commercialId}). Demandez sa réouverture à l’administrateur, puis synchronisez de nouveau.</Text>}
+   {pendingRemote.failure?.reason==='conflict'&&<Text>Dernier refus du serveur : conflit de version ou de données. Contactez l’administrateur pour un rapprochement.</Text>}
+   <Text>Ne supprimez pas les données de l’application : la réponse du serveur peut avoir été perdue. Les soldes, autres opérations et clôtures restent bloqués sur ce téléphone jusqu’à vérification.</Text>
+  </View>}
+  {!pendingRemote&&<>
   <View style={styles.actions}><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setTab('journal')}><Text style={styles.link}>Journal</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setTab('clients')}><Text style={styles.link}>Clients et soldes</Text></TouchableOpacity></View>
   {!currentSnapshot?<Text>{busy?'Chargement…':'Données v5 indisponibles.'}</Text>:tab==='journal'?<CreditJournalViewPrototype model={currentSnapshot.view} busy={busy} onCredit={selectCredit} onExport={exportJournal} onPayment={(clientId,invoiceId)=>{
    const client=currentSnapshot.clients.clients.find(c=>c.id===clientId),invoice=currentSnapshot.journal.rows.find(r=>r.clientId===clientId)?.preInvoice;
@@ -80,6 +92,7 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
    setForm({kind:'receipt',client,context:writeContext(client),articles:[],scope:context,invoice,receipts:currentSnapshot.journal.receipts.filter(r=>r.preInvoiceId===invoice.id)});
   }}/>:<CreditClientsViewPrototype snapshot={currentSnapshot.clients} busy={busy}
    onCredit={c=>selectCredit(c.id)} onHistory={c=>setHistoryClient({id:c.id,scope:context})} onPreInvoice={c=>setForm({kind:'preinvoice',client:c,context:writeContext(c),articles:[],scope:context})} onSell={c=>setForm({kind:'sale',client:c,context:writeContext(c),articles:currentSnapshot.clients.articles,scope:context})} onSettle={c=>setForm({kind:'settlement',client:c,context:writeContext(c),articles:[],scope:context})}/>}
+  </>}
  </ScrollView>;
 }
-const styles=StyleSheet.create({container:{padding:16,gap:12},title:{fontSize:20,fontWeight:'700',color:'#173c32'},notice:{backgroundColor:'#fff4de',padding:10,borderRadius:8,color:'#89511e'},error:{backgroundColor:'#ffebe8',padding:10,borderRadius:8,color:'#842c23'},actions:{flexDirection:'row',gap:16,flexWrap:'wrap'},link:{color:'#176745',fontWeight:'700',paddingVertical:8}});
+const styles=StyleSheet.create({container:{padding:16,gap:12},title:{fontSize:20,fontWeight:'700',color:'#173c32'},heading:{fontWeight:'700',fontSize:16},pending:{backgroundColor:'#fff4de',padding:12,borderRadius:10,gap:7},notice:{backgroundColor:'#fff4de',padding:10,borderRadius:8,color:'#89511e'},error:{backgroundColor:'#ffebe8',padding:10,borderRadius:8,color:'#842c23'},actions:{flexDirection:'row',gap:16,flexWrap:'wrap'},link:{color:'#176745',fontWeight:'700',paddingVertical:8}});

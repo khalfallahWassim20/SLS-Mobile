@@ -34,7 +34,7 @@ import type {CommercialSession} from './commercial-login';
 import {validateCreditSaleEdit} from './credit-sale-edit-prototype';
 import {readCreditHistoryPrototype} from './credit-history-prototype';
 import {stageRemoteSaleEditDraftPrototype,type RemoteEditDraftRequest} from './credit-remote-sale-draft-prototype';
-import {confirmRemoteSaleEditPrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype} from './credit-remote-sale-confirm-prototype';
+import {confirmRemoteSaleEditPrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype,readPendingRemoteEditPrototype,recordRemoteEditFailurePrototype} from './credit-remote-sale-confirm-prototype';
 import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype,type RemoteSaleKey} from './credit-remote-sale-edit-prototype';
 import type {EditLine} from './credit-sale-edit-prototype';
 
@@ -419,6 +419,7 @@ export async function synchronizeCreditPrototype(identity:DeviceIdentity,verifie
     hasPending:async()=>{const database=await db();let pending=true;await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,identity);const value=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n');if(!value)throw Error('État des révisions indisponible.');pending=!!value.n;guard();});return pending;},
     readQueue:async()=>{const database=await db();let result:IdentifiedEntry[]=[];await database.withExclusiveTransactionAsync(async tx=>{guard();result=await readRemoteEditQueuePrototype(tx,identity);guard();});return result;},
     acknowledge:async entry=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeRemoteEditPrototype(tx,identity,entry);guard();});},
+    recordFailure:async(entry,error)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await recordRemoteEditFailurePrototype(tx,identity,entry,error);guard();});},
     finalize:async(id,verified,value)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await finalizeRemoteEditReferencePrototype(tx,id,verified,value,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});}
    },
    readOperations:()=>getIdentifiedOutbox(identity,true),acknowledgeOperation:async entry=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeIdentifiedOutbox(tx,identity,entry);guard();});},
@@ -501,4 +502,9 @@ export async function stageRemoteSaleEditPrototype(request:RemoteEditDraftReques
 export async function commitRemoteSaleEditPrototype(request:RemoteEditDraftRequest){
  const database=await db();let result:Awaited<ReturnType<typeof confirmRemoteSaleEditPrototype>>|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);await stageRemoteSaleEditDraftPrototype(tx,request,digest);result=await confirmRemoteSaleEditPrototype(tx,request,digest);});return result!;
+}
+
+export async function getPendingRemoteEditPrototype(identity:DeviceIdentity):Promise<Awaited<ReturnType<typeof readPendingRemoteEditPrototype>>>{
+ const database=await db();let result:Awaited<ReturnType<typeof readPendingRemoteEditPrototype>>=null;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readPendingRemoteEditPrototype(tx,identity);});return result;
 }

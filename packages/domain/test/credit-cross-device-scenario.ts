@@ -17,7 +17,7 @@ import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync
 import {readPrototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
 import {previewLocalCredit,confirmLocalCreditReview} from '../../../apps/mobile/credit-note-review-prototype.js';
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from '../../../apps/mobile/identified-outbox.js';
-import {uploadIdentifiedOperations} from '../../../apps/mobile/identified-upload.js';
+import {uploadIdentifiedOperations,ClosedDaySyncError,OperationConflictSyncError} from '../../../apps/mobile/identified-upload.js';
 import {saveAndVerifyFinalCreditReference} from '../../../apps/mobile/credit-note-sync-final-prototype.js';
 import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
 import {createCreditTransportPrototype} from '../../../apps/mobile/credit-note-transport-prototype.js';
@@ -31,7 +31,7 @@ import {readCreditClientsPrototype} from '../../../apps/mobile/credit-client-vie
 import {readLegacyRows} from '../../../apps/mobile/legacy-read-guard.js';
 import {readCreditMobileWorkspacePrototype} from '../../../apps/mobile/credit-mobile-workspace-reader-prototype.js';
 import {shareCreditJournalPrototype} from '../../../apps/mobile/credit-note-share-prototype.js';
-import {remoteSaleConfirmPrototypeSchema,confirmRemoteSaleEditPrototype,readRemoteEditBalancePrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype} from '../../../apps/mobile/credit-remote-sale-confirm-prototype.js';
+import {remoteSaleConfirmPrototypeSchema,confirmRemoteSaleEditPrototype,readRemoteEditBalancePrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype,readPendingRemoteEditPrototype,recordRemoteEditFailurePrototype} from '../../../apps/mobile/credit-remote-sale-confirm-prototype.js';
 import {remoteSaleDraftPrototypeSchema,stageRemoteSaleEditDraftPrototype} from '../../../apps/mobile/credit-remote-sale-draft-prototype.js';
 import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype} from '../../../apps/mobile/credit-remote-sale-edit-prototype.js';
 import {readCreditHistoryPrototype} from '../../../apps/mobile/credit-history-prototype.js';
@@ -146,6 +146,13 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   mobile.exec('SAVEPOINT tamper_remote_edit');mobile.prepare('UPDATE credit_remote_sale_confirm_prototype SET revised=?').run('{}');
   await assert.rejects(readRemoteEditBalancePrototype(tx,identity,clientId,digest),/illisible|incohérente/);mobile.exec('ROLLBACK TO tamper_remote_edit; RELEASE tamper_remote_edit');
   const [remoteQueue]=await transaction(()=>readRemoteEditQueuePrototype(tx,identity));assert.equal(remoteQueue.operationId,draftRequest.operationId);
+  const waitingDetail=await transaction(()=>readPendingRemoteEditPrototype(tx,identity));assert.equal(waitingDetail?.clientName,'Client fictif');assert.equal(waitingDetail?.status,'awaiting-upload');assert.equal(waitingDetail?.newTotal,47600);assert.equal(waitingDetail?.refund,2400);
+  await transaction(()=>recordRemoteEditFailurePrototype(tx,identity,remoteQueue,new Error('connexion perdue')));assert.equal((await transaction(()=>readPendingRemoteEditPrototype(tx,identity)))?.failure,null);
+  await transaction(()=>recordRemoteEditFailurePrototype(tx,identity,remoteQueue,new ClosedDaySyncError(day,first.id)));
+  assert.deepEqual((await transaction(()=>readPendingRemoteEditPrototype(tx,identity)))?.failure,{reason:'closed',day,commercialId:first.id});
+  await transaction(()=>recordRemoteEditFailurePrototype(tx,identity,remoteQueue,new OperationConflictSyncError('conflit')));
+  assert.deepEqual((await transaction(()=>readPendingRemoteEditPrototype(tx,identity)))?.failure,{reason:'conflict',day:null,commercialId:null});
+
   await assert.rejects(transaction(()=>acknowledgeRemoteEditPrototype(tx,identity,{...remoteQueue,payload:'{}'})),/incohérent/);
   assert.equal((await transaction(()=>readRemoteEditQueuePrototype(tx,identity))).length,1);
   const savedRef=mobile.prepare('SELECT payload FROM credit_reference_prototype_cache WHERE id=1').get()!.payload as string,advancedRef=JSON.parse(savedRef);
@@ -153,7 +160,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(JSON.stringify(advancedRef));
   assert.equal((await transaction(()=>readRemoteEditBalancePrototype(tx,identity,clientId,digest))).conflict,true);
   mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(savedRef);
-  await transaction(()=>acknowledgeRemoteEditPrototype(tx,identity,remoteQueue));assert.equal((await transaction(()=>readRemoteEditQueuePrototype(tx,identity))).length,0);
+  await transaction(()=>acknowledgeRemoteEditPrototype(tx,identity,remoteQueue));assert.equal((await transaction(()=>readRemoteEditQueuePrototype(tx,identity))).length,0);assert.equal((await transaction(()=>readPendingRemoteEditPrototype(tx,identity)))?.status,'awaiting-reference');assert.equal((await transaction(()=>readPendingRemoteEditPrototype(tx,identity)))?.failure,null);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_remote_sale_confirm_prototype').get()?.n,1);
   mobile.exec('DELETE FROM credit_remote_sale_confirm_prototype;DELETE FROM credit_remote_sale_draft_prototype');
   await assert.rejects(transaction(()=>stageRemoteSaleEditDraftPrototype(tx,{...draftRequest,preview:{...refundPreview,balanceAfter:1}},digest)),/Aperçu modifié/);
@@ -427,6 +434,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
     readOperations:async()=>[],acknowledgeOperation:async()=>{throw Error('file active inattendue');},readReadyCredits:async()=>[],readAllCredits:async()=>[],acknowledgeCredit:async()=>{throw Error('avoir inattendu');},
     remoteEdits:{hasPending:async()=>!!isolated.prepare('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n').get()?.n,
      readQueue:()=>isolatedTransaction(()=>readRemoteEditQueuePrototype(isolatedTx,identity)),
+     recordFailure:(entry:typeof pending[number],error:unknown)=>isolatedTransaction(()=>recordRemoteEditFailurePrototype(isolatedTx,identity,entry,error)),
      acknowledge:(entry:typeof pending[number])=>isolatedTransaction(async()=>{await acknowledgeRemoteEditPrototype(isolatedTx,identity,entry);if(expireRemoteAck){expireRemoteAck=false;throw Error('session expirée pendant accusé');}}),
      finalize:(id:typeof identity,verified:typeof identity,value:unknown)=>isolatedTransaction(async()=>{await finalizeRemoteEditReferencePrototype(isolatedTx,id,verified,value,digest);if(expireRemoteFinal){expireRemoteFinal=false;throw Error('session expirée pendant référence finale');}})}
    };
@@ -452,25 +460,33 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    const cap2=await isolatedTransaction(()=>captureRemoteSaleEditPrototype(isolatedTx,context3,key2,nextAt,digest));const nextLines=[{...cap2.sale.lines[0],discount:5000}];
    const nextPreview=await isolatedTransaction(()=>previewRemoteSaleEditPrototype(isolatedTx,context3,key2,nextAt,nextLines,undefined,digest));
    const nextDraft={operationId:randomUUID(),context:context3,key:key2,recordedAt:nextAt,lines:nextLines,preview:nextPreview};
-   isolated.exec('SAVEPOINT second_remote_revision');await stageRemoteSaleEditDraftPrototype(isolatedTx,nextDraft,digest);await confirmRemoteSaleEditPrototype(isolatedTx,nextDraft,digest);
+   await isolatedTransaction(()=>stageRemoteSaleEditDraftPrototype(isolatedTx,nextDraft,digest));await isolatedTransaction(()=>confirmRemoteSaleEditPrototype(isolatedTx,nextDraft,digest));
    assert.equal(isolated.prepare('SELECT count(*) AS n FROM credit_remote_sale_confirm_prototype').get()?.n,2);
-   await assert.rejects(readPrototypeCreditBalance(isolatedTx,identity,client2,digest),/modification distante/);
-   isolated.exec('ROLLBACK TO second_remote_revision; RELEASE second_remote_revision');
+   await assert.rejects(isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client2,digest)),/modification distante/);
+   // Le créateur clôture après la capture hors ligne : refus explicite,
+   // conservation du même UUID, puis reprise après réouverture admin.
+   assert.equal((await post(a.token,'close',{requestId:randomUUID(),day:otherDay,expectedVersion:0})).status,201);
+   await assert.rejects(syncCreditPrototype(identity,identity,syncIO),(e:unknown)=>e instanceof ClosedDaySyncError&&e.day===otherDay&&e.commercialId===first.id);
+   const closedDetail=await isolatedTransaction(()=>readPendingRemoteEditPrototype(isolatedTx,identity));
+   assert.equal(closedDetail?.operationId,nextDraft.operationId);assert.deepEqual(closedDetail?.failure,{reason:'closed',day:otherDay,commercialId:first.id});
+   assert.equal((await isolatedTransaction(()=>readRemoteEditQueuePrototype(isolatedTx,identity))).length,1);
+   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[otherSaleId])).rows[0].n,2);
+   const reopenOrigin=await fetch(`${origin}/admin/${first.id}/reopen`,{method:'POST',headers:{...headers('admin-test'),Authorization:'Bearer admin-test'},body:JSON.stringify({requestId:randomUUID(),day:otherDay,expectedVersion:1})});assert.equal(reopenOrigin.status,201);
+   assert.deepEqual(await syncCreditPrototype(identity,identity,syncIO),{operations:1,credits:0});
+   assert.equal(await isolatedTransaction(()=>readPendingRemoteEditPrototype(isolatedTx,identity)),null);
+   assert.deepEqual(await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client2,digest)),{balance:11900,conflict:false});
    assert.equal(isolated.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);assert.equal(isolated.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,0);
   }finally{isolated.close();}
   assert.equal((await post(b.token,'sales',remoteEvent)).status,200);
   assert.equal((await post(b.token,'sales',{...remoteEvent,operationId:randomUUID()})).status,409);
   const otherVersions=await db.query<{version:number;commercial_id:string}>('SELECT version,commercial_id FROM identified_sale_events WHERE sale_id=$1 ORDER BY version',[otherSaleId]);
-  assert.deepEqual(otherVersions.rows.map(x=>[x.version,x.commercial_id]),[[1,first.id],[2,second.id]]);
+  assert.deepEqual(otherVersions.rows.map(x=>[x.version,x.commercial_id]),[[1,first.id],[2,second.id],[3,second.id]]);
   const dayA=await fetch(`${origin}/v5/day/${otherDay}/details`,{headers:headers(a.token)}),dayB=await fetch(`${origin}/v5/day/${otherDay}/details`,{headers:headers(b.token)});
   assert.equal(dayA.status,200);assert.equal(dayB.status,200);
   const aJournal=await dayA.json() as {rows:{clientId:string;tourTotal:number;saleCount:number}[]},bJournal=await dayB.json() as {rows:{clientId:string;saleCount:number}[]};
-  assert.equal(aJournal.rows.find(x=>x.clientId===client2)?.tourTotal,47600);assert.equal(aJournal.rows.find(x=>x.clientId===client2)?.saleCount,1);
+  assert.equal(aJournal.rows.find(x=>x.clientId===client2)?.tourTotal,59500);assert.equal(aJournal.rows.find(x=>x.clientId===client2)?.saleCount,1);
   assert.equal(bJournal.rows.some(x=>x.clientId===client2&&x.saleCount>0),false);
-  assert.equal((await post(a.token,'close',{requestId:randomUUID(),day:otherDay,expectedVersion:0})).status,201);
-  const afterClose=await post(b.token,'sales',{operationId:randomUUID(),saleId:otherSaleId,version:3,recordedAt:'2026-11-07T11:00:00.000Z',sale:{...remoteModified,syncVersion:3},refund:0});
-  assert.equal(afterClose.status,409);const closeReason=await afterClose.json() as {code:string;commercialId:string};assert.equal(closeReason.code,'TOUR_DAY_CLOSED');assert.equal(closeReason.commercialId,first.id);
-  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[otherSaleId])).rows[0].n,2);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[otherSaleId])).rows[0].n,3);
 
  } finally {if(server)await new Promise<void>(r=>server!.close(()=>r()));mobile.close();firstPhone.close();}
 }

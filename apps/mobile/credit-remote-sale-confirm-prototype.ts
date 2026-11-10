@@ -8,11 +8,13 @@ import {saveVerifiedCreditReference} from './credit-note-sync-reference';
 import {readPrototypeCreditBalance} from './credit-note-balance-storage-prototype';
 import {previewRemoteSaleEditPrototype} from './credit-remote-sale-edit-prototype';
 import type {RemoteEditDraftRequest} from './credit-remote-sale-draft-prototype';
-import type {IdentifiedEntry} from './identified-upload';
+import {ClosedDaySyncError,OperationConflictSyncError,type IdentifiedEntry} from './identified-upload';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
 export {remoteSaleConfirmPrototypeSchema} from './credit-remote-sale-schema-prototype';
 const uuid=(x:unknown):x is string=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(x);
+const actorUuid=(x:unknown):x is string=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
+const validDay=(x:string)=>{const d=new Date(`${x}T00:00:00.000Z`);return /^\d{4}-\d{2}-\d{2}$/.test(x)&&Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===x;};
 const serialize=(r:RemoteEditDraftRequest)=>canonicalJson({operationId:r.operationId,context:r.context,key:r.key,recordedAt:r.recordedAt,lines:r.lines,choice:r.choice??null,preview:r.preview});
 async function bound(tx:Tx,id:DeviceIdentity){const actual=await getDeviceIdentity(tx);if(!actual||actual.commercialId!==id.commercialId||actual.serverOrigin!==id.serverOrigin)throw Error('Identité ou serveur incohérent.');}
 type Row={operationId:string;invoiceId:string;clientId:string;commercialId:string;serverOrigin:string;recordedAt:string;request:string;original:string;revised:string;payload:string;acknowledged:number};
@@ -74,7 +76,7 @@ export async function readRemoteEditQueuePrototype(tx:Tx,identity:DeviceIdentity
 export async function acknowledgeRemoteEditPrototype(tx:Tx,identity:DeviceIdentity,entry:IdentifiedEntry){
  await bound(tx,identity);const row=await tx.getFirstAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE operation_id=?`,entry.operationId);
  if(!row||entry.kind!=='sale'||entry.commercialId!==identity.commercialId||entry.entityId!==row.invoiceId||entry.recordedAt!==row.recordedAt||entry.payload!==row.payload||row.acknowledged!==0)throw Error('Accusé de révision incohérent.');
- parse(row,identity);await tx.runAsync('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=1 WHERE operation_id=?',entry.operationId);
+ parse(row,identity);await tx.runAsync('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=1 WHERE operation_id=?',entry.operationId);await tx.runAsync('DELETE FROM credit_remote_sale_failure_prototype WHERE operation_id=?',entry.operationId);
 }
 /** Une opération acquittée n'est considérée synchronisée qu'après récupération
  * de la version exacte et de sa preuve serveur dans la même transaction. */
@@ -89,4 +91,27 @@ export async function finalizeRemoteEditReferencePrototype(tx:Tx,identity:Device
  }
  for(const client of clients)if((await readRemoteEditBalancePrototype(tx,identity,client,digest)).conflict)throw Error('Solde distant en conflit.');
  for(const row of rows){await tx.runAsync('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=2 WHERE operation_id=?',row.operationId);await tx.runAsync('DELETE FROM credit_remote_sale_draft_prototype WHERE operation_id=?',row.operationId);await tx.runAsync('DELETE FROM credit_sources_prototype_cache WHERE client_id=?',row.clientId);}
+}
+
+/** L'indication enregistrée est le dernier refus explicite du serveur, pas
+ * une preuve qu'une requête ultérieure ou perdue n'a pas été reçue. */
+export async function recordRemoteEditFailurePrototype(tx:Tx,identity:DeviceIdentity,entry:IdentifiedEntry,error:unknown){
+ if(!(error instanceof ClosedDaySyncError)&&!(error instanceof OperationConflictSyncError))return;
+ await bound(tx,identity);const row=await tx.getFirstAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE operation_id=?`,entry.operationId);
+ if(!row||row.acknowledged!==0||entry.kind!=='sale'||entry.entityId!==row.invoiceId||entry.payload!==row.payload||entry.recordedAt!==row.recordedAt||entry.commercialId!==identity.commercialId)throw Error('Révision distante incohérente.');
+ parse(row,identity);
+ const closed=error instanceof ClosedDaySyncError;
+ if(closed&&(!actorUuid(error.commercialId)||!validDay(error.day)))throw Error('Refus de clôture invalide.');
+ await tx.runAsync(`INSERT INTO credit_remote_sale_failure_prototype(operation_id,reason,day,commercial_id) VALUES(?,?,?,?) ON CONFLICT(operation_id) DO UPDATE SET reason=excluded.reason,day=excluded.day,commercial_id=excluded.commercial_id`,entry.operationId,closed?'closed':'conflict',closed?error.day:null,closed?error.commercialId:null);
+}
+/** Lecture même si les soldes sont bloqués : permet d'expliquer et reprendre
+ * une modification sans proposer d'effacer une opération incertaine. */
+export async function readPendingRemoteEditPrototype(tx:Tx,identity:DeviceIdentity){
+ await bound(tx,identity);const rows=await tx.getAllAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2 ORDER BY rowid`);
+ if(rows.length>1)throw Error('Plusieurs révisions distantes nécessitent un rapprochement.');
+ if(!rows.length)return null;
+ const row=rows[0],{request,original,revised}=parse(row,identity);
+ const failure=await tx.getFirstAsync<{reason:string;day:string|null;commercialId:string|null}>('SELECT reason,day,commercial_id AS commercialId FROM credit_remote_sale_failure_prototype WHERE operation_id=?',row.operationId);
+ if(failure&&(!['closed','conflict'].includes(failure.reason)||(failure.reason==='closed'&&(!failure.day||!validDay(failure.day)||!actorUuid(failure.commercialId)))||(failure.reason==='conflict'&&(failure.day!==null||failure.commercialId!==null))))throw Error('Détail de refus illisible.');
+ return {operationId:row.operationId,invoiceId:row.invoiceId,clientId:row.clientId,clientName:original.clientName,recordedAt:row.recordedAt,originalTotal:original.total,newTotal:revised.total,refund:request.preview.refund,retainedCredit:request.preview.credit,status:row.acknowledged===1?'awaiting-reference' as const:'awaiting-upload' as const,failure:failure?{...failure}:null};
 }

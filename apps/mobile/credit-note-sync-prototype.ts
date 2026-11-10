@@ -21,6 +21,7 @@ type IO={
  remoteEdits?:{
   hasPending:()=>Promise<boolean>;readQueue:()=>Promise<IdentifiedEntry[]>;acknowledge:(entry:IdentifiedEntry)=>Promise<void>;
   finalize:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown)=>Promise<void>;
+  recordFailure?:(entry:IdentifiedEntry,error:unknown)=>Promise<void>;
  };
 };
 const uuid=(v:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
@@ -33,7 +34,7 @@ export async function syncCreditPrototype(identity:DeviceIdentity,verified:Devic
  let remoteOperations=0;
  if(io.remoteEdits&&await io.remoteEdits.hasPending()){
   const remote=io.remoteEdits,entries=await remote.readQueue(),byId=new Map(entries.map(e=>[e.operationId,e]));
-  remoteOperations=await uploadIdentifiedOperations(entries,identity,verified,io.sendOperation,async(id,kind)=>{const entry=byId.get(id);if(!entry||entry.kind!==kind)throw Error('Révision distante introuvable.');await remote.acknowledge(entry);});
+  try{remoteOperations=await uploadIdentifiedOperations(entries,identity,verified,io.sendOperation,async(id,kind)=>{const entry=byId.get(id);if(!entry||entry.kind!==kind)throw Error('Révision distante introuvable.');await remote.acknowledge(entry);});}catch(error){if(entries.length===1&&remote.recordFailure){try{await remote.recordFailure(entries[0],error);}catch{/* ne pas masquer l’erreur d’envoi ou enregistrer après déconnexion */}}throw error;}
   if((await remote.readQueue()).length)throw Error('Une modification distante reste en attente.');
   await remote.finalize(identity,verified,await io.fetchReference());
   if(await remote.hasPending())throw Error('Révision distante non confirmée.');
