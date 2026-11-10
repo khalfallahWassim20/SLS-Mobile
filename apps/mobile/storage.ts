@@ -34,7 +34,7 @@ import type {CommercialSession} from './commercial-login';
 import {validateCreditSaleEdit} from './credit-sale-edit-prototype';
 import {readCreditHistoryPrototype} from './credit-history-prototype';
 import {stageRemoteSaleEditDraftPrototype,type RemoteEditDraftRequest} from './credit-remote-sale-draft-prototype';
-import {confirmRemoteSaleEditPrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype,readPendingRemoteEditPrototype,recordRemoteEditFailurePrototype} from './credit-remote-sale-confirm-prototype';
+import {confirmRemoteSaleEditPrototype,readRemoteEditQueuePrototype,acknowledgeRemoteEditPrototype,finalizeRemoteEditReferencePrototype,readPendingRemoteEditPrototype,recordRemoteEditFailurePrototype,readRemoteAbandonCandidatePrototype,resolveRemoteAbandonPrototype} from './credit-remote-sale-confirm-prototype';
 import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype,type RemoteSaleKey} from './credit-remote-sale-edit-prototype';
 import type {EditLine} from './credit-sale-edit-prototype';
 
@@ -440,6 +440,10 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
   cacheReference:cacheCreditReferencePrototype,cacheSources:cacheCreditSourcesPrototype,
   bindReference:async(id,verified,value,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(tx=>bindAndCacheCreditReferencePrototype(tx,id,verified,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data),guard));},
   synchronize:synchronizeCreditPrototype,
+  remoteAbandon:{
+   read:async(id,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof readRemoteAbandonCandidatePrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await readRemoteAbandonCandidatePrototype(tx,id);guard();});return result!;},
+   resolve:async(id,verified,entry,response,reference,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await resolveRemoteAbandonPrototype(tx,id,verified,entry,response,reference,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});}
+  },
   tour:{
    getAttempt:async(id,day,guard)=>{const database=await db();let result:Attempt|null=null;await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);result=await findTourCloseAttempt(tx,id.commercialId,day);guard();});return result;},
    prepare:async(id,day,version,guard)=>{const database=await db();let result:Attempt|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await preparePrototypeClose(tx,id,day,version,randomUUID);guard();});return result!;},

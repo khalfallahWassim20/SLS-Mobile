@@ -2,6 +2,7 @@
  * courant. Les opérations locales et leurs accusés restent gérés par SQLite. */
 import {validSession} from './secure-commercial-session';
 import type {CommercialSession} from './commercial-login';
+import type {IdentifiedEntry} from './identified-upload';
 import type {DeviceIdentity} from './identified-device';
 import {sendPreparedTourClose,type Attempt} from './tour-close-queue';
 
@@ -14,6 +15,10 @@ type Dependencies={
  bindReference?:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown,guard:()=>void)=>Promise<void>;
  cacheSources:(identity:DeviceIdentity,verified:DeviceIdentity,clientId:string,value:unknown,guard:()=>void)=>Promise<void>;
  synchronize:(identity:DeviceIdentity,verified:DeviceIdentity,transport:Transport,guard:()=>void)=>Promise<{operations:number;credits:number}>;
+ remoteAbandon?:{
+  read:(identity:DeviceIdentity,guard:()=>void)=>Promise<{entry:IdentifiedEntry;event:unknown}>;
+  resolve:(identity:DeviceIdentity,verified:DeviceIdentity,entry:IdentifiedEntry,response:unknown,reference:unknown,guard:()=>void)=>Promise<void>;
+ };
  tour?:{
   getAttempt:(identity:DeviceIdentity,day:string,guard:()=>void)=>Promise<Attempt|null>;
   prepare:(identity:DeviceIdentity,day:string,version:number,guard:()=>void)=>Promise<Attempt>;
@@ -63,6 +68,17 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
    if(!uuid(clientId))throw Error('Client invalide.');
    const reference=await fetchReference();check();await io.cacheReference(identity,identity,reference,check);check();
    const sources=await read(`credit-sources/${encodeURIComponent(clientId)}`);check();await io.cacheSources(identity,identity,clientId,sources,check);check();
+  }),
+  abandonRemoteEdit:()=>exclusive(async()=>{
+   if(!io.remoteAbandon)throw Error('Abandon sécurisé indisponible.');check();
+   const candidate=await io.remoteAbandon.read(identity,check);check();
+   const response=await request('remote-sale-edits/abandon','POST',JSON.stringify(candidate.event));const body=await response.json().catch(()=>null);check();
+   if(!response.ok){const e=object(body);throw Error(typeof e?.error==='string'?e.error:`Erreur serveur (${response.status}).`);}
+   const result=object(body),event=object(candidate.event);
+   if(!result||!event||result.operationId!==candidate.entry.operationId||result.saleId!==candidate.entry.entityId||result.version!==event.version||Object.keys(result).sort().join(',')!=='operationId,saleId,status,version')throw Error('Accusé d’abandon invalide.');
+   if(result.status==='already-received')return 'already-received' as const;
+   if(result.status!=='abandoned')throw Error('Accusé d’abandon invalide.');
+   const reference=await fetchReference();check();await io.remoteAbandon.resolve(identity,identity,candidate.entry,body,reference,check);check();return 'abandoned' as const;
   }),
   synchronize:()=>exclusive(async()=>{check();const result=await io.synchronize(identity,identity,transport,check);check();return result;}),
   refreshDay:(day:string)=>exclusive(()=>readDay(day)),

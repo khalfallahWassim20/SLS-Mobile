@@ -138,6 +138,12 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       journal_date date NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(sale_id,version)
     );
+    -- Réservations d'UUID pour les révisions distantes explicitement abandonnées.
+    CREATE TABLE IF NOT EXISTS remote_sale_abandon_prototype (
+      operation_id uuid PRIMARY KEY, sale_id uuid NOT NULL, version integer NOT NULL CHECK(version>1),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), payload jsonb NOT NULL, payload_hash text NOT NULL,
+      abandoned_at timestamptz NOT NULL DEFAULT now()
+    );
     ALTER TABLE identified_sale_events ADD COLUMN IF NOT EXISTS event_date date;
     CREATE INDEX IF NOT EXISTS identified_sale_events_latest_idx ON identified_sale_events(sale_id,version DESC);
     CREATE TABLE IF NOT EXISTS identified_settlements (

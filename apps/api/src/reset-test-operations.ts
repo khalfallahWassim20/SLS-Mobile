@@ -15,6 +15,9 @@ export async function resetTestOperations(pool:Pool):Promise<void> {
   const present=creditTables.rows.map(r=>r.present);
   if(present.length!==creditNames.length||present.some(v=>typeof v!=='boolean')||(present.some(Boolean)&&!present.every(Boolean)))throw Error('Migration des avoirs incomplète : nettoyage refusé.');
   if(present.every(Boolean))for(const table of creditNames)await db.query(`DELETE FROM ${table}`);
+  const remote=await db.query("SELECT to_regclass('remote_sale_abandon_prototype') IS NOT NULL AS present");
+  if(typeof remote.rows[0]?.present!=='boolean')throw Error('État des révisions indisponible.');
+  if(remote.rows[0].present)await db.query('DELETE FROM remote_sale_abandon_prototype');
   for(const table of [
    'tour_closure_requests','tour_closure_events','tour_closures',
    'identified_journal_events','identified_journal_receipt_ids','identified_journal_invoices',

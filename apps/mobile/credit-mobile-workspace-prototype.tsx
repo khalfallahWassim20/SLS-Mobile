@@ -49,6 +49,7 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
  },[identity.commercialId,identity.serverOrigin,day,commercialName]);
  const refresh=()=>void run(load);
  const synchronize=()=>void run(async seq=>{if(!transport)throw Error('Reconnectez-vous pour synchroniser.');await transport.synchronize();await load(seq);});
+ const abandon=()=>{if(!transport||busy)return;Alert.alert('Abandonner cette modification ?', 'La facture elle-même ne sera pas annulée. Le serveur vérifiera si la modification a déjà été reçue. Si elle est abandonnée, vous pourrez refaire une modification après actualisation.',[{text:'Retour',style:'cancel'},{text:'Abandonner la modification',style:'destructive',onPress:()=>void run(async seq=>{const result=await transport.abandonRemoteEdit();if(result==='already-received')throw Error('Cette modification a déjà été reçue par le serveur. Elle ne peut pas être abandonnée : utilisez Synchroniser pour terminer la vérification.');await load(seq);})}]);};
  const close=()=>{if(!transport||busy)return;Alert.alert('Clôturer la journée ?', 'Synchronisez toutes les opérations et tous les avoirs. Seul un administrateur pourra rouvrir cette journée.',[{text:'Annuler',style:'cancel'},{text:'Clôturer',onPress:()=>void run(async seq=>{await transport.closeDay(day);await load(seq);})}]);};
  const exportJournal=(format:'csv'|'pdf')=>void run(async seq=>{
   const current=await getCreditMobileWorkspacePrototype(identity,day,commercialName);if(!alive(seq))return;
@@ -85,6 +86,7 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
    <Text>{pendingRemote.status==='awaiting-reference'?'Envoi acquitté ; la vérification finale du serveur reste nécessaire.':'Envoi non confirmé. Reconnectez-vous et utilisez Synchroniser pour reprendre la même opération.'}</Text>
    {pendingRemote.failure?.reason==='closed'&&<Text>Dernier refus du serveur : journée {pendingRemote.failure.day} clôturée (commercial : {pendingRemote.failure.commercialId}). Demandez sa réouverture à l’administrateur, puis synchronisez de nouveau.</Text>}
    {pendingRemote.failure?.reason==='conflict'&&<Text>Dernier refus du serveur : conflit de version ou de données. Contactez l’administrateur pour un rapprochement.</Text>}
+   {pendingRemote.status==='awaiting-upload'&&<TouchableOpacity accessibilityRole="button" disabled={busy||!transport} onPress={abandon}><Text style={styles.link}>Abandonner cette modification en ligne</Text></TouchableOpacity>}
    <Text>Ne supprimez pas les données de l’application : la réponse du serveur peut avoir été perdue. Le client concerné reste bloqué jusqu’à vérification. Les autres clients restent disponibles hors ligne ; le journal, ses exports et la clôture attendent la synchronisation.</Text>
   </View>}
   {pendingRemote&&pendingClients&&clientList(pendingClients)}

@@ -36,7 +36,7 @@ export async function confirmRemoteSaleEditPrototype(tx:Tx,request:RemoteEditDra
  if(!request||!uuid(request.operationId)||!request.context?.identity||!request.key||!request.preview||!Array.isArray(request.lines))throw Error('Demande de révision invalide.');
  await bound(tx,request.context.identity);const content=serialize(request);
  const existing=await tx.getFirstAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE operation_id=?`,request.operationId);
- if(existing){parse(existing,request.context.identity);if(existing.request!==content)throw Error('Identifiant déjà utilisé avec un autre contenu.');return {operationId:request.operationId,replayed:true};}
+ if(existing){parse(existing,request.context.identity);if(existing.request!==content)throw Error('Identifiant déjà utilisé avec un autre contenu.');if(await tx.getFirstAsync('SELECT operation_id FROM credit_remote_sale_abandoned_prototype WHERE operation_id=?',request.operationId))throw Error('Cette modification a été abandonnée : créez une nouvelle demande.');return {operationId:request.operationId,replayed:true};}
  if(await tx.getFirstAsync<{operationId:string}>('SELECT operation_id AS operationId FROM credit_remote_sale_confirm_prototype WHERE invoice_id=? AND acknowledged<2',request.key.invoiceId))throw Error('Une révision distante existe déjà pour cette facture.');
  const pending=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM sales_outbox) OR EXISTS(SELECT 1 FROM journal_sync_outbox) OR EXISTS(SELECT 1 FROM offline_credit_prototype WHERE pending=1) OR EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n`);
  if(!pending||pending.n)throw Error('Synchronisez les opérations en attente avant la révision distante.');
@@ -114,4 +114,27 @@ export async function readPendingRemoteEditPrototype(tx:Tx,identity:DeviceIdenti
  const failure=await tx.getFirstAsync<{reason:string;day:string|null;commercialId:string|null}>('SELECT reason,day,commercial_id AS commercialId FROM credit_remote_sale_failure_prototype WHERE operation_id=?',row.operationId);
  if(failure&&(!['closed','conflict'].includes(failure.reason)||(failure.reason==='closed'&&(!failure.day||!validDay(failure.day)||!actorUuid(failure.commercialId)))||(failure.reason==='conflict'&&(failure.day!==null||failure.commercialId!==null))))throw Error('Détail de refus illisible.');
  return {operationId:row.operationId,invoiceId:row.invoiceId,clientId:row.clientId,clientName:original.clientName,recordedAt:row.recordedAt,originalTotal:original.total,newTotal:revised.total,refund:request.preview.refund,retainedCredit:request.preview.credit,status:row.acknowledged===1?'awaiting-reference' as const:'awaiting-upload' as const,failure:failure?{...failure}:null};
+}
+
+/** Capture la requête exacte ; pas de nouvel UUID ni de modification de file. */
+export async function readRemoteAbandonCandidatePrototype(tx:Tx,identity:DeviceIdentity){
+ const queue=await readRemoteEditQueuePrototype(tx,identity);if(queue.length!==1)throw Error('Aucune révision distante à abandonner, ou état ambigu.');
+ const entry=queue[0],event=JSON.parse(entry.payload) as Record<string,unknown>;
+ return {entry,event:{...event,recordedAt:entry.recordedAt}};
+}
+/** Uniquement après accusé serveur explicite et référence authentifiée. Une
+ * réponse perdue ne supprime rien ; la reprise réutilise le même UUID. */
+export async function resolveRemoteAbandonPrototype(tx:Tx,identity:DeviceIdentity,verified:DeviceIdentity,entry:IdentifiedEntry,response:unknown,reference:unknown,digest:(text:string)=>Promise<string>){
+ await bound(tx,identity);const row=await tx.getFirstAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE operation_id=?`,entry.operationId);
+ if(!row||row.acknowledged!==0||entry.kind!=='sale'||entry.entityId!==row.invoiceId||entry.commercialId!==identity.commercialId||entry.payload!==row.payload||entry.recordedAt!==row.recordedAt)throw Error('Révision modifiée : abandon refusé.');
+ const {event}=parse(row,identity),r=response&&typeof response==='object'&&!Array.isArray(response)?response as Record<string,unknown>:null;
+ if(!r||r.status!=='abandoned'||r.operationId!==entry.operationId||r.saleId!==entry.entityId||r.version!==event.version||Object.keys(r).sort().join(',')!=='operationId,saleId,status,version')throw Error('Accusé d’abandon invalide.');
+ await saveVerifiedCreditReference(tx,identity,verified,reference,digest);
+ await tx.runAsync('INSERT INTO credit_remote_sale_abandoned_prototype(operation_id,server_receipt,confirmed_at) VALUES(?,?,?)',entry.operationId,canonicalJson(r),new Date().toISOString());
+ await tx.runAsync('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=2 WHERE operation_id=?',entry.operationId);
+ await tx.runAsync('DELETE FROM credit_remote_sale_draft_prototype WHERE operation_id=?',entry.operationId);
+ await tx.runAsync('DELETE FROM credit_remote_sale_failure_prototype WHERE operation_id=?',entry.operationId);
+ await tx.runAsync('DELETE FROM credit_sources_prototype_cache WHERE client_id=?',row.clientId);
+ const balance=await readPrototypeCreditBalance(tx,identity,row.clientId,digest);if(balance.conflict)throw Error('Solde en conflit : rapprochement nécessaire.');
+ return {operationId:entry.operationId};
 }

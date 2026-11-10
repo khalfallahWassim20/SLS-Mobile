@@ -7,6 +7,9 @@ export async function lockIdentifiedOperation(db:PoolClient,id:string):Promise<v
 }
 /** L'ancien espace est immuable lors du mode individuel ; aucun UUID ne peut désigner deux opérations. */
 export async function assertOperationUnambiguous(db:PoolClient,id:string,kind:Kind):Promise<void> {
+ const table=await db.query("SELECT to_regclass('remote_sale_abandon_prototype') IS NOT NULL AS present");
+ if(typeof table.rows[0]?.present!=='boolean')throw Error('État des révisions abandonnées indisponible.');
+ if(table.rows[0].present&&(await db.query('SELECT 1 FROM remote_sale_abandon_prototype WHERE operation_id=$1',[id])).rows.length)throw new IdentifiedOverlap('Opération abandonnée : cet identifiant ne peut plus être utilisé.');
  const r=await db.query(`SELECT EXISTS(SELECT 1 FROM demo_sale_events WHERE operation_id=$1)
  OR EXISTS(SELECT 1 FROM demo_settlements WHERE operation_id=$1)
  OR EXISTS(SELECT 1 FROM sync_journal_events WHERE operation_id=$1)

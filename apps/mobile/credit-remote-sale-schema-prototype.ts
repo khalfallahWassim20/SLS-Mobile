@@ -10,6 +10,9 @@ export const remoteSaleConfirmPrototypeSchema=`CREATE TABLE IF NOT EXISTS credit
  acknowledged INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged IN (0,1,2))
 );
 CREATE UNIQUE INDEX IF NOT EXISTS credit_remote_sale_pending_unique ON credit_remote_sale_confirm_prototype(invoice_id) WHERE acknowledged<2;
+CREATE TABLE IF NOT EXISTS credit_remote_sale_abandoned_prototype (
+ operation_id TEXT PRIMARY KEY, server_receipt TEXT NOT NULL, confirmed_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS credit_remote_sale_failure_prototype (
  operation_id TEXT PRIMARY KEY, reason TEXT NOT NULL CHECK(reason IN ('closed','conflict')),
  day TEXT, commercial_id TEXT

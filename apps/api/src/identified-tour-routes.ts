@@ -6,6 +6,7 @@ import type {Pool} from 'pg';
 import {verifyCommercialSession} from './commercial-session.js';
 import {ClosureAuthenticationError,ClosureConflict,readTourClosure,requestTourTransition} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed,storeJournalSnapshot} from './journal-store.js';
+import {abandonRemoteSalePrototype} from './remote-sale-abandon-prototype.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from './identified-operations.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
 import {readIdentifiedJournalDay} from './identified-journal-day.js';
@@ -37,6 +38,10 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  // Expérimental uniquement : cette option ne doit pas être activée par server.ts
  // avant le raccordement complet des écrans, soldes, historiques et exports.
  if(options.allowCreditProtocol===true)r.use('/credit-notes',(req,res,next)=>{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}next();},prototypeCommercialCreditRoutes(pool,secret));
+ if(options.allowCreditProtocol===true)r.post('/remote-sale-edits/abandon',async(req,res,next)=>{try{
+  if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
+  const result=await abandonRemoteSalePrototype(pool,req.body,{secret,token:bearer(req.get('Authorization'))});res.json(result);
+ }catch(e){errorHandler(e,res,next);}});
  if(options.allowCreditProtocol===true)r.get('/credit-sources/:clientId',async(req,res,next)=>{try{
   const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
   if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
