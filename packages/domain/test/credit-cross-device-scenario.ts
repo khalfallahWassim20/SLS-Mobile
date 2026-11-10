@@ -28,6 +28,7 @@ import {describeCreditJournalPrototype} from '../../../apps/mobile/credit-note-j
 import {assertLegacyMobileCreditSafe,assertCreditWritePrototype} from '../../../apps/mobile/credit-note-write-guard-prototype.js';
 import {bindAndCacheCreditReferencePrototype} from '../../../apps/mobile/credit-note-binding-prototype.js';
 import {readCreditClientsPrototype} from '../../../apps/mobile/credit-client-view-prototype.js';
+import {readLegacyRows} from '../../../apps/mobile/legacy-read-guard.js';
 
 export type CreditScenarioDatabase={exec:(sql:string)=>Promise<unknown>;query:<T extends Record<string,unknown>=Record<string,unknown>>(sql:string,args?:unknown[])=>Promise<{rows:T[]}>};
 export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,pool:Pool){
@@ -77,6 +78,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{mobile.prepare(sql).run(...args)}};
   const transaction=async<T>(action:()=>Promise<T>)=>{mobile.exec('BEGIN');try{const v=await action();mobile.exec('COMMIT');return v;}catch(e){mobile.exec('ROLLBACK');throw e;}};
   const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(second.id,identity.serverOrigin);
+  assert.deepEqual(await transaction(()=>readLegacyRows(tx,'SELECT payload FROM sales')),[]);
   const reference=await get('reference');
   // Un nouveau téléphone peut se lier directement en v5, sans créer de
   // référence v3 qui ignorerait les avoirs. Tout échec annule aussi la liaison.
@@ -105,6 +107,33 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,1);mobile.exec('DELETE FROM sales_outbox');
   await transaction(()=>saveVerifiedCreditReference(tx,identity,identity,reference,digest));
   const sources=await get(`credit-sources/${clientId}`);await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
+  // Anciennes factures déjà présentes sur ce téléphone mais sans marqueur
+  // local : leur source exacte et leur version peuvent être prouvées par v5,
+  // même hors ligne et sans cache de sources distantes.
+  const journalSourceBefore=sources.items.find((x:{kind:string})=>x.kind==='preinvoice').source;
+  mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
+  mobile.prepare('INSERT INTO tour_pre_invoices(id,client_id,journal_date,payload) VALUES(?,?,?,?)').run(invoiceId,clientId,day,JSON.stringify(invoice));
+  mobile.prepare('INSERT INTO tour_journal_receipts(id,pre_invoice_id,client_id,journal_date,payload) VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,clientId,day,JSON.stringify(receipt));
+  mobile.prepare('INSERT INTO journal_sync_state(invoice_id,version,payload) VALUES(?,?,?)').run(invoiceId,2,JSON.stringify(journalSourceBefore));
+  mobile.exec('DELETE FROM credit_sources_prototype_cache');
+  const historical=await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest));
+  assert.equal(historical.remoteAvailable,false);assert.equal(historical.items.length,2);assert.ok(historical.items.every(x=>x.origin==='local'&&!x.blocked));
+  const historicPreview=await transaction(()=>previewLocalCredit(tx,identity,clientId,'sale',{operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T11:00:00.000Z',choice:'refund'},digest));
+  assert.equal(historicPreview.afterBalance,950000);assert.equal(mobile.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,0);
+  const historicPre=await transaction(()=>previewLocalCredit(tx,identity,clientId,'preinvoice',{operationId:randomUUID(),invoiceId,expectedVersion:2,recordedAt:'2026-11-08T11:00:00.000Z',choice:'credit'},digest));
+  assert.equal(historicPre.afterBalance,419000);assert.equal(historicPre.retainedCredit,250000);
+  const historicalCache=mobile.prepare('SELECT payload FROM credit_reference_prototype_cache WHERE id=1').get()!.payload as string,withoutEligible=JSON.parse(historicalCache);
+  withoutEligible.eligibleSaleProofs=withoutEligible.eligibleSaleProofs.filter((x:{saleId:string})=>x.saleId!==saleId);
+  mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=?').run(JSON.stringify(withoutEligible));
+  const missingProof=await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest));assert.equal(missingProof.items.find(x=>x.kind==='sale')?.blocked,'rapprochement');
+  mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=?').run(historicalCache);
+  mobile.prepare('UPDATE sales SET payload=?').run(JSON.stringify({...sale,clientName:'Altéré'}));
+  const changedHistorical=await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest));assert.equal(changedHistorical.items.find(x=>x.kind==='sale')?.blocked,'rapprochement');
+  mobile.prepare('UPDATE sales SET payload=?').run(JSON.stringify(sale));
+  mobile.prepare('INSERT INTO journal_sync_outbox(operation_id,invoice_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),invoiceId,2,'{}');
+  const pendingHistorical=await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest));assert.equal(pendingHistorical.items.find(x=>x.kind==='preinvoice')?.blocked,'rapprochement');
+  mobile.exec('DELETE FROM sales;DELETE FROM tour_journal_receipts;DELETE FROM tour_pre_invoices;DELETE FROM journal_sync_state;DELETE FROM journal_sync_outbox');
+  await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   // Même hors ligne et sans cache des autres appareils, les factures locales
   // identifiées restent sélectionnables, y compris leurs versions en file.
   const localSaleId=randomUUID(),localInvoiceId=randomUUID(),localSale={...sale,syncSaleId:localSaleId},localInvoice={...invoice,id:localInvoiceId},localReceipt={...receipt,id:randomUUID(),preInvoiceId:localInvoiceId},localOperation=randomUUID();
@@ -124,6 +153,8 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   // même avant le premier avoir. Les sources historiques sont vérifiées sur
   // les preuves v5 et ne nécessitent pas de cache v3 sur le téléphone.
   await assert.rejects(transaction(()=>assertLegacyMobileCreditSafe(tx,identity)),/Téléphone lié en v5/);
+  await assert.rejects(transaction(()=>readLegacyRows(tx,'SELECT payload FROM sales')),/Téléphone lié en v5/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,1);
   const saleProof={clientId,version:1,total:sale.total,paid:sale.paid,payload:JSON.stringify(sale),digest};
   const journalSource=sources.items.find((x:{kind:string})=>x.kind==='preinvoice').source;
   const journalProof={version:2,payload:JSON.stringify(journalSource),digest};

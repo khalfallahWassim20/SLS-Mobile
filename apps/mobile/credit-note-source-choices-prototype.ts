@@ -56,11 +56,22 @@ export async function readCreditSourceChoices(tx:Tx,identity:DeviceIdentity,clie
  for(const c of candidates){
   const key=`${c.kind}:${c.id}`;if(seen.has(key))throw Error('Facture locale dupliquée.');seen.add(key);
   const proof=await tx.getFirstAsync<{commercialId:string}>('SELECT commercial_id AS commercialId FROM identified_local_operations WHERE entity_id=? AND operation_kind=? LIMIT 1',c.id,c.kind==='sale'?'sale':'journal');
-  if(!proof)continue;
-  if(proof.commercialId!==identity.commercialId)throw Error('Facture liée à une autre identité.');
+  if(proof&&proof.commercialId!==identity.commercialId)throw Error('Facture liée à une autre identité.');
   const state=c.kind==='sale'?reference.saleStates.find(s=>s.saleId===c.id):reference.journalStates.find(j=>j.id===c.id);
   const proofForVersion=c.kind==='sale'?reference.eligibleSaleProofs.find(p=>p.saleId===c.id):reference.journalProofs.find(p=>p.id===c.id);
-  const mismatch=!!state&&(state.clientId!==clientId||state.version>c.version||(state.version===c.version&&!!proofForVersion&&await digest(canonicalJson(c.source))!==proofForVersion.hash));
+  let mismatch=!!state&&(state.clientId!==clientId||state.version>c.version||(state.version===c.version&&!!proofForVersion&&await digest(canonicalJson(c.source))!==proofForVersion.hash));
+  if(!proof){
+   // Une ancienne facture présente sur le téléphone peut ne pas avoir de
+   // marqueur local. Ne la proposer que si la référence v5 l'identifie ;
+   // une file, une version ou une empreinte différentes restent bloquantes.
+   if(!state)continue;
+   const pending=await tx.getFirstAsync<{n:number}>(c.kind==='sale'?'SELECT EXISTS(SELECT 1 FROM sales_outbox WHERE sale_id=?) AS n':'SELECT EXISTS(SELECT 1 FROM journal_sync_outbox WHERE invoice_id=?) AS n',c.id);
+   if(!pending)throw Error('File locale indisponible.');
+   if(!state.creditNote){
+    const eligible=c.kind==='sale'?!!proofForVersion:reference.eligibleJournalIds.includes(c.id)&&!!proofForVersion;
+    mismatch=mismatch||!!pending.n||!eligible||state.version!==c.version||proofForVersion?.version!==c.version||await digest(canonicalJson(c.source))!==proofForVersion?.hash;
+   }
+  }
   const blocked=noteFor(c.kind,c.id)||state?.creditNote?'avoir-existant':mismatch?'rapprochement':null;
   items.set(key,describe(c.kind,c.id,c.version,clientId,c.source,'local',blocked));
  }

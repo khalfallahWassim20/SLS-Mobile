@@ -27,6 +27,7 @@ import {describeCreditJournalPrototype} from './credit-note-journal-view-model-p
 import {assertLegacyMobileCreditSafe,assertCreditWritePrototype,assertCreditReceiptPrototype,type CreditWriteContext} from './credit-note-write-guard-prototype';
 import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-prototype';
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
+import {readLegacyRows} from './legacy-read-guard';
 import type {CommercialSession} from './commercial-login';
 
 export type SavedSale = {
@@ -58,8 +59,16 @@ async function db() {
   }).catch(error => { database = undefined; throw error; });
   return database;
 }
+/** Lectures des anciens écrans : ne jamais afficher des soldes ou un journal
+ * qui ignorent une liaison v5 ou un avoir déjà connu. La vérification et la
+ * capture sont atomiques ; les vues v5 utilisent leurs propres captures. */
+async function legacyReadAll<T>(sql:string,...params:(string|number|null)[]):Promise<T[]> {
+ const database=await db();let rows:T[]=[];
+ await database.withExclusiveTransactionAsync(async tx=>{rows=await readLegacyRows<T>(tx,sql,...params);});
+ return rows;
+}
 export async function getSales(): Promise<SavedSale[]> {
-  const rows = await (await db()).getAllAsync<{ id: number; payload: string }>('SELECT id, payload FROM sales ORDER BY id DESC');
+  const rows = await legacyReadAll<{ id: number; payload: string }>('SELECT id, payload FROM sales ORDER BY id DESC');
   return rows.map(row => ({ ...JSON.parse(row.payload), id: row.id } as SavedSale));
 }
 export async function saveSale(sale: Omit<SavedSale, 'id'>, syncEligible = false, credit?:CreditWriteContext): Promise<void> {
@@ -83,7 +92,7 @@ export async function saveSale(sale: Omit<SavedSale, 'id'>, syncEligible = false
 
 export type Revision = { id: number; createdAt: string; previous: SavedSale; current: SavedSale; refund: number };
 export async function getRevisions(saleId: number): Promise<Revision[]> {
-  const rows = await (await db()).getAllAsync<{id: number; created_at: string; previous_payload: string; new_payload: string; refund: number}>(
+  const rows = await legacyReadAll<{id: number; created_at: string; previous_payload: string; new_payload: string; refund: number}>(
     'SELECT id, created_at, previous_payload, new_payload, refund FROM sale_revisions WHERE sale_id = ? ORDER BY id DESC', saleId);
   return rows.map(r => ({ id: r.id, createdAt: r.created_at, previous: JSON.parse(r.previous_payload), current: JSON.parse(r.new_payload), refund: r.refund }));
 }
@@ -116,7 +125,7 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
 
 export type Settlement = { id: number; syncOperationId?: string; createdAt: string; clientId: string; clientName: string; amount: number; mode: string; chequeNumber: string; chequeBank: string; chequeDue: string };
 export async function getSettlements(): Promise<Settlement[]> {
-  const rows = await (await db()).getAllAsync<{id: number; payload: string}>('SELECT id, payload FROM settlements ORDER BY id DESC');
+  const rows = await legacyReadAll<{id: number; payload: string}>('SELECT id, payload FROM settlements ORDER BY id DESC');
   return rows.map(r => ({ ...JSON.parse(r.payload), id: r.id }));
 }
 export async function saveSettlement(settlement: Omit<Settlement, 'id'>, syncEligible = false, credit?:CreditWriteContext): Promise<void> {
@@ -139,7 +148,7 @@ export async function saveSettlement(settlement: Omit<Settlement, 'id'>, syncEli
 // La première version sauvegardée de chaque vente conserve le paiement initial,
 // y compris après remboursement. Pour une vente non modifiée, le payload actuel suffit.
 export async function getOriginalSales(): Promise<SavedSale[]> {
-  const rows = await (await db()).getAllAsync<{id: number; payload: string}>(`SELECT s.id, COALESCE(
+  const rows = await legacyReadAll<{id: number; payload: string}>(`SELECT s.id, COALESCE(
     (SELECT r.previous_payload FROM sale_revisions r WHERE r.sale_id = s.id ORDER BY r.id ASC LIMIT 1), s.payload
   ) AS payload FROM sales s`);
   return rows.map(r => ({ ...JSON.parse(r.payload), id: r.id }));
@@ -149,13 +158,14 @@ export async function getOriginalSales(): Promise<SavedSale[]> {
 export async function saveReference(payload: string): Promise<void> {
   const database = await db();
   await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
-  await database.runAsync('INSERT INTO reference_snapshot (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload', payload);
+  await database.withExclusiveTransactionAsync(async tx=>{await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));await tx.runAsync('INSERT INTO reference_snapshot (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',payload);});
 }
 export async function getReference(): Promise<string | null> {
   const database = await db();
   await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
-  const row = await database.getFirstAsync<{ payload: string }>('SELECT payload FROM reference_snapshot WHERE id=1');
-  return row?.payload ?? null;
+  let payload:string|null=null;
+  await database.withExclusiveTransactionAsync(async tx=>{await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));const row=await tx.getFirstAsync<{payload:string}>('SELECT payload FROM reference_snapshot WHERE id=1');payload=row?.payload??null;});
+  return payload;
 }
 
 export type OutboxEntry = { sequence: number; operationId: string; saleId: string; version: number; payload: string; lastError: string | null };
@@ -209,13 +219,13 @@ async function ensureJournalReceipts() {
 }
 export async function getAllPreInvoices(): Promise<TourPreInvoice[]> {
  const database = await db();
- await database.withExclusiveTransactionAsync(async tx => { const missing=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_pre_invoices p LEFT JOIN journal_sync_state s ON s.invoice_id=p.id WHERE s.invoice_id IS NULL) AS n');if(!missing)throw Error('État du journal indisponible.');if(missing.n){await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));await bootstrapJournalQueue(tx,randomUUID);} });
- const rows = await database.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid');
+ let rows:{payload:string}[]=[];
+ await database.withExclusiveTransactionAsync(async tx => { await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));const missing=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_pre_invoices p LEFT JOIN journal_sync_state s ON s.invoice_id=p.id WHERE s.invoice_id IS NULL) AS n');if(!missing)throw Error('État du journal indisponible.');if(missing.n)await bootstrapJournalQueue(tx,randomUUID);rows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid'); });
  return rows.map(r => JSON.parse(r.payload));
 }
 export async function getTourReceipts(): Promise<TourJournalReceipt[]> {
- const database = await ensureJournalReceipts();
- const rows = await database.getAllAsync<{payload:string}>('SELECT payload FROM tour_journal_receipts ORDER BY rowid');
+ await ensureJournalReceipts();
+ const rows = await legacyReadAll<{payload:string}>('SELECT payload FROM tour_journal_receipts ORDER BY rowid');
  return rows.map(r => JSON.parse(r.payload));
 }
 export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, availableOldDebt: number, credit?:CreditWriteContext): Promise<void> {

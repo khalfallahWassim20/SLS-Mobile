@@ -17,7 +17,7 @@ export function CreditSourceChoicesView({choices,busy,onSelect,onRefresh}:{choic
    <Text style={styles.name}>{item.kind==='sale'?'Vente SLS':'Facture préétablie'} · {item.invoiceDay} · {item.origin==='local'?'Ce téléphone':'Autre appareil'}</Text>
    <Text>Montant : {money(item.total)} · Payé : {money(item.paid)}</Text>
    {item.kind==='preinvoice'&&<Text>Ancienne dette réglée : {money(item.oldDebtPaid)} (conservée)</Text>}
-   {item.blocked&&<Text style={styles.notice}>{item.blocked==='avoir-existant'?'Un avoir existe déjà sur ce téléphone.':'Modification locale à synchroniser ou à rapprocher avant de continuer.'}</Text>}
+   {item.blocked&&<Text style={styles.notice}>{item.blocked==='avoir-existant'?'Un avoir existe déjà pour cette facture.':'Modification locale à synchroniser ou à rapprocher avant de continuer.'}</Text>}
    <TouchableOpacity accessibilityRole="button" disabled={busy||!!item.blocked} onPress={()=>onSelect(item)} style={[styles.button,(busy||!!item.blocked)&&styles.disabled]}><Text style={styles.buttonText}>Préparer l’avoir</Text></TouchableOpacity>
   </View>)}
  </View>;
