@@ -97,7 +97,7 @@ export async function updateSale(previous: SavedSale, updated: SavedSale, refund
     if(credit){if(previous.clientId!==updated.clientId)throw Error('Client de la facture modifié.');await assertCreditWritePrototype(tx,credit,{kind:'edit',clientId:previous.clientId},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));}else await assertLegacyMobileCreditSafe(tx,identity);
     await assertNoRemoteCreditNote(tx,identity,'sale',previous.syncSaleId);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(previous.createdAt)),tunisDay(new Date(recordedAt))]);
-    await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion??0,total:previous.total,paid:previous.paid});
+    await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion??0,total:previous.total,paid:previous.paid,payload:row.payload,digest:(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)},undefined,!!credit);
     const { id: _id, ...originalPayload } = updated;
     const payload = previous.syncSaleId ? { ...originalPayload, syncVersion: (previous.syncVersion ?? 1) + 1 } : originalPayload;
     const json = JSON.stringify(payload);
@@ -228,7 +228,7 @@ export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, avai
    await assertNoLocalCreditNote(tx,'preinvoice',value.preInvoiceId);
    await assertNoRemoteCreditNote(tx,identity,'preinvoice',value.preInvoiceId);
    const state = await tx.getFirstAsync<{version:number;payload:string}>('SELECT version,payload FROM journal_sync_state WHERE invoice_id=?', value.preInvoiceId);
-   await assertKnownDeviceEntity(tx,identity,'journal',value.preInvoiceId,undefined,state ? {...state,digest:(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)} : undefined);
+   await assertKnownDeviceEntity(tx,identity,'journal',value.preInvoiceId,undefined,state ? {...state,digest:(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)} : undefined,!!credit);
    const raw = await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE id=? AND client_id=? AND journal_date=?', value.preInvoiceId, value.clientId, value.journalDate);
    if (!raw) throw new Error('Facture préétablie introuvable.');
    const invoice: TourPreInvoice = JSON.parse(raw.payload);
@@ -269,15 +269,16 @@ export async function bindAndCacheIdentified(identity:DeviceIdentity,reference:u
  await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
  await database.withExclusiveTransactionAsync(async tx=>{
   await bindVerifiedDevice(tx,identity);
+  await assertLegacyMobileCreditSafe(tx,identity);
   await saveVerifiedIdentifiedReference(tx,identity,identity,parsed);
   const snapshot={...parsed,version:3,syncedAt:new Date().toISOString()};
   await tx.runAsync('INSERT INTO reference_snapshot(id,payload) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',JSON.stringify(snapshot));
  });
 }
 export async function getBoundIdentity():Promise<DeviceIdentity|null> {return getDeviceIdentity(await db());}
-export async function getIdentifiedOutbox(identity:DeviceIdentity):Promise<IdentifiedEntry[]> {
+export async function getIdentifiedOutbox(identity:DeviceIdentity,creditAware=false):Promise<IdentifiedEntry[]> {
  const database=await db();let entries:IdentifiedEntry[]=[];
- await database.withExclusiveTransactionAsync(async tx=>{entries=await readIdentifiedOutbox(tx,identity);});return entries;
+ await database.withExclusiveTransactionAsync(async tx=>{if(!creditAware)await assertLegacyMobileCreditSafe(tx,identity);entries=await readIdentifiedOutbox(tx,identity);});return entries;
 }
 export async function acknowledgeIdentifiedEntry(identity:DeviceIdentity,entry:IdentifiedEntry):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeIdentifiedOutbox(tx,identity,entry);});
@@ -390,7 +391,7 @@ export async function synchronizeCreditPrototype(identity:DeviceIdentity,verifie
  creditSyncRunning=true;
  try {
   return await syncCreditPrototype(identity,verified,{
-   readOperations:()=>getIdentifiedOutbox(identity),acknowledgeOperation:async entry=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeIdentifiedOutbox(tx,identity,entry);guard();});},
+   readOperations:()=>getIdentifiedOutbox(identity,true),acknowledgeOperation:async entry=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeIdentifiedOutbox(tx,identity,entry);guard();});},
    readReadyCredits:()=>getReadyLocalCreditPrototypes(identity),readAllCredits:()=>getLocalCreditPrototypes(identity),
    acknowledgeCredit:async(note,response)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await acknowledgeOfflineCreditPrototype(tx,identity,note,response);guard();});},
    sendOperation:transport.sendOperation,sendCredit:transport.sendCredit,fetchReference:transport.fetchReference,

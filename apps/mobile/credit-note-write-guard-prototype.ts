@@ -9,13 +9,16 @@ type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsy
 export type CreditWriteContext={identity:DeviceIdentity;expectedBalance:number};
 type Intent={kind:'sale'|'preinvoice'|'edit'|'settlement'|'receipt';clientId:string;amount?:number;day?:string};
 /** Les écrans anciens ignorent les avoirs : dès qu'un avoir local ou distant
- * est connu, ils ne doivent pas créer de nouvelles écritures ni clôturer. */
+ * est connu, ils ne doivent pas créer de nouvelles écritures ni clôturer.
+ * Une liaison v5 interdit aussi les écritures v3 avant le premier avoir :
+ * leurs calculs ne vérifient pas atomiquement le solde v5. */
 export async function assertLegacyMobileCreditSafe(tx:Tx,identity:DeviceIdentity|null) {
  const row=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM offline_credit_prototype) AS n');
  if(!row||row.n)throw Error('Des avoirs existent : mise à jour des écrans et synchronisation v5 nécessaires.');
  if(!identity)return;
  const ref=await readPrototypeCreditReferenceCache(tx,identity);
  if(ref&&(ref.saleStates.some(s=>s.creditNote)||ref.journalStates.some(j=>j.creditNote)))throw Error('Des avoirs existent : mise à jour des écrans et synchronisation v5 nécessaires.');
+ if(ref)throw Error('Téléphone lié en v5 : utilisez les écrans et calculs compatibles avant toute écriture.');
 }
 /** Vérifie à nouveau l'identité liée, l'état client et le solde montrés avant
  * l'opération. Le plafond porte sur le solde connu ; hors ligne il peut être

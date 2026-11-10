@@ -7,7 +7,7 @@ import {schemaSql} from '../../../apps/api/src/schema.js';
 import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {identifiedCommercialRoutes,identifiedAdminRoutes} from '../../../apps/api/src/identified-tour-routes.js';
-import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
+import {identifiedDeviceSchema,assertKnownDeviceEntity} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,assertLocalTourWritable} from '../../../apps/mobile/tour-close-queue.js';
 import {preparePrototypeClose} from '../../../apps/mobile/credit-note-close-prototype.js';
 import {offlineCreditPrototypeSchema,readReadyOfflineCreditPrototype,readAllOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
@@ -86,11 +86,23 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,{...identity,commercialId:randomUUID()},reference,digest,()=>{})),/Session/);
   mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,1,'{}');
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/opérations en attente/);mobile.exec('DELETE FROM sales_outbox');
+  // Un téléphone déjà lié en v3 ne peut pas basculer pendant un envoi
+  // antérieur ; sa file et son identité sont conservées.
+  mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(second.id,identity.serverOrigin);
+  mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,1,'{}');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/opérations en attente/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,1);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  mobile.exec('DELETE FROM sales_outbox;DELETE FROM identified_device');
   let checks=0;await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{if(++checks===2)throw Error('session expirée');})),/session expirée/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
   await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,1);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_reference_cache').get()?.n,0);
+  // Une reconnexion v5 ne doit pas effacer ni bloquer ses propres files.
+  mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,1,'{}');
+  await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,1);mobile.exec('DELETE FROM sales_outbox');
   await transaction(()=>saveVerifiedCreditReference(tx,identity,identity,reference,digest));
   const sources=await get(`credit-sources/${clientId}`);await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   // Même hors ligne et sans cache des autres appareils, les factures locales
@@ -108,9 +120,21 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   assert.equal((await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest))).items.length,4);
   mobile.exec('DELETE FROM sales;DELETE FROM sales_outbox;DELETE FROM tour_journal_receipts;DELETE FROM tour_pre_invoices;DELETE FROM journal_sync_state;DELETE FROM identified_local_operations');
-  // L'écran v3 peut écrire avant tout avoir ; la future écriture v5 vérifie
-  // le même solde dans la transaction, sans traiter une limite de zéro comme blocage.
-  await transaction(()=>assertLegacyMobileCreditSafe(tx,identity));
+  // Dès la liaison v5, aucune écriture v3 ne doit utiliser un calcul ancien,
+  // même avant le premier avoir. Les sources historiques sont vérifiées sur
+  // les preuves v5 et ne nécessitent pas de cache v3 sur le téléphone.
+  await assert.rejects(transaction(()=>assertLegacyMobileCreditSafe(tx,identity)),/Téléphone lié en v5/);
+  const saleProof={clientId,version:1,total:sale.total,paid:sale.paid,payload:JSON.stringify(sale),digest};
+  const journalSource=sources.items.find((x:{kind:string})=>x.kind==='preinvoice').source;
+  const journalProof={version:2,payload:JSON.stringify(journalSource),digest};
+  await transaction(()=>assertKnownDeviceEntity(tx,identity,'sale',saleId,saleProof,undefined,true));
+  await transaction(()=>assertKnownDeviceEntity(tx,identity,'journal',invoiceId,undefined,journalProof,true));
+  await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'sale',saleId,{...saleProof,payload:JSON.stringify({...sale,clientName:'altéré'})},undefined,true)),/rapprochement/);
+  await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'sale',saleId,{...saleProof,version:2},undefined,true)),/rapprochement/);
+  await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'journal',invoiceId,undefined,{...journalProof,payload:JSON.stringify({...journalSource,receipts:[]})},true)),/rapprochement/);
+  await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,{...identity,serverOrigin:'https://autre.example.test'},'sale',saleId,saleProof,undefined,true)),/rapprochement/);
+  // La future écriture v5 vérifie le même solde dans la transaction, sans
+  // traiter une limite de zéro comme blocage.
   const context={identity,expectedBalance:1019000};
   assert.equal((await transaction(()=>assertCreditWritePrototype(tx,context,{kind:'sale',clientId},digest))).balance,1019000);
   const initialView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(initialView.version,5);assert.equal(initialView.clients[0].balance,1019000);assert.equal(initialView.clients[0].saleBlocked,false);assert.equal(initialView.pendingCredits,0);assert.equal(initialView.articles[0].saleTtc,'60000');assert.equal('purchaseTtc' in initialView.articles[0],false);
@@ -179,6 +203,8 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
   controller=makeController();assert.deepEqual(await controller.synchronize(),{operations:0,credits:2});
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:350000,conflict:false});
+  await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'sale',saleId,saleProof,undefined,true)),/rapprochement/);
+  await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'journal',invoiceId,undefined,journalProof,true)),/rapprochement/);
   assert.match(journalCsv(await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest))),/synchronisé/);
   // Les deux factures existent sur ce téléphone, mais leurs annulations sont
   // connues uniquement par la référence serveur (créées sur un autre appareil).

@@ -2,6 +2,7 @@
 import {canonicalJson} from '@sls/domain';
 import {assertLocalTourWritable} from './tour-close-queue';
 import {validateIdentifiedReference} from './identified-reference';
+import {validatePrototypeCreditReference} from './credit-note-reference-prototype';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
 export type DeviceIdentity={commercialId:string;serverOrigin:string};
@@ -41,11 +42,30 @@ export async function recordDeviceOperation(tx:Tx,identity:DeviceIdentity|null,o
  await tx.runAsync('INSERT INTO identified_local_operations(operation_id,commercial_id,operation_kind,entity_id,recorded_at) VALUES(?,?,?,?,?)',operationId,identity.commercialId,kind,entityId,recordedAt);
 }
 /** Ne jamais réattribuer silencieusement une ancienne vente ou facture à la nouvelle identité. */
-export async function assertKnownDeviceEntity(tx:Tx,identity:DeviceIdentity|null,kind:'sale'|'journal',entityId:string|undefined,previousSale?:{clientId:string;version:number;total:number;paid:number},previousJournal?:{version:number;payload:string;digest:(text:string)=>Promise<string>}):Promise<void> {
+export async function assertKnownDeviceEntity(tx:Tx,identity:DeviceIdentity|null,kind:'sale'|'journal',entityId:string|undefined,previousSale?:{clientId:string;version:number;total:number;paid:number;payload?:string;digest?:(text:string)=>Promise<string>},previousJournal?:{version:number;payload:string;digest:(text:string)=>Promise<string>},creditAware=false):Promise<void> {
  if(!identity)return;
  if(!entityId)throw Error('Ancienne opération sans identité : rapprochement nécessaire.');
  const row=await tx.getFirstAsync<{commercialId:string}>('SELECT commercial_id AS commercialId FROM identified_local_operations WHERE operation_kind=? AND entity_id=? LIMIT 1',kind,entityId);
  if(row){if(row.commercialId!==identity.commercialId)throw Error('Ancienne opération liée à un autre commercial : rapprochement nécessaire.');return;}
+ if(creditAware) {
+  // En v5, ne jamais retomber sur une ancienne preuve v3 : elle pourrait
+  // ignorer une annulation ou une modification reçue d'un autre appareil.
+  const cache=await tx.getFirstAsync<{commercialId:string;serverOrigin:string;payload:string}>('SELECT commercial_id AS commercialId,server_origin AS serverOrigin,payload FROM credit_reference_prototype_cache WHERE id=1');
+  if(cache && cache.commercialId===identity.commercialId && cache.serverOrigin===identity.serverOrigin) {
+   try {
+    const reference=validatePrototypeCreditReference(JSON.parse(cache.payload));
+    if(kind==='sale'&&previousSale?.payload&&previousSale.digest) {
+     const state=reference.saleStates.find(s=>s.saleId===entityId),proof=reference.eligibleSaleProofs.find(p=>p.saleId===entityId),source=JSON.parse(previousSale.payload);
+     if(state&&!state.creditNote&&state.clientId===previousSale.clientId&&state.version===previousSale.version&&state.total===String(previousSale.total)&&state.paid===String(previousSale.paid)&&proof?.version===state.version&&source.syncSaleId===entityId&&source.syncVersion===state.version&&await previousSale.digest(canonicalJson(source))===proof.hash)return;
+    }
+    if(kind==='journal'&&previousJournal) {
+     const state=reference.journalStates.find(s=>s.id===entityId),proof=reference.journalProofs.find(p=>p.id===entityId),snapshot=JSON.parse(previousJournal.payload);
+     if(state&&!state.creditNote&&reference.eligibleJournalIds.includes(entityId!)&&proof?.version===previousJournal.version&&snapshot?.version===proof.version&&snapshot?.invoice?.id===entityId&&await previousJournal.digest(canonicalJson(snapshot))===proof.hash)return;
+    }
+   } catch { /* cache incomplet, source modifiée ou preuve illisible : refus prudent */ }
+  }
+  throw Error('Ancienne opération sans version serveur v5 confirmée : rapprochement nécessaire.');
+ }
  if(kind==='sale' && previousSale) {
   const cache=await tx.getFirstAsync<{commercialId:string;serverOrigin:string;payload:string}>('SELECT commercial_id AS commercialId,server_origin AS serverOrigin,payload FROM identified_reference_cache WHERE id=1');
   if(cache && cache.commercialId===identity.commercialId && cache.serverOrigin===identity.serverOrigin) {
