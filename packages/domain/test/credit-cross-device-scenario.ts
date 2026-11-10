@@ -31,6 +31,7 @@ import {readCreditClientsPrototype} from '../../../apps/mobile/credit-client-vie
 import {readLegacyRows} from '../../../apps/mobile/legacy-read-guard.js';
 import {readCreditMobileWorkspacePrototype} from '../../../apps/mobile/credit-mobile-workspace-reader-prototype.js';
 import {shareCreditJournalPrototype} from '../../../apps/mobile/credit-note-share-prototype.js';
+import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype} from '../../../apps/mobile/credit-remote-sale-edit-prototype.js';
 import {readCreditHistoryPrototype} from '../../../apps/mobile/credit-history-prototype.js';
 import {prepareCreditSale,prepareCreditSettlement} from '../../../apps/mobile/credit-sale-settlement-prototype.js';
 
@@ -111,6 +112,32 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,1);mobile.exec('DELETE FROM sales_outbox');
   await transaction(()=>saveVerifiedCreditReference(tx,identity,identity,reference,digest));
   const sources=await get(`credit-sources/${clientId}`);await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
+  // Aperçu expérimental d'une modification distante : aucune copie locale ni
+  // opération en file ; la facture, le solde et le jour sont revérifiés.
+  const remoteItem=sources.items.find((x:{kind:string})=>x.kind==='sale');
+  const remoteKey={clientId,invoiceId:saleId,version:remoteItem.version,hash:remoteItem.hash},remoteContext={identity,expectedBalance:1019000},editAt='2026-11-08T11:00:00.000Z';
+  const captured=await transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,digest));assert.equal(captured.sale.syncSaleId,saleId);assert.equal(captured.sale.paid,50000);
+  const editedLines=[{...captured.sale.lines[0],discount:6000}];
+  await assert.rejects(transaction(()=>previewRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,editedLines,undefined,digest)),/Choisissez/);
+  const refundPreview=await transaction(()=>previewRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,editedLines,'refund',digest));assert.equal(refundPreview.updated.total,47600);assert.equal(refundPreview.refund,2400);assert.equal(refundPreview.balanceAfter,950000);
+  const creditPreview=await transaction(()=>previewRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,editedLines,'credit',digest));assert.equal(creditPreview.credit,2400);assert.equal(creditPreview.balanceAfter,947600);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,0);
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,{...remoteContext,expectedBalance:1},remoteKey,editAt,digest)),/Solde modifié/);
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,{...remoteKey,version:2},editAt,digest)),/périmée/);
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,remoteKey,'2026-11-07T10:00:00.000Z',digest)),/antérieure/);
+  mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,2,'{}');
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,digest)),/en attente/);mobile.exec('DELETE FROM sales_outbox');
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,{...remoteContext,identity:{...identity,serverOrigin:'https://wrong.example.test'}},remoteKey,editAt,digest)),/Identité|identité/);
+  const cachedSources=mobile.prepare('SELECT payload FROM credit_sources_prototype_cache WHERE client_id=?').get(clientId)!.payload as string,alteredSources=JSON.parse(cachedSources);
+  alteredSources.items.find((x:{kind:string})=>x.kind==='sale').source.paid=1;
+  mobile.prepare('UPDATE credit_sources_prototype_cache SET payload=? WHERE client_id=?').run(JSON.stringify(alteredSources),clientId);
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,digest)),/Source de vente non confirmée|Empreinte/);
+  mobile.prepare('UPDATE credit_sources_prototype_cache SET payload=? WHERE client_id=?').run(cachedSources,clientId);
+  mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,digest)),/Vente locale/);mobile.exec('DELETE FROM sales');
+  mobile.prepare("INSERT INTO tour_known_server_states(commercial_id,journal_date,status,version) VALUES(?,?,'closed',1)").run(identity.commercialId,day);
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,digest)),/clôturée/);mobile.exec('DELETE FROM tour_known_server_states');
+
   // Anciennes factures déjà présentes sur ce téléphone mais sans marqueur
   // local : leur source exacte et leur version peuvent être prouvées par v5,
   // même hors ligne et sans cache de sources distantes.
@@ -201,6 +228,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const preCommand={operationId:randomUUID(),invoiceId,expectedVersion:2,recordedAt:'2026-11-08T11:00:00.000Z',choice:'credit' as const};
   const saleReview=await transaction(()=>previewLocalCredit(tx,identity,clientId,'sale',{...saleCommand,operationId:randomUUID()},digest));assert.equal(saleReview.beforeBalance,1019000);assert.equal(saleReview.afterBalance,950000);
   await transaction(()=>confirmLocalCreditReview(tx,identity,saleReview,saleCommand,digest));
+  await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,{identity,expectedBalance:950000},remoteKey,editAt,digest)),/annulée/);
   await assert.rejects(transaction(()=>assertLegacyMobileCreditSafe(tx,identity)),/Des avoirs existent/);
   assert.equal((await transaction(()=>assertCreditWritePrototype(tx,{identity,expectedBalance:950000},{kind:'sale',clientId},digest))).balance,950000);
   const preReview=await transaction(()=>previewLocalCredit(tx,identity,clientId,'preinvoice',{...preCommand,operationId:randomUUID()},digest));assert.equal(preReview.afterBalance,350000);

@@ -33,6 +33,8 @@ import {quarantineOnUpgrade} from './credit-protocol-quarantine';
 import type {CommercialSession} from './commercial-login';
 import {validateCreditSaleEdit} from './credit-sale-edit-prototype';
 import {readCreditHistoryPrototype} from './credit-history-prototype';
+import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype,type RemoteSaleKey} from './credit-remote-sale-edit-prototype';
+import type {EditLine} from './credit-sale-edit-prototype';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -470,4 +472,14 @@ export async function getCreditHistoryPrototype(identity:DeviceIdentity,clientId
  const database=await db();let result:Awaited<ReturnType<typeof readCreditHistoryPrototype>>|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditHistoryPrototype(tx,identity,clientId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});
  return result!;
+}
+
+/** Lecture et aperçu seuls : ne créent aucune vente ni opération synchronisable. */
+export async function getRemoteSaleEditCapturePrototype(context:CreditWriteContext,key:RemoteSaleKey,recordedAt:string) {
+ const database=await db();let result:Awaited<ReturnType<typeof captureRemoteSaleEditPrototype>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await captureRemoteSaleEditPrototype(tx,context,key,recordedAt,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result!;
+}
+export async function getRemoteSaleEditPreviewPrototype(context:CreditWriteContext,key:RemoteSaleKey,recordedAt:string,lines:EditLine[],choice?:'refund'|'credit') {
+ const database=await db();let result:Awaited<ReturnType<typeof previewRemoteSaleEditPrototype>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await previewRemoteSaleEditPrototype(tx,context,key,recordedAt,lines,choice,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result!;
 }
