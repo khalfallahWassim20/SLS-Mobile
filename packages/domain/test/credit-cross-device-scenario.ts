@@ -31,6 +31,7 @@ import {readCreditClientsPrototype} from '../../../apps/mobile/credit-client-vie
 import {readLegacyRows} from '../../../apps/mobile/legacy-read-guard.js';
 import {readCreditMobileWorkspacePrototype} from '../../../apps/mobile/credit-mobile-workspace-reader-prototype.js';
 import {shareCreditJournalPrototype} from '../../../apps/mobile/credit-note-share-prototype.js';
+import {remoteSaleDraftPrototypeSchema,stageRemoteSaleEditDraftPrototype} from '../../../apps/mobile/credit-remote-sale-draft-prototype.js';
 import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype} from '../../../apps/mobile/credit-remote-sale-edit-prototype.js';
 import {readCreditHistoryPrototype} from '../../../apps/mobile/credit-history-prototype.js';
 import {prepareCreditSale,prepareCreditSettlement} from '../../../apps/mobile/credit-sale-settlement-prototype.js';
@@ -79,7 +80,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
    CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
-   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}`);
+   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}`);
   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{mobile.prepare(sql).run(...args)}};
   const transaction=async<T>(action:()=>Promise<T>)=>{mobile.exec('BEGIN');try{const v=await action();mobile.exec('COMMIT');return v;}catch(e){mobile.exec('ROLLBACK');throw e;}};
   const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(second.id,identity.serverOrigin);
@@ -122,6 +123,19 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const refundPreview=await transaction(()=>previewRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,editedLines,'refund',digest));assert.equal(refundPreview.updated.total,47600);assert.equal(refundPreview.refund,2400);assert.equal(refundPreview.balanceAfter,950000);
   const creditPreview=await transaction(()=>previewRemoteSaleEditPrototype(tx,remoteContext,remoteKey,editAt,editedLines,'credit',digest));assert.equal(creditPreview.credit,2400);assert.equal(creditPreview.balanceAfter,947600);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,0);
+  const draftRequest={operationId:randomUUID(),context:remoteContext,key:remoteKey,recordedAt:editAt,lines:editedLines,choice:'refund' as const,preview:refundPreview};
+  await assert.rejects(transaction(async()=>{await stageRemoteSaleEditDraftPrototype(tx,draftRequest,digest);throw Error('panne avant commit');}),/panne avant commit/);assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_remote_sale_draft_prototype').get()?.n,0);
+  const staged=await transaction(()=>stageRemoteSaleEditDraftPrototype(tx,draftRequest,digest));assert.equal(staged.status,'draft-only');assert.equal(staged.replayed,false);
+  assert.equal((await transaction(()=>stageRemoteSaleEditDraftPrototype(tx,draftRequest,digest))).replayed,true);
+  await assert.rejects(transaction(()=>stageRemoteSaleEditDraftPrototype(tx,{...draftRequest,choice:'credit'},digest)),/déjà utilisé/);
+  await assert.rejects(transaction(()=>stageRemoteSaleEditDraftPrototype(tx,{...draftRequest,operationId:randomUUID()},digest)),/brouillon existe/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_remote_sale_draft_prototype').get()?.n,1);assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,0);
+  assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:1019000,conflict:false});
+  mobile.exec('DELETE FROM credit_remote_sale_draft_prototype');
+  await assert.rejects(transaction(()=>stageRemoteSaleEditDraftPrototype(tx,{...draftRequest,preview:{...refundPreview,balanceAfter:1}},digest)),/Aperçu modifié/);
+  await assert.rejects(transaction(()=>stageRemoteSaleEditDraftPrototype(tx,{...draftRequest,context:{...remoteContext,expectedBalance:1}},digest)),/Solde modifié/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_remote_sale_draft_prototype').get()?.n,0);
+
   await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,{...remoteContext,expectedBalance:1},remoteKey,editAt,digest)),/Solde modifié/);
   await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,{...remoteKey,version:2},editAt,digest)),/périmée/);
   await assert.rejects(transaction(()=>captureRemoteSaleEditPrototype(tx,remoteContext,remoteKey,'2026-11-07T10:00:00.000Z',digest)),/antérieure/);
@@ -348,6 +362,28 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal((await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest))).conflict,true);
   const conflictView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(conflictView.clients[0].balance,null);assert.equal(conflictView.clients[0].saleBlocked,true);assert.equal(conflictView.clients[0].canSettle,false);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);
+
+  // Protocole serveur réel : un autre commercial peut modifier la facture,
+  // sans la réattribuer à son propre journal ; reprise et clôture d'origine.
+  const otherDay='2026-11-07',otherAt='2026-11-07T09:00:00.000Z',otherSaleId=randomUUID();
+  const otherSale={...sale,createdAt:otherAt,clientId:client2,clientName:'Z Client fictif',syncSaleId:otherSaleId};
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:otherSaleId,version:1,recordedAt:otherAt,sale:otherSale,refund:0})).status,201);
+  const remoteModified={...otherSale,syncVersion:2,lines:[{...otherSale.lines[0],discount:6000}],total:47600,paid:47600,remaining:0};
+  const remoteEvent={operationId:randomUUID(),saleId:otherSaleId,version:2,recordedAt:'2026-11-07T10:00:00.000Z',sale:remoteModified,refund:2400};
+  assert.equal((await post(b.token,'sales',remoteEvent)).status,201);
+  assert.equal((await post(b.token,'sales',remoteEvent)).status,200);
+  assert.equal((await post(b.token,'sales',{...remoteEvent,operationId:randomUUID()})).status,409);
+  const otherVersions=await db.query<{version:number;commercial_id:string}>('SELECT version,commercial_id FROM identified_sale_events WHERE sale_id=$1 ORDER BY version',[otherSaleId]);
+  assert.deepEqual(otherVersions.rows.map(x=>[x.version,x.commercial_id]),[[1,first.id],[2,second.id]]);
+  const dayA=await fetch(`${origin}/v5/day/${otherDay}/details`,{headers:headers(a.token)}),dayB=await fetch(`${origin}/v5/day/${otherDay}/details`,{headers:headers(b.token)});
+  assert.equal(dayA.status,200);assert.equal(dayB.status,200);
+  const aJournal=await dayA.json() as {rows:{clientId:string;tourTotal:number;saleCount:number}[]},bJournal=await dayB.json() as {rows:{clientId:string;saleCount:number}[]};
+  assert.equal(aJournal.rows.find(x=>x.clientId===client2)?.tourTotal,47600);assert.equal(aJournal.rows.find(x=>x.clientId===client2)?.saleCount,1);
+  assert.equal(bJournal.rows.some(x=>x.clientId===client2&&x.saleCount>0),false);
+  assert.equal((await post(a.token,'close',{requestId:randomUUID(),day:otherDay,expectedVersion:0})).status,201);
+  const afterClose=await post(b.token,'sales',{operationId:randomUUID(),saleId:otherSaleId,version:3,recordedAt:'2026-11-07T11:00:00.000Z',sale:{...remoteModified,syncVersion:3},refund:0});
+  assert.equal(afterClose.status,409);const closeReason=await afterClose.json() as {code:string;commercialId:string};assert.equal(closeReason.code,'TOUR_DAY_CLOSED');assert.equal(closeReason.commercialId,first.id);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[otherSaleId])).rows[0].n,2);
 
  } finally {if(server)await new Promise<void>(r=>server!.close(()=>r()));mobile.close();firstPhone.close();}
 }
