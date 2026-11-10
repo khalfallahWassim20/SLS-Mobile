@@ -6,7 +6,7 @@ import type {readCreditClientsPrototype} from './credit-client-view-prototype';
 type Snapshot=Awaited<ReturnType<typeof readCreditClientsPrototype>>;
 type Client=Snapshot['clients'][number];
 const money=(value:number)=>{const n=BigInt(value),a=n<0n?-n:n;return `${n<0n?'-':''}${a/1000n},${String(a%1000n).padStart(3,'0')} DT`;};
-export function CreditClientsViewPrototype({snapshot,busy,onSell,onSettle,onCredit}:{snapshot:Snapshot;busy:boolean;onSell:(client:Client)=>void;onSettle:(client:Client)=>void;onCredit:(client:Client)=>void}){
+export function CreditClientsViewPrototype({snapshot,busy,onSell,onSettle,onCredit,onPreInvoice}:{snapshot:Snapshot;busy:boolean;onSell:(client:Client)=>void;onSettle:(client:Client)=>void;onCredit:(client:Client)=>void;onPreInvoice:(client:Client)=>void}){
  const [search,setSearch]=useState('');
  const rows=useMemo(()=>{const query=search.trim().toLocaleLowerCase();return snapshot.clients.filter(c=>`${c.name} ${c.sector}`.toLocaleLowerCase().includes(query)).sort((a,b)=>a.name.localeCompare(b.name));},[snapshot.clients,search]);
  return <View style={styles.container}>
@@ -21,6 +21,7 @@ export function CreditClientsViewPrototype({snapshot,busy,onSell,onSettle,onCred
    <View style={styles.actions}>
     <TouchableOpacity accessibilityRole="button" disabled={busy||c.saleBlocked} onPress={()=>onSell(c)} style={(busy||c.saleBlocked)&&styles.disabled}><Text style={styles.link}>Nouvelle vente</Text></TouchableOpacity>
     <TouchableOpacity accessibilityRole="button" disabled={busy||!c.canSettle} onPress={()=>onSettle(c)} style={(busy||!c.canSettle)&&styles.disabled}><Text style={styles.link}>Régler la dette</Text></TouchableOpacity>
+    <TouchableOpacity accessibilityRole="button" disabled={busy||c.conflict||!c.active} onPress={()=>onPreInvoice(c)} style={(busy||c.conflict||!c.active)&&styles.disabled}><Text style={styles.link}>Préétablie</Text></TouchableOpacity>
     <TouchableOpacity accessibilityRole="button" disabled={busy||c.conflict} onPress={()=>onCredit(c)} style={(busy||c.conflict)&&styles.disabled}><Text style={styles.link}>Avoir</Text></TouchableOpacity>
    </View>
   </View>)}

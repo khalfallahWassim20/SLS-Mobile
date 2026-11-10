@@ -6,7 +6,7 @@ import type {describeCreditJournalPrototype} from './credit-note-journal-view-mo
 type Model=ReturnType<typeof describeCreditJournalPrototype>;
 const money=(value:number)=>{const n=BigInt(value),v=n<0n?-n:n;return `${n<0n?'-':''}${v/1000n},${String(v%1000n).padStart(3,'0')} DT`;};
 const mark=(m:{day:string;origin:'local'|'remote';pending:boolean}|null)=>m?`Annulée par avoir du ${m.day} · ${m.origin==='remote'?'enregistré ailleurs':m.pending?'en attente':'synchronisé'}`:'';
-export function CreditJournalViewPrototype({model,onCredit,onExport,busy}:{model:Model;onCredit:(clientId:string)=>void;onExport:(format:'pdf'|'csv')=>void;busy:boolean}){
+export function CreditJournalViewPrototype({model,onCredit,onPayment,onExport,busy}:{model:Model;onCredit:(clientId:string)=>void;onPayment:(clientId:string,invoiceId:string)=>void;onExport:(format:'pdf'|'csv')=>void;busy:boolean}){
  const t=model.totals;
  return <View style={styles.container}>
   <Text style={styles.title}>Journal du {model.day}</Text>
@@ -22,6 +22,7 @@ export function CreditJournalViewPrototype({model,onCredit,onExport,busy}:{model
    <Text style={styles.heading}>{row.clientName}</Text><Text>Facturé brut : {money(row.grossTotal)}</Text>
    {row.preInvoice&&<View><Text>Préétablie : {money(row.preInvoice.amount)}</Text>{row.preInvoice.cancellation&&<Text style={styles.warning}>{mark(row.preInvoice.cancellation)}</Text>}</View>}
    {row.sales.map(s=><View key={s.id}><Text>Vente supplémentaire : {money(s.total)}</Text>{s.cancellation&&<Text style={styles.warning}>{mark(s.cancellation)}</Text>}</View>)}
+   {row.preInvoice&&!row.preInvoice.cancellation&&<TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>onPayment(row.clientId,row.preInvoice!.id)}><Text style={styles.link}>Paiement du journal</Text></TouchableOpacity>}
    <TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>onCredit(row.clientId)}><Text style={styles.link}>Préparer un avoir</Text></TouchableOpacity>
   </View>)}
   {model.events.length>0&&<View style={styles.card}><Text style={styles.heading}>Avoirs créés ce jour</Text>{model.events.map(e=><View key={e.operationId}><Text>{e.clientName} · {e.kind==='sale'?'vente':'préétablie'} · {money(e.invoiceTotal)}</Text><Text>Remboursé {money(e.refund)} · Crédit {money(e.retainedCredit)} · {e.pending?'en attente':'synchronisé'}</Text>{e.kind==='preinvoice'&&<Text style={styles.warning}>Correction séparée nécessaire dans le système principal.</Text>}</View>)}</View>}

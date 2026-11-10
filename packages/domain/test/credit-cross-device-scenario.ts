@@ -31,6 +31,7 @@ import {readCreditClientsPrototype} from '../../../apps/mobile/credit-client-vie
 import {readLegacyRows} from '../../../apps/mobile/legacy-read-guard.js';
 import {readCreditMobileWorkspacePrototype} from '../../../apps/mobile/credit-mobile-workspace-reader-prototype.js';
 import {shareCreditJournalPrototype} from '../../../apps/mobile/credit-note-share-prototype.js';
+import {prepareCreditSale,prepareCreditSettlement} from '../../../apps/mobile/credit-sale-settlement-prototype.js';
 
 export type CreditScenarioDatabase={exec:(sql:string)=>Promise<unknown>;query:<T extends Record<string,unknown>=Record<string,unknown>>(sql:string,args?:unknown[])=>Promise<{rows:T[]}>};
 export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,pool:Pool){
@@ -171,6 +172,15 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const context={identity,expectedBalance:1019000};
   assert.equal((await transaction(()=>assertCreditWritePrototype(tx,context,{kind:'sale',clientId},digest))).balance,1019000);
   const initialView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(initialView.version,5);assert.equal(initialView.clients[0].balance,1019000);assert.equal(initialView.clients[0].saleBlocked,false);assert.equal(initialView.pendingCredits,0);assert.equal(initialView.articles[0].saleTtc,'60000');assert.equal('purchaseTtc' in initialView.articles[0],false);
+  // Les futurs formulaires reprennent le solde capturé, puis l'écriture doit
+  // revérifier ce contexte dans SQLite, y compris après un changement de solde.
+  const formClient=initialView.clients.find(c=>c.id===clientId)!;
+  const payment={mode:'Espèces' as const,paid:'50',chequeNumber:'',chequeBank:'',chequeDue:''};
+  const formSale=prepareCreditSale(formClient,context,[{article:initialView.articles[0],quantity:2,discount:0}],payment,at);
+  assert.equal(formSale.total,120000);assert.equal(formSale.remaining,70000);
+  const formSettlement=prepareCreditSettlement(formClient,context,payment,at);assert.equal(formSettlement.amount,50000);
+  await transaction(()=>assertCreditWritePrototype(tx,context,{kind:'sale',clientId:formSale.clientId},digest));
+  await transaction(()=>assertCreditWritePrototype(tx,context,{kind:'settlement',clientId:formSettlement.clientId,amount:formSettlement.amount},digest));
   const counted:string[]=[],txCount={...tx,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>{counted.push(sql);return tx.getAllAsync<T>(sql,...args);}};const multiView=await transaction(()=>readCreditClientsPrototype(txCount,identity,digest));assert.equal(multiView.clients.length,2);assert.equal(multiView.clients.find(c=>c.id===client2)?.balance,0);assert.equal(counted.filter(sql=>sql.includes('FROM sales ORDER BY id')).length,1);
   const unknownClient=randomUUID();mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(unknownClient,JSON.stringify({...sale,clientId:unknownClient}));
   await assert.rejects(transaction(()=>readCreditClientsPrototype(tx,identity,digest)),/absent de la référence/);mobile.exec('DELETE FROM sales');

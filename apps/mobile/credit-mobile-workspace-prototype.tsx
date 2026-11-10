@@ -8,6 +8,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import type {CommercialSession} from './commercial-login';
 import type {DeviceIdentity} from './identified-device';
 import type {CreditWriteContext} from './credit-note-write-guard-prototype';
+import {CreditSaleSettlementViewPrototype} from './credit-sale-settlement-view-prototype';
+import {CreditJournalEntryViewPrototype} from './credit-journal-entry-view-prototype';
+import type {TourPreInvoice,TourJournalReceipt} from './storage';
 import {CreditClientsViewPrototype} from './credit-clients-view-prototype';
 import {CreditJournalViewPrototype} from './credit-note-journal-view-prototype';
 import {CreditNoteWorkflowView} from './credit-note-workflow-view';
@@ -16,12 +19,11 @@ import {getCreditMobileWorkspacePrototype,getCreditSourceChoicesPrototype,previe
 
 type Snapshot=Awaited<ReturnType<typeof getCreditMobileWorkspacePrototype>>;
 type Client=Snapshot['clients']['clients'][number];
-type Props={identity:DeviceIdentity;day:string;commercialName:string;session:CommercialSession|null;onUnauthorized:()=>void;
- onSell:(client:Client,context:CreditWriteContext)=>void;onSettle:(client:Client,context:CreditWriteContext)=>void;};
-/** Les callbacks de vente/règlement doivent transmettre le contexte à l'écriture
- * SQLite. Toute vérification est répétée dans cette transaction, pas seulement ici. */
-export function CreditMobileWorkspacePrototype({identity,day,commercialName,session,onUnauthorized,onSell,onSettle}:Props){
- const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[tab,setTab]=useState<'clients'|'journal'>('journal'),[creditClient,setCreditClient]=useState<{id:string;scope:string}|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+type Props={identity:DeviceIdentity;day:string;commercialName:string;session:CommercialSession|null;onUnauthorized:()=>void;};
+/** Les formulaires transmettent le contexte à SQLite, qui revérifie le solde
+ * et l'identité dans la transaction avant d'enregistrer l'opération. */
+export function CreditMobileWorkspacePrototype({identity,day,commercialName,session,onUnauthorized}:Props){
+ const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[tab,setTab]=useState<'clients'|'journal'>('journal'),[creditClient,setCreditClient]=useState<{id:string;scope:string}|null>(null),[form,setForm]=useState<{kind:'sale'|'settlement'|'preinvoice'|'receipt';client:Client;context:CreditWriteContext;articles:Snapshot['clients']['articles'];scope:string;invoice?:TourPreInvoice;receipts?:TourJournalReceipt[]}|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const mounted=useRef(false),running=useRef(false),generation=useRef(0);
  const context=`${identity.serverOrigin}\n${identity.commercialId}\n${day}\n${commercialName}`,live=useRef(context);live.current=context;
  const liveSession=useRef(session),liveIdentity=useRef(identity);liveSession.current=session;liveIdentity.current=identity;
@@ -37,7 +39,7 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
  const run=async(fn:(seq:number)=>Promise<void>)=>{if(running.current)return;running.current=true;const seq=++generation.current;setBusy(true);setError('');try{await fn(seq);}catch(e){if(alive(seq)){setSnapshot(null);setError(e instanceof Error?e.message:'Opération impossible.');}}finally{running.current=false;if(mounted.current)setBusy(false);}};
  const load=async(seq:number)=>{const value=await getCreditMobileWorkspacePrototype(identity,day,commercialName);if(alive(seq))setSnapshot(value);};
  useEffect(()=>{
-  mounted.current=true;const seq=++generation.current;setSnapshot(null);setCreditClient(null);setError('');setBusy(true);
+  mounted.current=true;const seq=++generation.current;setSnapshot(null);setCreditClient(null);setForm(null);setError('');setBusy(true);
   void getCreditMobileWorkspacePrototype(identity,day,commercialName).then(value=>{if(alive(seq))setSnapshot(value);}).catch(e=>{if(alive(seq))setError(e instanceof Error?e.message:'Données v5 indisponibles.');}).finally(()=>{if(alive(seq)&&!running.current)setBusy(false);});
   return()=>{mounted.current=false;generation.current++;};
  },[identity.commercialId,identity.serverOrigin,day,commercialName]);
@@ -56,6 +58,11 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
  const selectCredit=(id:string)=>{if(!busy)setCreditClient({id,scope:context});};
  const writeContext=(client:Client):CreditWriteContext=>{if(client.balance===null||client.conflict)throw Error('Solde en conflit.');return {identity:{...identity},expectedBalance:client.balance};};
  const currentSnapshot=snapshot&&snapshot.identity.commercialId===identity.commercialId&&snapshot.identity.serverOrigin===identity.serverOrigin&&snapshot.view.day===day&&snapshot.view.commercial===commercialName?snapshot:null;
+ if(form?.scope===context){
+  const props={client:form.client,context:form.context,onCancel:()=>setForm(null),onDone:()=>{setForm(null);setSnapshot(null);refresh();}};
+  return form.kind==='sale'||form.kind==='settlement'?<CreditSaleSettlementViewPrototype key={`${context}:${form.kind}:${form.client.id}`} kind={form.kind} articles={form.articles} {...props}/>:
+   <CreditJournalEntryViewPrototype key={`${context}:${form.kind}:${form.client.id}`} kind={form.kind} day={day} invoice={form.invoice} receipts={form.receipts??[]} {...props}/>;
+ }
  if(creditClient?.scope===context)return <CreditNoteWorkflowView key={`${identity.serverOrigin}:${identity.commercialId}:${creditClient.id}`} identity={identity} clientId={creditClient.id}
   readChoices={getCreditSourceChoicesPrototype} refreshSources={transport?(clientId)=>transport.refreshSources(clientId):null}
   preview={previewCreditReviewPrototype} confirm={confirmCreditReviewPrototype} onCancel={()=>setCreditClient(null)} onDone={()=>{setCreditClient(null);refresh();}}/>;
@@ -64,8 +71,12 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
   <View style={styles.actions}><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={refresh}><Text style={styles.link}>Actualiser localement</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy||!transport} onPress={synchronize}><Text style={styles.link}>Synchroniser</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy||!transport} onPress={close}><Text style={styles.link}>Clôturer</Text></TouchableOpacity></View>
   <View style={styles.actions}><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setTab('journal')}><Text style={styles.link}>Journal</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setTab('clients')}><Text style={styles.link}>Clients et soldes</Text></TouchableOpacity></View>
-  {!currentSnapshot?<Text>{busy?'Chargement…':'Données v5 indisponibles.'}</Text>:tab==='journal'?<CreditJournalViewPrototype model={currentSnapshot.view} busy={busy} onCredit={selectCredit} onExport={exportJournal}/>:<CreditClientsViewPrototype snapshot={currentSnapshot.clients} busy={busy}
-   onCredit={c=>selectCredit(c.id)} onSell={c=>onSell(c,writeContext(c))} onSettle={c=>onSettle(c,writeContext(c))}/>}
+  {!currentSnapshot?<Text>{busy?'Chargement…':'Données v5 indisponibles.'}</Text>:tab==='journal'?<CreditJournalViewPrototype model={currentSnapshot.view} busy={busy} onCredit={selectCredit} onExport={exportJournal} onPayment={(clientId,invoiceId)=>{
+   const client=currentSnapshot.clients.clients.find(c=>c.id===clientId),invoice=currentSnapshot.journal.rows.find(r=>r.clientId===clientId)?.preInvoice;
+   if(!client||client.balance===null||client.conflict||!invoice||invoice.id!==invoiceId){setError('Client ou facture indisponible : actualisez le journal.');return;}
+   setForm({kind:'receipt',client,context:writeContext(client),articles:[],scope:context,invoice,receipts:currentSnapshot.journal.receipts.filter(r=>r.preInvoiceId===invoice.id)});
+  }}/>:<CreditClientsViewPrototype snapshot={currentSnapshot.clients} busy={busy}
+   onCredit={c=>selectCredit(c.id)} onPreInvoice={c=>setForm({kind:'preinvoice',client:c,context:writeContext(c),articles:[],scope:context})} onSell={c=>setForm({kind:'sale',client:c,context:writeContext(c),articles:currentSnapshot.clients.articles,scope:context})} onSettle={c=>setForm({kind:'settlement',client:c,context:writeContext(c),articles:[],scope:context})}/>}
  </ScrollView>;
 }
 const styles=StyleSheet.create({container:{padding:16,gap:12},title:{fontSize:20,fontWeight:'700',color:'#173c32'},notice:{backgroundColor:'#fff4de',padding:10,borderRadius:8,color:'#89511e'},error:{backgroundColor:'#ffebe8',padding:10,borderRadius:8,color:'#842c23'},actions:{flexDirection:'row',gap:16,flexWrap:'wrap'},link:{color:'#176745',fontWeight:'700',paddingVertical:8}});
