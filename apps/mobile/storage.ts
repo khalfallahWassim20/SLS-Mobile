@@ -31,6 +31,8 @@ import {readCreditMobileWorkspacePrototype} from './credit-mobile-workspace-read
 import {readLegacyRows} from './legacy-read-guard';
 import {quarantineOnUpgrade} from './credit-protocol-quarantine';
 import type {CommercialSession} from './commercial-login';
+import {validateCreditSaleEdit} from './credit-sale-edit-prototype';
+import {readCreditHistoryPrototype} from './credit-history-prototype';
 
 export type SavedSale = {
   id: number; createdAt: string; clientId: string; clientName: string; syncSaleId?: string; syncVersion?: number;
@@ -99,6 +101,7 @@ export async function getRevisions(saleId: number): Promise<Revision[]> {
   return rows.map(r => ({ id: r.id, createdAt: r.created_at, previous: JSON.parse(r.previous_payload), current: JSON.parse(r.new_payload), refund: r.refund }));
 }
 export async function updateSale(previous: SavedSale, updated: SavedSale, refund: number, credit?:CreditWriteContext): Promise<void> {
+  if(credit)validateCreditSaleEdit(previous,updated,refund);
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
     await assertNoLocalCreditNote(tx,'sale',previous.syncSaleId);
@@ -460,5 +463,12 @@ export async function getCreditClientsPrototype(identity:DeviceIdentity) {
 export async function getCreditMobileWorkspacePrototype(identity:DeviceIdentity,day:string,commercial:string) {
  const database=await db();let result:Awaited<ReturnType<typeof readCreditMobileWorkspacePrototype>>|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditMobileWorkspacePrototype(tx,identity,day,commercial,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});
+ return result!;
+}
+
+/** Historique local v5 : source et solde capturés dans une seule transaction. */
+export async function getCreditHistoryPrototype(identity:DeviceIdentity,clientId:string) {
+ const database=await db();let result:Awaited<ReturnType<typeof readCreditHistoryPrototype>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditHistoryPrototype(tx,identity,clientId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});
  return result!;
 }
