@@ -46,5 +46,7 @@ export function prototypeAdminCreditRoutes(pool:Pool,authenticateAdmin:RequestHa
   const result=kind==='sale'?await storePrototypeCreditNote(pool,command,principal,guard):await storePrototypePreInvoiceCredit(pool,command,principal,guard);
   res.status(result.status==='received'?201:200).json({status:result.status,operationId:command.operationId});
  }catch(e){fail(e,res,next);}});
- r.use(routes(pool,()=>({kind:'admin',actorId:adminName})));return r;
+ // Aucun accès direct aux registres : la confirmation admin doit toujours
+ // inclure un aperçu vérifié sous verrou, y compris après une reprise.
+ return r;
 }

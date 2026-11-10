@@ -90,8 +90,12 @@ test('avoir expérimental de bout en bout : file locale, HTTP, reprise et clôtu
   await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId:otherSaleId,version:1,recordedAt:at,sale:otherSale,refund:0},{secret,token:session.token});
   const cross={...command,invoiceId:otherSaleId,operationId:pre.command.operationId};
   assert.equal((await send('sales',JSON.stringify(cross))).status,409);
-  const adminCmd={...cross,operationId:randomUUID()};
-  const adminOk=await fetch(`${origin}/admin/sales`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer admin-test'},body:JSON.stringify(adminCmd)});assert.equal(adminOk.status,201);
+  const adminCmd={...cross,operationId:randomUUID(),recordedAt:new Date().toISOString()};
+  const adminHeaders={'Content-Type':'application/json',Authorization:'Bearer admin-test'};
+  const bypass=await fetch(`${origin}/admin/sales`,{method:'POST',headers:adminHeaders,body:JSON.stringify(adminCmd)});assert.equal(bypass.status,404);
+  const previewResponse=await fetch(`${origin}/admin/preview`,{method:'POST',headers:adminHeaders,body:JSON.stringify({clientId,kind:'sale',command:adminCmd})});assert.equal(previewResponse.status,200);
+  const review=await previewResponse.json();
+  const adminOk=await fetch(`${origin}/admin/reviewed/sales`,{method:'POST',headers:adminHeaders,body:JSON.stringify({command:adminCmd,review})});assert.equal(adminOk.status,201);
   const adminEvent=await db.query<{event:{actor:{role:string}}}>('SELECT event FROM credit_note_prototype_events WHERE operation_id=$1',[adminCmd.operationId]);assert.equal(adminEvent.rows[0].event.actor.role,'admin');
  }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));mobile.close();await db.close();}
 });

@@ -30,6 +30,11 @@ test('administrateur v5 isolé : aperçu, solde vérifié, reprise et préétabl
   assert.equal((await get(`/old/credit-notes/sources/${clientId}`)).status,404);
   assert.equal((await get(`/admin/credit-notes/sources/${clientId}`,{...admin,'X-SLS-Reference-Version':'4'})).status,409);
   const sources=await (await get(`/admin/credit-notes/sources/${clientId}`)).json() as any;assert.equal(sources.items[0].invoiceId,saleId);assert.equal(sources.items[0].source.purchaseTtc,undefined);
+  // Les anciennes routes directes ne doivent pas contourner l'aperçu, même avec une session admin.
+  assert.equal((await post('/admin/credit-notes/sales',command)).status,404);
+  assert.equal((await post('/admin/credit-notes/preinvoices',command)).status,404);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int n FROM credit_note_prototype_events')).rows[0].n,0);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int n FROM pre_invoice_credit_prototype_events')).rows[0].n,0);
   const preview=await (await post('/admin/credit-notes/preview',input)).json() as any;assert.equal(preview.invoiceTotal,119000);assert.equal(preview.invoicePaid,50000);assert.equal(preview.balanceBefore,1069000);assert.equal(preview.balanceAfter,1000000);assert.equal(preview.refund,50000);
   assert.equal((await post('/admin/credit-notes/reviewed/sales',{command,review:{...preview,balanceAfter:0}})).status,409);
   await db.query('UPDATE clients SET opening_balance=opening_balance+1000 WHERE id=$1',[clientId]);

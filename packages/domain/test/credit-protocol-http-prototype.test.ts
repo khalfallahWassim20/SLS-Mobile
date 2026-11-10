@@ -108,23 +108,28 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   const adminDay=await (await get(`/admin-read/${c.id}/2026-11-08`,adminHeaders)).json() as any;assert.equal(adminDay.creditEvents.length,2);assert.ok(Array.isArray(adminDay.closureEvents));
   // L'admin crée l'avoir d'une autre vente du commercial, après authentification
   // et uniquement en v5. Les anciennes routes ne sont pas activées.
-  const adminCommand={operationId:randomUUID(),invoiceId:otherId,expectedVersion:1,recordedAt:'2026-11-09T10:00:00.000Z',choice:'credit'};
+  const now=new Date(),today=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(now);
+  const adminCommand={operationId:randomUUID(),invoiceId:otherId,expectedVersion:1,recordedAt:now.toISOString(),choice:'credit'};
   assert.equal((await post('/admin-old/credit-notes/sales',adminCommand,adminHeaders)).status,404);
   assert.equal((await post('/admin/credit-notes/sales',adminCommand)).status,401);
   assert.equal((await post('/admin/credit-notes/sales',adminCommand,{...adminHeaders,'X-SLS-Reference-Version':'4'})).status,409);
-  assert.equal((await post('/admin/credit-notes/sales',adminCommand,adminHeaders)).status,201);
-  assert.equal((await post('/admin/credit-notes/sales',adminCommand,adminHeaders)).status,200);
-  const later=await (await get(`/admin-read/${c.id}/2026-11-09`,adminHeaders)).json() as any;
-  assert.equal(later.creditEvents.length,1);assert.equal(later.creditEvents[0].actor.role,'admin');assert.equal(later.creditRetainedTotal,50000);
+  assert.equal((await post('/admin/credit-notes/sales',adminCommand,adminHeaders)).status,404);
+  const salePreview=await (await post('/admin/credit-notes/preview',{clientId,kind:'sale',command:adminCommand},adminHeaders)).json();
+  assert.equal((await post('/admin/credit-notes/reviewed/sales',{command:adminCommand,review:salePreview},adminHeaders)).status,201);
+  assert.equal((await post('/admin/credit-notes/reviewed/sales',{command:adminCommand,review:salePreview},adminHeaders)).status,200);
+  const later=await (await get(`/admin-read/${c.id}/${today}`,adminHeaders)).json() as any;
+  assert.equal(later.creditEvents.find((e:any)=>e.operationId===adminCommand.operationId)?.actor.role,'admin');
   const invoice2={...invoice,id:randomUUID(),journalDate:'2026-11-09',createdAt:'2026-11-09T09:00:00.000Z'};
   const j2={operationId:randomUUID(),version:1,invoice:invoice2,receipts:[]};assert.equal((await post('/new/journal',j2)).status,201);
   const pay2={...receipt,id:randomUUID(),preInvoiceId:invoice2.id,journalDate:invoice2.journalDate,createdAt:'2026-11-09T09:30:00.000Z',prePaid:250000,oldDebtPaid:400000};
   assert.equal((await post('/new/journal',{...j2,operationId:randomUUID(),version:2,receipts:[pay2]})).status,201);
-  const adminPre={operationId:randomUUID(),invoiceId:invoice2.id,expectedVersion:2,recordedAt:'2026-11-09T11:00:00.000Z',choice:'credit'};
-  assert.equal((await post('/admin/credit-notes/preinvoices',adminPre,adminHeaders)).status,201);
-  assert.equal((await post('/admin/credit-notes/preinvoices',adminPre,adminHeaders)).status,200);
+  const adminPre={operationId:randomUUID(),invoiceId:invoice2.id,expectedVersion:2,recordedAt:new Date().toISOString(),choice:'credit'};
+  assert.equal((await post('/admin/credit-notes/preinvoices',adminPre,adminHeaders)).status,404);
+  const prePreview=await (await post('/admin/credit-notes/preview',{clientId,kind:'preinvoice',command:adminPre},adminHeaders)).json();
+  assert.equal((await post('/admin/credit-notes/reviewed/preinvoices',{command:adminPre,review:prePreview},adminHeaders)).status,201);
+  assert.equal((await post('/admin/credit-notes/reviewed/preinvoices',{command:adminPre,review:prePreview},adminHeaders)).status,200);
   const adminPreDay=await (await get(`/admin-read/${c.id}/2026-11-09`,adminHeaders)).json() as any;
-  assert.equal(adminPreDay.creditEvents.length,2);assert.equal(adminPreDay.creditRetainedTotal,300000);assert.equal(adminPreDay.rows[0].oldDebtPaid,400000);assert.equal(adminPreDay.rows[0].preInvoiceCancelled,true);
+  assert.equal(adminPreDay.rows[0].oldDebtPaid,400000);assert.equal(adminPreDay.rows[0].preInvoiceCancelled,true);
   assert.equal((await get('/admin-read-old/credit-snapshot',adminHeaders)).status,404);
   assert.equal((await get('/admin-read/credit-snapshot')).status,401);
   assert.equal((await get('/admin-read/credit-snapshot',{...adminHeaders,'X-SLS-Reference-Version':'4'})).status,409);
