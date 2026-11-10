@@ -21,6 +21,7 @@ type Dependencies={
   observe:(identity:DeviceIdentity,day:string,response:unknown,guard:()=>void)=>Promise<void>;
  };
  now?:()=>number;
+ isCurrentSession?:()=>boolean;
  onUnauthorized?:()=>void;
 };
 const uuid=(v:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
@@ -33,7 +34,7 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
  const now=io.now??Date.now;
  session={...session};identity={...identity};
  let revoked=false;
- const check=()=>{if(revoked||!validSession(session,identity,now()))throw Error('Session expirée ou identité différente : reconnectez-vous pour synchroniser.');};
+ const check=()=>{if(revoked||io.isCurrentSession?.()===false||!validSession(session,identity,now()))throw Error('Session expirée ou identité différente : reconnectez-vous pour synchroniser.');};
  const request=async(path:string,method:'GET'|'POST',body?:string)=>{
   check();
   const response=await io.request(`${session.serverOrigin}/api/mobile/identified/${path}`,{method,headers:{Authorization:`Bearer ${session.token}`,'X-SLS-Reference-Version':'5',...(method==='POST'?{'Content-Type':'application/json'}:{})},...(body===undefined?{}:{body})});

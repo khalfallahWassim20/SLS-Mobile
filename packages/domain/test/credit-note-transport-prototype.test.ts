@@ -57,3 +57,9 @@ test('liaison v5 : référence authentifiée avant liaison et refus sans prise e
  await controller.connect();assert.equal(stored,true);assert.match(f.calls[0].url,/\/reference$/);assert.equal(f.calls[0].options.headers['X-SLS-Reference-Version'],'5');
  const bad=fixture();bad.reject();let bound=false;const denied=createCreditTransportPrototype(bad.session,bad.identity,{...bad.io,bindReference:async()=>{bound=true;}});await assert.rejects(denied.connect(),/Session refusée/);assert.equal(bound,false);
 });
+
+test('déconnexion pendant une réponse v5 : aucun cache ni accusé validé',async()=>{
+ const f=fixture();let active=true;const controller=createCreditTransportPrototype(f.session,f.identity,{...f.io,isCurrentSession:()=>active});
+ f.block();const pending=controller.refreshReference();active=false;f.release();await assert.rejects(pending,/expirée|identité/);assert.deepEqual(f.events,[]);
+ await assert.rejects(controller.synchronize(),/expirée|identité/);assert.equal(f.calls.length,1);
+});

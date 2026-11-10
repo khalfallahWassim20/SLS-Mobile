@@ -29,6 +29,8 @@ import {assertLegacyMobileCreditSafe,assertCreditWritePrototype} from '../../../
 import {bindAndCacheCreditReferencePrototype} from '../../../apps/mobile/credit-note-binding-prototype.js';
 import {readCreditClientsPrototype} from '../../../apps/mobile/credit-client-view-prototype.js';
 import {readLegacyRows} from '../../../apps/mobile/legacy-read-guard.js';
+import {readCreditMobileWorkspacePrototype} from '../../../apps/mobile/credit-mobile-workspace-reader-prototype.js';
+import {shareCreditJournalPrototype} from '../../../apps/mobile/credit-note-share-prototype.js';
 
 export type CreditScenarioDatabase={exec:(sql:string)=>Promise<unknown>;query:<T extends Record<string,unknown>=Record<string,unknown>>(sql:string,args?:unknown[])=>Promise<{rows:T[]}>};
 export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,pool:Pool){
@@ -194,7 +196,15 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:350000,conflict:false});
   const preparedView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(preparedView.clients[0].balance,350000);assert.equal(preparedView.pendingCredits,2);assert.equal(preparedView.pendingOperations,0);
   const exportBefore=await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest));
+  const workspace=await transaction(()=>readCreditMobileWorkspacePrototype(tx,identity,day,'Deuxième',digest));assert.equal(workspace.clients.clients[0].balance,350000);assert.equal(workspace.clients.pendingCredits,2);assert.equal(workspace.view.totals.creditNotes,719000);
   const exportModel=describeCreditJournalPrototype(exportBefore);assert.equal(exportModel.totals.creditNotes,719000);assert.equal(exportModel.totals.refunds,50000);assert.equal(exportModel.totals.retainedCredit,250000);assert.equal(exportModel.totals.billedAfterLocalCredits,-719000);
+  // Les exports proviennent de la même capture que le modèle et ne nécessitent
+  // aucun réseau ; PDF et CSV restent disponibles en attente de synchronisation.
+  const writes:{uri:string;content:string;encoding:string}[]=[],shares:string[]=[];
+  const shareIO={cacheDirectory:'file:///cache/',available:async()=>true,write:async(uri:string,content:string,encoding:'utf8'|'base64')=>{writes.push({uri,content,encoding});},print:async(html:string)=>{assert.match(html,/Avoir/);return {base64:'UEZG'};},share:async(uri:string)=>{shares.push(uri);},now:()=>1};
+  await shareCreditJournalPrototype(workspace.journal,'csv',shareIO);await shareCreditJournalPrototype(workspace.journal,'pdf',shareIO);
+  assert.equal(writes.length,2);assert.match(writes[0].content,/719,000/);assert.equal(writes[1].encoding,'base64');assert.equal(shares.length,2);
+  await assert.rejects(shareCreditJournalPrototype({...workspace.journal,credits:undefined},'csv',shareIO),/v5 invalide/);
   const exportCsv=journalCsv(exportBefore);assert.match(exportCsv,/AVOIRS CRÉÉS CE JOUR/);assert.match(exportCsv,/en attente/);assert.match(exportCsv,/719,000/);assert.match(exportCsv,/'-719,000/);assert.match(exportCsv,/50,000/);assert.match(exportCsv,/250,000/);
   await assert.rejects(transaction(()=>readCreditJournalExportPrototype(tx,identity,'2026-02-30','Deuxième',digest)),/Date ou commercial invalide/);
   let lose=true;

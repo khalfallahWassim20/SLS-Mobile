@@ -27,6 +27,7 @@ import {describeCreditJournalPrototype} from './credit-note-journal-view-model-p
 import {assertLegacyMobileCreditSafe,assertCreditWritePrototype,assertCreditReceiptPrototype,type CreditWriteContext} from './credit-note-write-guard-prototype';
 import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-prototype';
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
+import {readCreditMobileWorkspacePrototype} from './credit-mobile-workspace-reader-prototype';
 import {readLegacyRows} from './legacy-read-guard';
 import {quarantineOnUpgrade} from './credit-protocol-quarantine';
 import type {CommercialSession} from './commercial-login';
@@ -420,9 +421,9 @@ export async function synchronizeCreditPrototype(identity:DeviceIdentity,verifie
 
 /** Point de raccordement préparatoire ; aucune interface actuelle ne l'appelle.
  * Le jeton reste en mémoire et le téléphone doit déjà être lié. */
-export function createExperimentalCreditMobileTransport(session:CommercialSession,identity:DeviceIdentity,onUnauthorized:()=>void) {
+export function createExperimentalCreditMobileTransport(session:CommercialSession,identity:DeviceIdentity,onUnauthorized:()=>void,isCurrentSession?:()=>boolean) {
  return createCreditTransportPrototype(session,identity,{
-  request:(url,options)=>fetch(url,options),onUnauthorized,
+  request:(url,options)=>fetch(url,options),onUnauthorized,isCurrentSession,
   cacheReference:cacheCreditReferencePrototype,cacheSources:cacheCreditSourcesPrototype,
   bindReference:async(id,verified,value,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(tx=>bindAndCacheCreditReferencePrototype(tx,id,verified,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data),guard));},
   synchronize:synchronizeCreditPrototype,
@@ -453,4 +454,11 @@ export async function getCreditJournalViewPrototype(identity:DeviceIdentity,day:
 export async function getCreditClientsPrototype(identity:DeviceIdentity) {
  const database=await db();let result:Awaited<ReturnType<typeof readCreditClientsPrototype>>|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditClientsPrototype(tx,identity,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
+}
+
+/** Clients et journal capturés ensemble pour le futur espace commercial v5. */
+export async function getCreditMobileWorkspacePrototype(identity:DeviceIdentity,day:string,commercial:string) {
+ const database=await db();let result:Awaited<ReturnType<typeof readCreditMobileWorkspacePrototype>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readCreditMobileWorkspacePrototype(tx,identity,day,commercial,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});
+ return result!;
 }
