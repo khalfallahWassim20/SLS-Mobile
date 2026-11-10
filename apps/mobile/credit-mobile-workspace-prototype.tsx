@@ -16,7 +16,7 @@ import {CreditClientsViewPrototype} from './credit-clients-view-prototype';
 import {CreditJournalViewPrototype} from './credit-note-journal-view-prototype';
 import {CreditNoteWorkflowView} from './credit-note-workflow-view';
 import {shareCreditJournalPrototype} from './credit-note-share-prototype';
-import {getPendingRemoteEditPrototype,getCreditMobileWorkspacePrototype,getCreditSourceChoicesPrototype,previewCreditReviewPrototype,confirmCreditReviewPrototype,createExperimentalCreditMobileTransport} from './storage';
+import {getPendingRemoteEditPrototype,getCreditClientsPrototype,getCreditMobileWorkspacePrototype,getCreditSourceChoicesPrototype,previewCreditReviewPrototype,confirmCreditReviewPrototype,createExperimentalCreditMobileTransport} from './storage';
 
 type Snapshot=Awaited<ReturnType<typeof getCreditMobileWorkspacePrototype>>;
 type Client=Snapshot['clients']['clients'][number];
@@ -25,6 +25,7 @@ type Props={identity:DeviceIdentity;day:string;commercialName:string;session:Com
  * et l'identité dans la transaction avant d'enregistrer l'opération. */
 export function CreditMobileWorkspacePrototype({identity,day,commercialName,session,onUnauthorized}:Props){
  const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[tab,setTab]=useState<'clients'|'journal'>('journal'),[creditClient,setCreditClient]=useState<{id:string;scope:string}|null>(null),[form,setForm]=useState<{kind:'sale'|'settlement'|'preinvoice'|'receipt';client:Client;context:CreditWriteContext;articles:Snapshot['clients']['articles'];scope:string;invoice?:TourPreInvoice;receipts?:TourJournalReceipt[]}|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [pendingClients,setPendingClients]=useState<Snapshot['clients']|null>(null);
  const [pendingRemote,setPendingRemote]=useState<Awaited<ReturnType<typeof getPendingRemoteEditPrototype>>>(null);
  const [historyClient,setHistoryClient]=useState<{id:string;scope:string}|null>(null);
  const mounted=useRef(false),running=useRef(false),generation=useRef(0);
@@ -39,10 +40,10 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
   });
  },[session?.token,session?.serverOrigin,session?.id,session?.expiresAt,identity.commercialId,identity.serverOrigin,onUnauthorized]);
  const alive=(seq:number)=>mounted.current&&generation.current===seq&&live.current===context;
- const run=async(fn:(seq:number)=>Promise<void>)=>{if(running.current)return;running.current=true;const seq=++generation.current;setBusy(true);setError('');try{await fn(seq);}catch(e){if(alive(seq)){setSnapshot(null);setError(e instanceof Error?e.message:'Opération impossible.');try{const pending=await getPendingRemoteEditPrototype(identity);if(alive(seq))setPendingRemote(pending);}catch{/* conserver l’erreur principale */}}}finally{running.current=false;if(mounted.current)setBusy(false);}};
- const load=async(seq:number)=>{const pending=await getPendingRemoteEditPrototype(identity);if(!alive(seq))return;setPendingRemote(pending);if(pending){setSnapshot(null);return;}const value=await getCreditMobileWorkspacePrototype(identity,day,commercialName);if(alive(seq))setSnapshot(value);};
+ const run=async(fn:(seq:number)=>Promise<void>)=>{if(running.current)return;running.current=true;const seq=++generation.current;setBusy(true);setError('');try{await fn(seq);}catch(e){if(alive(seq)){setSnapshot(null);setError(e instanceof Error?e.message:'Opération impossible.');try{const pending=await getPendingRemoteEditPrototype(identity);if(alive(seq)){setPendingRemote(pending);setPendingClients(null);}if(pending){const clients=await getCreditClientsPrototype(identity);if(alive(seq))setPendingClients(clients);}}catch{/* conserver l’erreur principale */}}}finally{running.current=false;if(mounted.current)setBusy(false);}};
+ const load=async(seq:number)=>{const pending=await getPendingRemoteEditPrototype(identity);if(!alive(seq))return;setPendingRemote(pending);setPendingClients(null);if(pending){setSnapshot(null);const clients=await getCreditClientsPrototype(identity);if(alive(seq))setPendingClients(clients);return;}const value=await getCreditMobileWorkspacePrototype(identity,day,commercialName);if(alive(seq))setSnapshot(value);};
  useEffect(()=>{
-  mounted.current=true;const seq=++generation.current;setSnapshot(null);setPendingRemote(null);setCreditClient(null);setForm(null);setHistoryClient(null);setError('');setBusy(true);
+  mounted.current=true;const seq=++generation.current;setSnapshot(null);setPendingRemote(null);setPendingClients(null);setCreditClient(null);setForm(null);setHistoryClient(null);setError('');setBusy(true);
   void load(seq).catch(e=>{if(alive(seq))setError(e instanceof Error?e.message:'Données v5 indisponibles.');}).finally(()=>{if(alive(seq)&&!running.current)setBusy(false);});
   return()=>{mounted.current=false;generation.current++;};
  },[identity.commercialId,identity.serverOrigin,day,commercialName]);
@@ -61,6 +62,8 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
  const selectCredit=(id:string)=>{if(!busy)setCreditClient({id,scope:context});};
  const writeContext=(client:Client):CreditWriteContext=>{if(client.balance===null||client.conflict)throw Error('Solde en conflit.');return {identity:{...identity},expectedBalance:client.balance};};
  const currentSnapshot=snapshot&&snapshot.identity.commercialId===identity.commercialId&&snapshot.identity.serverOrigin===identity.serverOrigin&&snapshot.view.day===day&&snapshot.view.commercial===commercialName?snapshot:null;
+ const clientList=(clients:Snapshot['clients'])=><CreditClientsViewPrototype snapshot={clients} busy={busy}
+   onCredit={c=>selectCredit(c.id)} onHistory={c=>setHistoryClient({id:c.id,scope:context})} onPreInvoice={c=>setForm({kind:'preinvoice',client:c,context:writeContext(c),articles:[],scope:context})} onSell={c=>setForm({kind:'sale',client:c,context:writeContext(c),articles:clients.articles,scope:context})} onSettle={c=>setForm({kind:'settlement',client:c,context:writeContext(c),articles:[],scope:context})}/>;
  if(historyClient?.scope===context)return <CreditHistoryViewPrototype key={`${context}:${historyClient.id}`} identity={identity} clientId={historyClient.id} refreshSources={transport?(clientId)=>transport.refreshSources(clientId):null} onBack={()=>{setHistoryClient(null);refresh();}} onChanged={()=>setSnapshot(null)}/>;
  if(form?.scope===context){
   const props={client:form.client,context:form.context,onCancel:()=>setForm(null),onDone:()=>{setForm(null);setSnapshot(null);refresh();}};
@@ -82,16 +85,16 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
    <Text>{pendingRemote.status==='awaiting-reference'?'Envoi acquitté ; la vérification finale du serveur reste nécessaire.':'Envoi non confirmé. Reconnectez-vous et utilisez Synchroniser pour reprendre la même opération.'}</Text>
    {pendingRemote.failure?.reason==='closed'&&<Text>Dernier refus du serveur : journée {pendingRemote.failure.day} clôturée (commercial : {pendingRemote.failure.commercialId}). Demandez sa réouverture à l’administrateur, puis synchronisez de nouveau.</Text>}
    {pendingRemote.failure?.reason==='conflict'&&<Text>Dernier refus du serveur : conflit de version ou de données. Contactez l’administrateur pour un rapprochement.</Text>}
-   <Text>Ne supprimez pas les données de l’application : la réponse du serveur peut avoir été perdue. Les soldes, autres opérations et clôtures restent bloqués sur ce téléphone jusqu’à vérification.</Text>
+   <Text>Ne supprimez pas les données de l’application : la réponse du serveur peut avoir été perdue. Le client concerné reste bloqué jusqu’à vérification. Les autres clients restent disponibles hors ligne ; le journal, ses exports et la clôture attendent la synchronisation.</Text>
   </View>}
+  {pendingRemote&&pendingClients&&clientList(pendingClients)}
   {!pendingRemote&&<>
   <View style={styles.actions}><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setTab('journal')}><Text style={styles.link}>Journal</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setTab('clients')}><Text style={styles.link}>Clients et soldes</Text></TouchableOpacity></View>
   {!currentSnapshot?<Text>{busy?'Chargement…':'Données v5 indisponibles.'}</Text>:tab==='journal'?<CreditJournalViewPrototype model={currentSnapshot.view} busy={busy} onCredit={selectCredit} onExport={exportJournal} onPayment={(clientId,invoiceId)=>{
    const client=currentSnapshot.clients.clients.find(c=>c.id===clientId),invoice=currentSnapshot.journal.rows.find(r=>r.clientId===clientId)?.preInvoice;
    if(!client||client.balance===null||client.conflict||!invoice||invoice.id!==invoiceId){setError('Client ou facture indisponible : actualisez le journal.');return;}
    setForm({kind:'receipt',client,context:writeContext(client),articles:[],scope:context,invoice,receipts:currentSnapshot.journal.receipts.filter(r=>r.preInvoiceId===invoice.id)});
-  }}/>:<CreditClientsViewPrototype snapshot={currentSnapshot.clients} busy={busy}
-   onCredit={c=>selectCredit(c.id)} onHistory={c=>setHistoryClient({id:c.id,scope:context})} onPreInvoice={c=>setForm({kind:'preinvoice',client:c,context:writeContext(c),articles:[],scope:context})} onSell={c=>setForm({kind:'sale',client:c,context:writeContext(c),articles:currentSnapshot.clients.articles,scope:context})} onSettle={c=>setForm({kind:'settlement',client:c,context:writeContext(c),articles:[],scope:context})}/>}
+  }}/>:clientList(currentSnapshot.clients)}
   </>}
  </ScrollView>;
 }

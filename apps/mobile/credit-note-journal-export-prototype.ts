@@ -18,6 +18,8 @@ function value<T>(raw:string):T {try {const value=JSON.parse(raw);if(!value||typ
 export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIdentity,day:string,commercial:string,digest:(text:string)=>Promise<string>):Promise<JournalExport>{
  const parsed=new Date(`${day}T00:00:00.000Z`);
  if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==day||typeof commercial!=='string'||!commercial.trim()||commercial.length>200)throw Error('Date ou commercial invalide.');
+ const pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n');
+ if(!pending||pending.n)throw Error('Journal indisponible pendant une modification distante en attente.');
  const reference=await readPrototypeCreditReferenceCache(tx,identity);if(!reference)throw Error('Référence d’avoirs indisponible.');
  const credits=await readAllOfflineCreditPrototype(tx,identity);
  const saleRows=await tx.getAllAsync<{id:number;payload:string}>('SELECT id,payload FROM sales ORDER BY id DESC');

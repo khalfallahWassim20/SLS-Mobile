@@ -17,10 +17,11 @@ function object(json:string):Record<string,any> {
 /** Toutes les sources, y compris le cache, sont lues dans la même transaction.
  * Une ligne orpheline ou un instantané divergent interrompt le calcul. */
 export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceIdentity,digest?:(data:string)=>Promise<string>,allowPendingRemote=false) {
- const pendingRemote=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n');
- if(!pendingRemote||(!allowPendingRemote&&pendingRemote.n))throw Error('Une modification distante attend sa synchronisation : écritures et soldes temporairement bloqués.');
+ const pendingRemote=await tx.getAllAsync<{clientId:string;commercialId:string;serverOrigin:string}>('SELECT client_id AS clientId,commercial_id AS commercialId,server_origin AS serverOrigin FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2');
  const reference=await readPrototypeCreditReferenceCache(tx,identity);
  if(!reference)throw Error('Référence d’avoirs indisponible.');
+ if(pendingRemote.length>1||pendingRemote.some(p=>p.commercialId!==identity.commercialId||p.serverOrigin!==identity.serverOrigin||!reference.clients.some(c=>c.id===p.clientId)))throw Error('Révision distante incohérente : rapprochement nécessaire.');
+ const blockedClients=new Set(allowPendingRemote?[]:pendingRemote.map(p=>p.clientId));
  const notes=(await readAllOfflineCreditPrototype(tx,identity)).map(x=>x.note);
  const saleRows=await tx.getAllAsync<{id:number;clientId:string;payload:string}>('SELECT id,client_id AS clientId,payload FROM sales ORDER BY id');
  const sales=saleRows.map(row=>{const value=object(row.payload);if(value.clientId!==row.clientId||'id' in value)throw Error('Vente locale incohérente.');return {...value,id:row.id} as Parameters<typeof prototypeCreditBalance>[0]['sales'][number];});
@@ -87,7 +88,7 @@ export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceId
  // plusieurs clients sans relire SQLite ou recalculer les empreintes.
  return {reference,balanceFor:(clientId:string)=>{
   const balance=prototypeCreditBalance({clientId,identity,reference,sales,journals,settlements,notes,verifiedRemoteSales,verifiedRemoteJournals});
-  return {...balance,conflict:balance.conflict||sourceConflict};
+  return {...balance,conflict:balance.conflict||sourceConflict||blockedClients.has(clientId)};
  }};
 }
 export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,clientId:string,digest?:(data:string)=>Promise<string>,allowPendingRemote=false) {

@@ -34,7 +34,7 @@ export function CreditHistoryViewPrototype({identity,clientId,onBack,onChanged,r
   if(remote){
    const recordedAt=new Date().toISOString(),preview=await getRemoteSaleEditPreviewPrototype(context,remote.key,recordedAt,parsed,choice);
    await commitRemoteSaleEditPrototype({operationId:randomUUID(),context,key:remote.key,recordedAt,lines:parsed,choice,preview});saved.current=true;
-   if(mounted.current){setSelected(null);onChanged();Alert.alert('Modification en attente','Synchronisez pour confirmer la modification. Les soldes et les autres opérations restent bloqués entre-temps.');onBack();}
+   if(mounted.current){setSelected(null);onChanged();Alert.alert('Modification en attente','Synchronisez pour confirmer la modification. Le client concerné et la clôture restent bloqués entre-temps. Les autres clients restent disponibles.');onBack();}
   }else{
    const result=prepareCreditSaleEdit(history.client,context,selected,parsed,choice,history.articles);
    await updateSale(selected,result.updated,result.refund,context);saved.current=true;
