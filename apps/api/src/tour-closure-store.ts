@@ -7,6 +7,7 @@ import {initialTourClosure,transitionTourClosure,type TourActor,type TourClosure
 import {journalDateSchema} from './journal-protocol.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
+import {assertSaleRefundJournalSafe} from './sale-refund-journal-guard-prototype.js';
 
 export class ClosureConflict extends Error {}
 const identifier=z.string().uuid();
@@ -82,6 +83,9 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
   }
   if(enforceMode&&!creditAware)await assertOldCreditProtocolSafe(db);
   const state=await lockTourClosure(db,commercialId,day);
+  // Les écritures de vente prennent ce même verrou avant insertion ; une
+  // clôture ne peut donc pas dépasser un remboursement reçu simultanément.
+  if(creditAware&&action==='close')await assertSaleRefundJournalSafe(db,commercialId,day);
   let next;
   try {next=transitionTourClosure(state,action,actor,new Date().toISOString(),expectedVersion);}
   catch(error) {if(error instanceof RangeError) throw new ClosureConflict(error.message);throw error;}

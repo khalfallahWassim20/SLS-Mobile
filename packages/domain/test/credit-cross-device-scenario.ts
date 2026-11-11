@@ -9,6 +9,7 @@ import type {Pool} from 'pg';
 import {schemaSql} from '../../../apps/api/src/schema.js';
 import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
+import {changeTourClosure} from '../../../apps/api/src/tour-closure-store.js';
 import {identifiedCommercialRoutes,identifiedAdminRoutes} from '../../../apps/api/src/identified-tour-routes.js';
 import {identifiedDeviceSchema,assertKnownDeviceEntity} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,assertLocalTourWritable} from '../../../apps/mobile/tour-close-queue.js';
@@ -526,7 +527,9 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client2,digest))).conflict,true);
    // Le créateur clôture après la capture hors ligne : refus explicite,
    // conservation du même UUID, puis reprise après réouverture admin.
-   assert.equal((await post(a.token,'close',{requestId:randomUUID(),day:otherDay,expectedVersion:0})).status,201);
+   assert.equal((await post(a.token,'close',{requestId:randomUUID(),day:otherDay,expectedVersion:0})).status,409);
+   // Simule une clôture historique déjà enregistrée avant cette nouvelle garde.
+   await changeTourClosure(pool,first.id,otherDay,'close',{id:first.id,role:'commercial'},0);
    await assert.rejects(syncCreditPrototype(identity,identity,syncIO),(e:unknown)=>e instanceof ClosedDaySyncError&&e.day===otherDay&&e.commercialId===first.id);
    const closedDetail=await isolatedTransaction(()=>readPendingRemoteEditPrototype(isolatedTx,identity));
    assert.equal(closedDetail?.operationId,nextDraft.operationId);assert.deepEqual(closedDetail?.failure,{reason:'closed',day:otherDay,commercialId:first.id});
@@ -599,10 +602,9 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const otherVersions=await db.query<{version:number;commercial_id:string}>('SELECT version,commercial_id FROM identified_sale_events WHERE sale_id=$1 ORDER BY version',[otherSaleId]);
   assert.deepEqual(otherVersions.rows.map(x=>[x.version,x.commercial_id]),[[1,first.id],[2,second.id],[3,second.id],[4,first.id]]);
   const dayA=await fetch(`${origin}/v5/day/${otherDay}/details`,{headers:headers(a.token)}),dayB=await fetch(`${origin}/v5/day/${otherDay}/details`,{headers:headers(b.token)});
-  assert.equal(dayA.status,200);assert.equal(dayB.status,200);
-  const aJournal=await dayA.json() as {rows:{clientId:string;tourTotal:number;saleCount:number}[]},bJournal=await dayB.json() as {rows:{clientId:string;saleCount:number}[]};
-  assert.equal(aJournal.rows.find(x=>x.clientId===client2)?.tourTotal,65450);assert.equal(aJournal.rows.find(x=>x.clientId===client2)?.saleCount,1);
-  assert.equal(bJournal.rows.some(x=>x.clientId===client2&&x.saleCount>0),false);
+  assert.equal(dayA.status,409);assert.equal(dayB.status,409);
+  assert.match((await dayA.json() as {error:string}).error,/remboursement/i);
+  assert.match((await dayB.json() as {error:string}).error,/remboursement/i);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[otherSaleId])).rows[0].n,4);
   // Un abandon côté serveur réserve l'UUID sous le même verrou que l'envoi.
   // Une opération déjà reçue n'est jamais effacée, même si sa réponse s'est perdue.

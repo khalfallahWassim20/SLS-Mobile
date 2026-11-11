@@ -4,6 +4,7 @@ import type {Pool} from 'pg';
 import {readIdentifiedJournalDayInTransaction} from './identified-journal-day.js';
 import {readPrototypeCreditHistoryInTransaction} from './credit-note-history-prototype.js';
 import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
+import {assertSaleRefundJournalSafe} from './sale-refund-journal-guard-prototype.js';
 const safe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw new RangeError('Total du journal trop élevé.');return Number(n);};
 /** L'avoir affecte le jour de sa création, même lorsque la facture est plus
  * ancienne. Les totaux bruts et les paiements d'ancienne dette sont conservés.
@@ -13,6 +14,7 @@ export async function readPrototypeCreditJournal(pool:Pool,commercialId:string,d
  try {
   await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
   const base=await readIdentifiedJournalDayInTransaction(db,commercialId,day);
+  await assertSaleRefundJournalSafe(db,commercialId,day);
   const history=await readPrototypeCreditHistoryInTransaction(db);
   const owned=history.filter(h=>h.ownerId===commercialId),events=owned.filter(h=>h.recordedDay===day);
   const billed=events.reduce((n,e)=>n+BigInt(e.invoiceTotal),0n),refund=events.reduce((n,e)=>n+BigInt(e.refund),0n),credit=events.reduce((n,e)=>n+BigInt(e.retainedCredit),0n);
