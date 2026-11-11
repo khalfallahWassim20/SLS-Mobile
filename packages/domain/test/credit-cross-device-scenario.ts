@@ -1,3 +1,4 @@
+import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
@@ -84,7 +85,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
    CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
-   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema}`);
+   ${saleEventTimeSchema}${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema}`);
   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{mobile.prepare(sql).run(...args)}};
   const transaction=async<T>(action:()=>Promise<T>)=>{mobile.exec('BEGIN');try{const v=await action();mobile.exec('COMMIT');return v;}catch(e){mobile.exec('ROLLBACK');throw e;}};
   const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(second.id,identity.serverOrigin);
@@ -417,7 +418,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
    CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
-   ${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema}`);
+   ${saleEventTimeSchema}${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema}`);
    const isolatedTx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>isolated.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>isolated.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{isolated.prepare(sql).run(...args)}};
    const isolatedTransaction=async<T>(fn:()=>Promise<T>)=>{isolated.exec('BEGIN');try{const v=await fn();isolated.exec('COMMIT');return v;}catch(e){isolated.exec('ROLLBACK');throw e;}};
    const referenceBeforeEdit=await get('reference');await isolatedTransaction(()=>bindAndCacheCreditReferencePrototype(isolatedTx,identity,identity,referenceBeforeEdit,digest,()=>{}));
@@ -718,6 +719,10 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Origine locale/);isolated.exec('ROLLBACK TO missing_origin; RELEASE missing_origin');
   isolated.exec('SAVEPOINT used_uuid');isolated.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(inspected.events[1].event.operationId,identity.commercialId,'sale',randomUUID(),otherAt);
   await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Identifiant de version/);isolated.exec('ROLLBACK TO used_uuid; RELEASE used_uuid');
+  isolated.exec('SAVEPOINT used_draft');isolated.prepare('INSERT INTO credit_remote_sale_draft_prototype VALUES(?,?,?,?,?,?)').run(inspected.events[1].event.operationId,randomUUID(),identity.commercialId,identity.serverOrigin,'{}','{}');
+  await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Identifiant de version/);isolated.exec('ROLLBACK TO used_draft; RELEASE used_draft');
+  isolated.exec('SAVEPOINT used_timestamp');isolated.prepare('INSERT INTO sale_event_times VALUES(?,?)').run(inspected.events[1].event.operationId,otherAt);
+  await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Identifiant de version/);isolated.exec('ROLLBACK TO used_timestamp; RELEASE used_timestamp');
   isolated.exec('SAVEPOINT invalid_history');isolated.prepare('INSERT INTO sale_revisions(sale_id,created_at,previous_payload,new_payload,refund) VALUES(?,?,?,?,?)').run(localRow.id,otherAt,'{}','{}',0);
   await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Historique local incomplet/);isolated.exec('ROLLBACK TO invalid_history; RELEASE invalid_history');
   const applied=await inspectTransport.reconcileLocalSale(localRow.id,offlineSaleId,inspected.fingerprint);
@@ -744,6 +749,12 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   isolated.exec('SAVEPOINT tampered_audit');isolated.prepare('UPDATE credit_local_sale_reconcile_prototype SET event=? WHERE sale_id=?').run('{}',offlineSaleId);
   await assert.rejects(readCreditHistoryPrototype(isolatedTx,identity,clientId,digest),/Historique distant incohérent/);
   await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Historique distant incohérent/);isolated.exec('ROLLBACK TO tampered_audit; RELEASE tampered_audit');
+  isolated.exec('SAVEPOINT bad_actor');isolated.prepare('UPDATE credit_local_sale_reconcile_prototype SET commercial_id=? WHERE sale_id=?').run('non-uuid',offlineSaleId);
+  await assert.rejects(readCreditHistoryPrototype(isolatedTx,identity,clientId,digest),/Historique distant incohérent/);
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Historique distant incohérent/);isolated.exec('ROLLBACK TO bad_actor; RELEASE bad_actor');
+  isolated.exec('SAVEPOINT bad_previous');isolated.prepare("UPDATE sale_revisions SET previous_payload=json_set(previous_payload,'$.paid',999) WHERE sale_id=?").run(localRow.id);
+  await assert.rejects(readCreditHistoryPrototype(isolatedTx,identity,clientId,digest),/Historique distant incohérent/);
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Historique distant incohérent/);isolated.exec('ROLLBACK TO bad_previous; RELEASE bad_previous');
   // Une édition faite ensuite sur ce téléphone garde son origine locale et
   // peut être suivie d'une nouvelle version importée depuis un autre appareil.
   const localVersion4={...modifiedOffline,syncVersion:4},localEditId=randomUUID(),localEditAt='2026-11-07T13:35:00.000Z';

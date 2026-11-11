@@ -1,5 +1,6 @@
 /** Lecture atomique préparatoire d'un export v5 ; non utilisée par l'écran v3. */
 import {canonicalJson} from '@sls/domain';
+import {assertImportedSaleRevision} from './credit-local-revision-audit-prototype';
 import type {DeviceIdentity} from './identified-device';
 import type {SavedSale,TourPreInvoice,TourJournalReceipt} from './storage';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
@@ -41,8 +42,7 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
  for(const sale of sales.filter(s=>tunisDay(new Date(s.createdAt))===day&&s.syncSaleId)){
   const revisions=await tx.getAllAsync<{operationId:string;saleId:string;actor:string;event:string;createdAt:string;previous:string;current:string;refund:number}>(`SELECT m.operation_id AS operationId,m.sale_id AS saleId,m.commercial_id AS actor,m.event,r.created_at AS createdAt,r.previous_payload AS previous,r.new_payload AS current,r.refund FROM credit_local_sale_reconcile_prototype m JOIN sale_revisions r ON r.id=m.revision_id WHERE r.sale_id=? ORDER BY r.id`,sale.id);
   for(const item of revisions){
-   const event=value<Record<string,any>>(item.event),previous=value<SavedSale>(item.previous),current=value<SavedSale>(item.current),{id:_id,...source}=current;
-   if(item.saleId!==sale.syncSaleId||typeof item.actor!=='string'||!item.actor||event.operationId!==item.operationId||event.saleId!==item.saleId||event.version!==current.syncVersion||event.recordedAt!==item.createdAt||event.refund!==item.refund||item.refund!==0||previous.id!==sale.id||current.id!==sale.id||previous.syncSaleId!==item.saleId||current.syncSaleId!==item.saleId||previous.clientId!==sale.clientId||current.clientId!==sale.clientId||previous.syncVersion!+1!==current.syncVersion||previous.paid!==current.paid||canonicalJson(event.sale)!==canonicalJson(source)||!Number.isFinite(Date.parse(item.createdAt)))throw Error('Historique distant incohérent : export refusé.');
+   assertImportedSaleRevision({operationId:item.operationId,saleId:item.saleId,actor:item.actor,event:value<unknown>(item.event),createdAt:item.createdAt,previous:value<SavedSale>(item.previous),current:value<SavedSale>(item.current),refund:item.refund},sale.id,sale.syncSaleId!,sale.clientId);
   }
   if(revisions.length)remoteSaleUpdates.push({saleId:sale.syncSaleId!,day:tunisDay(new Date(revisions[revisions.length-1].createdAt))});
  }
