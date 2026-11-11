@@ -1,5 +1,5 @@
-/** Composition expérimentale v5 : non montée dans App.tsx. Les écrans de vente,
- * de règlement et de journal doivent utiliser CreditWriteContext avant activation. */
+/** Composition v5 montée uniquement avec l’option explicite de test isolé.
+ * Les formulaires utilisent CreditWriteContext et les gardes transactionnelles. */
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {Alert,ScrollView,StyleSheet,Text,TouchableOpacity,View} from 'react-native';
 import * as Print from 'expo-print';

@@ -3,6 +3,10 @@ import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import { createSecureSessionStore, validSession } from './secure-commercial-session';
+import {CreditMobileWorkspacePrototype} from './credit-mobile-workspace-prototype';
+import {createExperimentalCreditMobileTransport,getCreditReferencePrototype} from './storage';
+import type {DeviceIdentity} from './identified-device';
+const V5_TEST_ONLY=process.env.EXPO_PUBLIC_SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
 import { journalCsv, journalHtml } from './journal-export';
 import React, { Children, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, AppState, BackHandler, Keyboard, SafeAreaView, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -139,13 +143,17 @@ export default function App() {
   const [individual,setIndividual]=useState<CommercialSession|null>(null);
   const [sessionNotice,setSessionNotice]=useState('');
   const [boundCommercial,setBoundCommercial]=useState(false);
+  const [v5Identity,setV5Identity]=useState<DeviceIdentity|null>(null);
+  const [v5Login,setV5Login]=useState(false);
+  const [v5Ready,setV5Ready]=useState(false);
   const [closureLabel,setClosureLabel]=useState('');
   useEffect(()=>{
     let alive=true;commercialBusyRef.current=true;setCommercialBusy(true);
     void (async()=>{
       try {
         const identity=await getBoundIdentity();
-        if(!alive)return;setBoundCommercial(!!identity);
+        if(!alive)return;setBoundCommercial(!!identity);setV5Identity(identity);if(identity)setServerUrl(identity.serverOrigin);
+        if(V5_TEST_ONLY&&identity){const reference=await getCreditReferencePrototype(identity);if(!alive)return;setV5Ready(!!reference);}
         const session=await secureSessions.restore(identity);
         if(alive && session){setServerUrl(session.serverOrigin);setIndividual(session);setClosureLabel('État serveur à actualiser');setSessionNotice('Session restaurée sur ce téléphone. Sa validité serveur sera vérifiée lors du prochain échange.');}
       } catch {if(alive)setSessionNotice('Restauration de session impossible : reconnectez-vous en ligne.');}
@@ -196,14 +204,23 @@ export default function App() {
   };
   const connectIndividual=async()=>{
     if(commercialBusyRef.current)return;commercialBusyRef.current=true;setCommercialBusy(true);setCommercialError('');
+    if(V5_TEST_ONLY)setV5Login(true);
     const password=commercialPassword;setCommercialPassword('');
     try {const session=await openCommercialSession(serverUrl,commercialLogin,password,fetch);
       if(!validSession(session,{commercialId:session.id,serverOrigin:session.serverOrigin}))throw Error('Vérifiez la date et l’heure du téléphone : session expirée ou invalide.');
-      const state=await readIndividual(session,`day/${journalDate}`);
-      await refreshIndividual(session);await observeIdentifiedTour({commercialId:session.id,serverOrigin:session.serverOrigin},journalDate,state);
+      const identity={commercialId:session.id,serverOrigin:session.serverOrigin};
+      let state:{status:string};
+      if(V5_TEST_ONLY){
+        const transport=createExperimentalCreditMobileTransport(session,identity,()=>invalidateIndividual(session));
+        await transport.connect();setV5Identity(identity);setV5Ready(true);setBoundCommercial(true);
+        state=await transport.refreshDay(journalDate);
+      }else{
+        state=await readIndividual(session,`day/${journalDate}`);
+        await refreshIndividual(session);await observeIdentifiedTour(identity,journalDate,state);
+      }
       if(!validSession(session,{commercialId:session.id,serverOrigin:session.serverOrigin}))throw Error('Session expirée : reconnectez-vous.');
       let notice='';try{await secureSessions.save(session);}catch{notice='Session active mais non sauvegardée : reconnectez-vous après fermeture de l’application.';}
-      setSessionNotice(notice);setClosureLabel(state.status==='closed'?'Journée clôturée':'Journée ouverte');setIndividual(session);setCommercialResult(session.name);setScreen('journal');
+      setSessionNotice(notice);setClosureLabel(state.status==='closed'?'Journée clôturée':'Journée ouverte');setIndividual(session);setCommercialResult(session.name);setV5Login(false);setScreen('journal');
     } catch(error){setCommercialError(error instanceof Error?error.message:'Connexion impossible.');}
     finally{commercialBusyRef.current=false;setCommercialBusy(false);}
   };
@@ -284,8 +301,8 @@ export default function App() {
   const loadSales = async () => { try { const [current, original, payments, pending] = await Promise.all([getSales(), getOriginalSales(), getSettlements(), getOutbox()]); setSales(current); setOriginalSales(original); setSettlements(payments); setOutbox(pending); setStorageError(false); } catch { setSales([]);setOriginalSales([]);setSettlements([]);setStorageError(true); } finally { setLoading(false); } };
   useEffect(() => { const timer = setInterval(() => setJournalDate(tunisDay(new Date())), 60000); return () => clearInterval(timer); }, []);
   const loadJournal = async (_day: string) => { setJournalLoading(true); try { const [invoices, receipts] = await Promise.all([getAllPreInvoices(), getTourReceipts()]); const pending = await getJournalOutbox(); setPreInvoices(invoices); setTourReceipts(receipts); setJournalOutbox(pending); setJournalError(''); } catch { setPreInvoices([]);setTourReceipts([]);setJournalError('Impossible de lire le journal local.'); } finally { setJournalLoading(false); } };
-  useEffect(() => { void loadJournal(journalDate); }, [journalDate]);
-  useEffect(() => { void loadSales(); void (async () => { try { const raw = await getReference(); if (raw) { const parsed = JSON.parse(raw); const valid = validateReference(parsed); if (typeof parsed.syncedAt !== 'string') throw Error('Date absente'); setReference({ ...valid, syncedAt: parsed.syncedAt }); } } catch { setReferenceError('Impossible de lire les données de référence locales.'); } })(); }, []);
+  useEffect(() => { if(!V5_TEST_ONLY)void loadJournal(journalDate); }, [journalDate]);
+  useEffect(() => { if(V5_TEST_ONLY)return; void loadSales(); void (async () => { try { const raw = await getReference(); if (raw) { const parsed = JSON.parse(raw); const valid = validateReference(parsed); if (typeof parsed.syncedAt !== 'string') throw Error('Date absente'); setReference({ ...valid, syncedAt: parsed.syncedAt }); } } catch { setReferenceError('Impossible de lire les données de référence locales.'); } })(); }, []);
   const clearPhoneTestHistory=async()=>{
     if(savingRef.current||syncRef.current||loading||journalLoading||commercialBusy)return;
     savingRef.current=true;syncRef.current=true;setSaving(true);setSyncBusy(true);
@@ -602,6 +619,25 @@ export default function App() {
   const showTabs = TAB_SCREENS.includes(screen) && !keyboardOpen;
   const showFab = screen === 'journal' && !keyboardOpen;
   const bottomSpace = (showTabs ? 96 : 0) + (bar ? (bar.info ? 120 : 100) : 0) + (showFab ? 72 : 0) + 36;
+  if(V5_TEST_ONLY){
+    if(commercialBusy&&!v5Identity&&!v5Login)return <SafeAreaView style={styles.safe}><Text>Ouverture du téléphone…</Text></SafeAreaView>;
+    if(!v5Identity||!v5Ready||v5Login)return <SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <Header title="Connexion · essai v5" detail="Base de test isolée uniquement" />
+      <Text style={styles.disclaimer}>Données fictives uniquement. La première connexion lie ce téléphone au serveur et au commercial ; ne pas désinstaller l’application ni supprimer les données pour résoudre un conflit.</Text>
+      <TextInput accessibilityLabel="Adresse du serveur" placeholder="Adresse du serveur" autoCapitalize="none" value={serverUrl} onChangeText={setServerUrl} style={styles.search}/>
+      <TextInput accessibilityLabel="Identifiant commercial" placeholder="Identifiant commercial" autoCapitalize="none" value={commercialLogin} onChangeText={setCommercialLogin} style={styles.search}/>
+      <TextInput accessibilityLabel="Mot de passe commercial" placeholder="Mot de passe" secureTextEntry value={commercialPassword} onChangeText={setCommercialPassword} style={styles.search}/>
+      {!!sessionNotice&&<Text style={styles.warning}>{sessionNotice}</Text>}
+      {!!commercialError&&<Text accessibilityRole="alert" style={styles.warning}>{commercialError}</Text>}
+      <Button label={commercialBusy?'Connexion…':'Se connecter'} disabled={commercialBusy} onPress={()=>{void connectIndividual();}} />
+      {v5Identity&&v5Ready&&<Button secondary label="Continuer hors ligne" disabled={commercialBusy} onPress={()=>setV5Login(false)}/>}
+    </ScrollView></SafeAreaView>;
+    return <SafeAreaView style={styles.safe}><StatusBar barStyle="dark-content" />
+      {!individual&&<View style={styles.content}><Text style={styles.warning}>Session expirée ou absente : travail hors ligne possible, reconnexion nécessaire pour synchroniser.</Text><Button label="Se reconnecter" onPress={()=>setV5Login(true)}/></View>}
+      {!!sessionNotice&&<Text style={styles.warning}>{sessionNotice}</Text>}
+      <CreditMobileWorkspacePrototype identity={v5Identity} day={journalDate} commercialName={individual?.name??'Commercial lié'} session={individual} onUnauthorized={()=>{if(individual)invalidateIndividual(individual);}} />
+    </SafeAreaView>;
+  }
   return <SafeAreaView style={styles.safe}><StatusBar barStyle="dark-content" /><ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={[styles.content, { paddingBottom: bottomSpace }]}>
     <View style={styles.demo}><Text style={styles.demoText}>Prototype • données fictives • stockage local non chiffré</Text></View>
     {storageError && <View style={styles.demo}><Text style={styles.demoText}>Impossible de lire les ventes locales. Vérifiez le stockage, puis réessayez.</Text><Button label="Réessayer" secondary onPress={() => { setLoading(true); void loadSales(); }} /></View>}

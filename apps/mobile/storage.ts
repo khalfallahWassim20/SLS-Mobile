@@ -435,8 +435,8 @@ export async function synchronizeCreditPrototype(identity:DeviceIdentity,verifie
  } finally {creditSyncRunning=false;}
 }
 
-/** Point de raccordement préparatoire ; aucune interface actuelle ne l'appelle.
- * Le jeton reste en mémoire et le téléphone doit déjà être lié. */
+/** Transport expérimental utilisé uniquement par l’écran de test v5.
+ * Le jeton reste en mémoire ; la liaison vérifiée précède les écritures. */
 export function createExperimentalCreditMobileTransport(session:CommercialSession,identity:DeviceIdentity,onUnauthorized:()=>void,isCurrentSession?:()=>boolean) {
  return createCreditTransportPrototype(session,identity,{
   request:(url,options)=>fetch(url,options),onUnauthorized,isCurrentSession,

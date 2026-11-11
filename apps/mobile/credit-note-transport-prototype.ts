@@ -1,5 +1,4 @@
-/** Transport v5 préparatoire : pas encore branché aux écrans ni au serveur
- * courant. Les opérations locales et leurs accusés restent gérés par SQLite. */
+/** Transport v5 de test isolé. Les opérations et leurs accusés restent gérés par SQLite. */
 import {validSession} from './secure-commercial-session';
 import type {CommercialSession} from './commercial-login';
 import type {reconcileLocalSalePrototype} from './local-sale-reconcile-prototype';

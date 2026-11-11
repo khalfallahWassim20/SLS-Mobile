@@ -61,3 +61,17 @@ Il faut nettoyer **tous** les appareils avant de reprendre : un téléphone oubl
 Après mise à jour de l’API et du mobile, le commercial se connecte en ligne avec son compte. Son jeton est enregistré avec Expo SecureStore, sans enregistrer le mot de passe, et expire à minuit (début du jour suivant) en heure de Tunisie selon l’horloge du serveur. L’application tente de le restaurer automatiquement avant cette échéance, même sans réseau ; la révocation ou la désactivation ne peut être confirmée par le serveur qu’au prochain échange. Après minuit, une nouvelle connexion en ligne est nécessaire pour synchroniser ou clôturer, mais les opérations locales restent accessibles hors ligne pour l’identité déjà liée. Une erreur de stockage sécurisé peut imposer une nouvelle connexion après fermeture : le mobile l’indique. Ne pas désinstaller Expo Go ni effacer ses données pour tester.
 
 La date et l’heure automatiques du téléphone et du serveur doivent être correctes. Une horloge locale erronée peut empêcher la restauration ou afficher un état périmé ; le serveur contrôle la validité et la révocation à chaque requête. En hors ligne, il est impossible de vérifier la révocation ou une clôture distante. HTTP, SQLite non chiffré et autres limites rendent cette version réservée aux données fictives et au réseau privé de test.
+
+## Raccordement v5 pour test isolé uniquement
+
+Les espaces v5 mobile, serveur et administration sont désormais raccordés **derrière trois options explicites**. La version normale reste inchangée. Ce n'est pas une activation de production : utiliser exclusivement une **base PostgreSQL distincte contenant des données fictives**, ainsi qu'un téléphone de test dont les données ont été préservées. Ne pas basculer une base ou un téléphone utilisé pour d'autres essais sans sauvegarde et vérification de toutes les files. Ne jamais supprimer des données pour débloquer un conflit.
+
+Pour un environnement d'essai préparé séparément, les variables suivantes doivent être présentes **au démarrage** des trois composants :
+
+- API : `SLS_V5_TEST_ONLY=DONNEES_FICTIVES_ISOLEES`
+- Expo : `EXPO_PUBLIC_SLS_V5_TEST_ONLY=DONNEES_FICTIVES_ISOLEES`
+- Vite admin : `VITE_SLS_V5_TEST_ONLY=DONNEES_FICTIVES_ISOLEES`
+
+Redémarrer les processus après modification des variables ; Expo et Vite intègrent leurs variables dans le bundle. Le mode individuel doit déjà être activé sur cette base de test suivant la procédure de la section précédente. La bascule individuelle reste irréversible et ne vérifie pas les appareils hors ligne. Le téléphone vérifie son identité et la référence v5 avant la liaison ; il conserve les opérations existantes et refuse la migration si ses anciennes files sont en attente. Le travail hors ligne reste possible après expiration de session, la synchronisation nécessite une reconnexion.
+
+L'espace d'administration v5 regroupe les soldes, avoirs, historiques, journaux, exports et réouverture. Les vues anciennes ne doivent pas être utilisées pour interpréter des avoirs. Les remboursements de modifications distantes et les avoirs refusés peuvent encore nécessiter un rapprochement manuel et bloquer le client ou la clôture. Les parcours n'ont pas encore été validés sur un téléphone réel : ne pas interpréter un export Android ou des tests automatisés comme un essai physique réussi. Les descriptions plus anciennes ci-dessous ou dans les documents qui indiquent « non monté » correspondent à l'état antérieur à ce raccordement de test.

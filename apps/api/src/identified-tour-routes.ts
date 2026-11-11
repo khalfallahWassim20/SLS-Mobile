@@ -1,4 +1,4 @@
-/** Routeurs isolés pour tests, non montés sur le serveur de l'application. */
+/** Routes individuelles ; les routes v5 restent désactivées sauf option de test explicite. */
 import {Router,type RequestHandler} from 'express';
 import {rateLimit} from 'express-rate-limit';
 import {ZodError,z} from 'zod';
@@ -37,8 +37,7 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  r.use(rateLimit({windowMs:15*60*1000,limit:500,standardHeaders:'draft-8',legacyHeaders:false}));
  const supportsCredit=(req:import('express').Request)=>options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5';
  r.get('/reference',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(supportsCredit(req)?await readPrototypeCreditReference(pool,false):await readIdentifiedReference(pool,false,enforceMode));}catch(e){errorHandler(e,res,next);}});
- // Expérimental uniquement : cette option ne doit pas être activée par server.ts
- // avant le raccordement complet des écrans, soldes, historiques et exports.
+ // Uniquement pour une base de test isolée, jamais activé par défaut.
  if(options.allowCreditProtocol===true)r.use('/credit-notes',(req,res,next)=>{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}next();},prototypeCommercialCreditRoutes(pool,secret));
  if(options.allowCreditProtocol===true)r.post('/remote-sale-edits/abandon',async(req,res,next)=>{try{
   if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
@@ -74,7 +73,7 @@ export function identifiedAdminRoutes(pool:Pool,authenticateAdmin:RequestHandler
  const enforceMode=options.enforceMode!==false;
  if(options.allowCreditProtocol&&!enforceMode)throw Error('Le protocole d’avoirs exige le mode individuel.');
  const r=Router();r.use(authenticateAdmin);r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
- // Reste désactivé dans server.ts. L'authentification est imposée par ce
+ // Désactivé par défaut. L'authentification est imposée par ce
  // routeur parent, avant même de vérifier la version ou de traiter la requête.
  if(options.allowCreditProtocol===true)r.use('/credit-notes',(req,res,next)=>{if(req.get('X-SLS-Reference-Version')!=='5'){res.status(409).json({error:'Référence v5 requise.'});return;}next();},prototypeAdminCreditRoutes(pool,(_req,_res,next)=>next(),adminName));
  r.post('/:commercialId/reopen',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'admin',actorId:adminName,commercialId:req.params.commercialId},enforceMode,options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5');res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});

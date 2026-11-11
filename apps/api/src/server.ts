@@ -166,9 +166,11 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
 });
 // Routes individuelles protégées par session commerciale et garde de mode transactionnelle.
 // Tant que la transition n'est pas autorisée, elles refusent toute écriture.
-app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret));
+// Explicitement réservé à une base fictive isolée : jamais activé par défaut.
+const creditV5TestOnly=process.env.SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
+app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly}));
 app.use('/api', auth);
-app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username));
+app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username,{allowCreditProtocol:creditV5TestOnly}));
 app.get('/api/tour-sync-mode',async(_req,res)=>{res.set('Cache-Control','no-store').json({mode:await readSyncMode(pool)});});
 app.post('/api/tour-sync-mode/activate',async(req,res,next)=>{
  try {const data=z.object({confirmation:z.string()}).strict().parse(req.body);res.json(await activateIdentifiedTours(pool,username,data.confirmation));}
@@ -176,7 +178,7 @@ app.post('/api/tour-sync-mode/activate',async(req,res,next)=>{
 });
 
 // Vue admin en lecture seule : l'espace expérimental ne reflète pas le journal mobile actuel.
-app.use('/api/identified-tour', identifiedAdminReadRoutes(pool));
+app.use('/api/identified-tour', identifiedAdminReadRoutes(pool,{allowCreditProtocol:creditV5TestOnly}));
 // Endpoint réservé aux essais administrateur : désactivé par défaut, hors soldes et hors synchronisation mobile.
 app.use('/api/experimental/journal',async(_req,res,next)=>{if(await readSyncMode(pool)!=='legacy'){res.status(409).json({error:'Journal expérimental désactivé après transition.'});return;}next();}, experimentalJournalRoutes(pool, process.env.JOURNAL_EXPERIMENTAL === '1'));
 const text = (max: number) => z.string().trim().max(max);
