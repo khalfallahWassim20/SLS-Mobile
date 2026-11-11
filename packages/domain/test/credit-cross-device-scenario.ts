@@ -803,8 +803,9 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,clientId,digest))).conflict,false);
   const cancelledJournal=await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest));assert.ok(cancelledJournal.remoteCancellations?.some(x=>x.invoiceId===offlineSaleId));
   assert.equal(JSON.parse(String(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(localRow.id)?.payload)).syncVersion,5);
-  // Les remboursements faits sur un autre appareil ne sont pas importés tant
-  // que leur attribution aux journaux n'est pas entièrement rapprochée.
+  // Une version distante avec remboursement peut être importée sous preuve,
+  // sans déclarer que le versement a eu lieu sur ce téléphone. Le journal de
+  // la vente reste bloqué tant que sa caisse n'est pas rapprochée.
   const refundSaleId=randomUUID(),refundOp=randomUUID(),refundSale={...otherSale,syncSaleId:refundSaleId};
   assert.equal((await post(b.token,'sales',{operationId:refundOp,saleId:refundSaleId,version:1,recordedAt:otherAt,sale:refundSale,refund:0})).status,201);
   isolated.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(client2,JSON.stringify(refundSale));const refundId=Number(isolated.prepare('SELECT last_insert_rowid() AS id').get()?.id);
@@ -812,8 +813,13 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:refundSaleId,version:2,recordedAt:'2026-11-07T10:00:00.000Z',sale:{...remoteModified,syncSaleId:refundSaleId},refund:2400})).status,201);
   const refundResponse=await fetch(`${origin}/v5/local-sales/${refundSaleId}/history`,{headers:headers(b.token)});assert.equal(refundResponse.status,200);const refundHistory=await refundResponse.json();
   const refundPreview=await isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,refundId,refundSaleId,refundHistory,digest));assert.equal(refundPreview.status,'updated');
-  await assert.rejects(isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,identity,identity,refundId,refundSaleId,refundHistory,refundPreview.fingerprint,digest)),/remboursement.*rapprochement manuel/i);
-  assert.equal(JSON.parse(String(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(refundId)?.payload)).syncVersion,1);assert.equal(isolated.prepare('SELECT count(*) AS n FROM sale_revisions WHERE sale_id=?').get(refundId)?.n,0);
+  const appliedRefund=await isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,identity,identity,refundId,refundSaleId,refundHistory,refundPreview.fingerprint,digest));assert.equal(appliedRefund.versionsAdded,1);
+  assert.equal(JSON.parse(String(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(refundId)?.payload)).syncVersion,2);assert.equal(isolated.prepare('SELECT count(*) AS n FROM sale_revisions WHERE sale_id=?').get(refundId)?.n,1);
+  const refundHistoryLocal=await isolatedTransaction(()=>readCreditHistoryPrototype(isolatedTx,identity,client2,digest));assert.ok(refundHistoryLocal.sales.some(s=>s.sale.syncSaleId===refundSaleId&&s.revisions.some(r=>r.origin==='remote'&&r.refund===2400&&r.commercialId===first.id)));
+  await assert.rejects(isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)),/Remboursement enregistré ailleurs/);
+  await assert.rejects(isolatedTransaction(()=>prepareVerifiedPrototypeClose(isolatedTx,identity,otherDay,0,randomUUID,digest)),/Remboursement enregistré ailleurs|conflit|rapprochement/i);
+  isolated.exec('SAVEPOINT bad_refund_audit');isolated.prepare('UPDATE sale_revisions SET refund=refund+1 WHERE sale_id=?').run(refundId);
+  await assert.rejects(readCreditHistoryPrototype(isolatedTx,identity,client2,digest),/Historique distant incohérent/);isolated.exec('ROLLBACK TO bad_refund_audit; RELEASE bad_refund_audit');
 
   // Deux factures divergentes du même client peuvent être rapprochées une par
   // une ; entre les deux, son solde et la clôture restent bloqués.
@@ -856,7 +862,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await isolatedTransaction(()=>assertCreditWritePrototype(isolatedTx,{identity,expectedBalance:unaffected.balance},{kind:'sale',clientId},digest));
   assert.equal((await post(b.token,'credit-notes/sales',thirdCommand)).status,409);
   assert.equal(isolated.prepare('SELECT pending FROM offline_credit_prototype WHERE operation_id=?').get(thirdCommand.operationId)?.pending,1);
-  await assert.rejects(isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)),/conflit/);
+  await assert.rejects(isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)),/conflit|Remboursement enregistré ailleurs/);
   const abandonPayload={kind:'sale',command:thirdCommand};
   assert.equal((await post('invalid','credit-notes-abandon',abandonPayload)).status,401);
   const firstAbandon=await post(b.token,'credit-notes-abandon',abandonPayload);assert.equal(firstAbandon.status,200);const lostReceipt=await firstAbandon.json();assert.equal(lostReceipt.status,'abandoned');

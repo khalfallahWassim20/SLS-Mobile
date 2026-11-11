@@ -19,7 +19,6 @@ export async function reconcileLocalSalePrototype(tx:Tx,identity:DeviceIdentity,
  if(check.fingerprint!==expectedFingerprint)throw Error('La facture a changé depuis l’aperçu : comparez à nouveau.');
  if(check.status==='diverged')throw Error('La version locale ne correspond pas au serveur : rapprochement manuel nécessaire.');
  const localVersion=check.local.syncVersion!,events=check.events,first=events[0],missing=events.slice(localVersion);
- if(missing.some(x=>x.event.refund>0))throw Error('Un remboursement enregistré sur un autre appareil nécessite un rapprochement manuel des encaissements.');
  // Chaque version déjà locale doit avoir son historique exact et une preuve
  // d'origine : aucune version locale ne peut être silencieusement remplacée.
  const firstMarker=await tx.getFirstAsync<{commercialId:string;entityId:string;recordedAt:string}>('SELECT commercial_id AS commercialId,entity_id AS entityId,recorded_at AS recordedAt FROM identified_local_operations WHERE operation_id=? AND operation_kind=\'sale\' ',first.event.operationId);

@@ -44,6 +44,7 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   for(const item of revisions){
    assertImportedSaleRevision({operationId:item.operationId,saleId:item.saleId,actor:item.actor,event:value<unknown>(item.event),createdAt:item.createdAt,previous:value<SavedSale>(item.previous),current:value<SavedSale>(item.current),refund:item.refund},sale.id,sale.syncSaleId!,sale.clientId);
   }
+  if(revisions.some(r=>r.refund>0))throw Error('Remboursement enregistré ailleurs : rapprochement des encaissements nécessaire avant journal ou clôture de cette journée.');
   if(revisions.length)remoteSaleUpdates.push({saleId:sale.syncSaleId!,day:tunisDay(new Date(revisions[revisions.length-1].createdAt))});
  }
  const remoteCancellations:NonNullable<JournalExport['remoteCancellations']>=[];
