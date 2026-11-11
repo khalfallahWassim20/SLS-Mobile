@@ -37,6 +37,15 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
  for(const {note} of credits){const src=note.source as {clientId?:string;invoice?:{clientId?:string}};const id=note.kind==='sale'?src.clientId:src.invoice?.clientId;if(!id)throw Error('Client de l’avoir indisponible.');if(tunisDay(new Date(note.command.recordedAt))===day)clientIds.add(id);}
  const snapshot=await loadCreditBalanceSnapshotPrototype(tx,identity,digest);
  for(const id of clientIds){const balance=snapshot.balanceFor(id);if(balance.conflict)throw Error('Solde en conflit : export refusé.');}
+ const remoteSaleUpdates:NonNullable<JournalExport['remoteSaleUpdates']>=[];
+ for(const sale of sales.filter(s=>tunisDay(new Date(s.createdAt))===day&&s.syncSaleId)){
+  const revisions=await tx.getAllAsync<{operationId:string;saleId:string;actor:string;event:string;createdAt:string;previous:string;current:string;refund:number}>(`SELECT m.operation_id AS operationId,m.sale_id AS saleId,m.commercial_id AS actor,m.event,r.created_at AS createdAt,r.previous_payload AS previous,r.new_payload AS current,r.refund FROM credit_local_sale_reconcile_prototype m JOIN sale_revisions r ON r.id=m.revision_id WHERE r.sale_id=? ORDER BY r.id`,sale.id);
+  for(const item of revisions){
+   const event=value<Record<string,any>>(item.event),previous=value<SavedSale>(item.previous),current=value<SavedSale>(item.current),{id:_id,...source}=current;
+   if(item.saleId!==sale.syncSaleId||typeof item.actor!=='string'||!item.actor||event.operationId!==item.operationId||event.saleId!==item.saleId||event.version!==current.syncVersion||event.recordedAt!==item.createdAt||event.refund!==item.refund||item.refund!==0||previous.id!==sale.id||current.id!==sale.id||previous.syncSaleId!==item.saleId||current.syncSaleId!==item.saleId||previous.clientId!==sale.clientId||current.clientId!==sale.clientId||previous.syncVersion!+1!==current.syncVersion||previous.paid!==current.paid||canonicalJson(event.sale)!==canonicalJson(source)||!Number.isFinite(Date.parse(item.createdAt)))throw Error('Historique distant incohérent : export refusé.');
+  }
+  if(revisions.length)remoteSaleUpdates.push({saleId:sale.syncSaleId!,day:tunisDay(new Date(revisions[revisions.length-1].createdAt))});
+ }
  const remoteCancellations:NonNullable<JournalExport['remoteCancellations']>=[];
  for(const row of rows){
   for(const sale of row.sales){
@@ -57,5 +66,5 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   if(source.version!==local.version||canonicalJson(source.invoice)!==canonicalJson(invoice)||canonicalJson(source.receipts)!==canonicalJson(receipts.filter(r=>r.preInvoiceId===invoice.id))||await digest(canonicalJson(source))!==proof.hash)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
   remoteCancellations.push({kind:'preinvoice',invoiceId:invoice.id,day:tunisDay(new Date(state.creditNote.recordedAt)),source});
  }
- return {day,commercial,rows,receipts,credits,remoteCancellations};
+ return {day,commercial,rows,receipts,credits,remoteCancellations,remoteSaleUpdates};
 }

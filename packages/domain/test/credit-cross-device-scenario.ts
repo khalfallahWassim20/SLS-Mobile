@@ -36,6 +36,7 @@ import {remoteSaleConfirmPrototypeSchema,confirmRemoteSaleEditPrototype,readRemo
 import {remoteSaleDraftPrototypeSchema,stageRemoteSaleEditDraftPrototype} from '../../../apps/mobile/credit-remote-sale-draft-prototype.js';
 import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype} from '../../../apps/mobile/credit-remote-sale-edit-prototype.js';
 import {readCreditHistoryPrototype} from '../../../apps/mobile/credit-history-prototype.js';
+import {reconcileLocalSalePrototype} from '../../../apps/mobile/local-sale-reconcile-prototype.js';
 import {inspectLocalSaleHistoryPrototype} from '../../../apps/mobile/local-sale-history-prototype.js';
 import {prepareCreditSale,prepareCreditSettlement} from '../../../apps/mobile/credit-sale-settlement-prototype.js';
 
@@ -412,7 +413,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   // finale prouvant la nouvelle version permet de terminer l'essai.
   const isolated=new DatabaseSync(':memory:');
   try{
-   isolated.exec(`CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
+   isolated.exec(`CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);CREATE TABLE sale_revisions(id INTEGER PRIMARY KEY AUTOINCREMENT,sale_id INTEGER NOT NULL,created_at TEXT NOT NULL,previous_payload TEXT NOT NULL,new_payload TEXT NOT NULL,refund INTEGER NOT NULL);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
    CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
    CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
@@ -700,12 +701,99 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   isolated.exec('SAVEPOINT pending_local');isolated.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),offlineSaleId,3,'{}');
   assert.equal((await inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,digest)).status,'pending');isolated.exec('ROLLBACK TO pending_local; RELEASE pending_local');
   isolated.exec('SAVEPOINT divergent_local');const divergent={...offlineSale,clientName:'Nom différent'};isolated.prepare('UPDATE sales SET payload=? WHERE id=?').run(JSON.stringify(divergent),localRow.id);
-  assert.equal((await inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,digest)).status,'diverged');isolated.exec('ROLLBACK TO divergent_local; RELEASE divergent_local');
-  const inspectTransport=createCreditTransportPrototype(session,identity,{now:()=>now,request:(url,opts)=>fetch(url.replace(`${identity.serverOrigin}/api/mobile/identified/`,`${origin}/v5/`),opts),cacheReference:async()=>{},cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),localSaleInspect:(id,verified,localId,saleId,body)=>isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,id,verified,localId,saleId,body,digest))});
+  assert.equal((await inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,digest)).status,'diverged');
+  await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/changé depuis/);isolated.exec('ROLLBACK TO divergent_local; RELEASE divergent_local');
+  const inspectTransport=createCreditTransportPrototype(session,identity,{now:()=>now,request:(url,opts)=>fetch(url.replace(`${identity.serverOrigin}/api/mobile/identified/`,`${origin}/v5/`),opts),cacheReference:async()=>{},cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),localSaleInspect:(id,verified,localId,saleId,body)=>isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,id,verified,localId,saleId,body,digest)),localSaleReconcile:(id,verified,localId,saleId,body,fingerprint)=>isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,id,verified,localId,saleId,body,fingerprint,digest))});
   assert.equal((await inspectTransport.inspectLocalSale(localRow.id,offlineSaleId)).status,'updated');
-  assert.equal((await post(a.token,'credit-notes/sales',{operationId:randomUUID(),invoiceId:offlineSaleId,expectedVersion:2,recordedAt:'2026-11-07T14:00:00.000Z',choice:null})).status,201);
-  const cancelledLocal=await inspectTransport.inspectLocalSale(localRow.id,offlineSaleId);assert.equal(cancelledLocal.status,'cancelled');assert.equal(cancelledLocal.serverVersion,3);
-  assert.equal(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(localRow.id)?.payload,localRow.payload);assert.equal(isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,originalCache);
+  // La mise à jour n'applique que la chaîne revue, sans file ni mouvement
+  // local équivoque et sous transaction unique.
+  await assert.rejects(isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,sameResult.fingerprint,digest)),/changé depuis/);
+  await assert.rejects(isolatedTransaction(async()=>{await reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest);throw Error('session expirée pendant rapprochement');}),/session expirée/);
+  assert.equal(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(localRow.id)?.payload,localRow.payload);assert.equal(isolated.prepare('SELECT count(*) AS n FROM sale_revisions').get()?.n,0);
+  assert.equal(isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,originalCache);
+  isolated.exec('SAVEPOINT pending_reconcile');isolated.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),offlineSaleId,3,'{}');
+  await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Opération ou avoir/);
+  isolated.exec('ROLLBACK TO pending_reconcile; RELEASE pending_reconcile');
+  isolated.exec('SAVEPOINT missing_origin');isolated.prepare('DELETE FROM identified_local_operations WHERE operation_id=?').run(offlineOperation);
+  await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Origine locale/);isolated.exec('ROLLBACK TO missing_origin; RELEASE missing_origin');
+  isolated.exec('SAVEPOINT used_uuid');isolated.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(inspected.events[1].event.operationId,identity.commercialId,'sale',randomUUID(),otherAt);
+  await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Identifiant de version/);isolated.exec('ROLLBACK TO used_uuid; RELEASE used_uuid');
+  isolated.exec('SAVEPOINT invalid_history');isolated.prepare('INSERT INTO sale_revisions(sale_id,created_at,previous_payload,new_payload,refund) VALUES(?,?,?,?,?)').run(localRow.id,otherAt,'{}','{}',0);
+  await assert.rejects(reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,inspected.fingerprint,digest),/Historique local incomplet/);isolated.exec('ROLLBACK TO invalid_history; RELEASE invalid_history');
+  const applied=await inspectTransport.reconcileLocalSale(localRow.id,offlineSaleId,inspected.fingerprint);
+  assert.equal(applied.versionsAdded,1);assert.equal(applied.cancelled,false);assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,clientId,digest))).conflict,false);
+  assert.equal(JSON.parse(String(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(localRow.id)?.payload)).syncVersion,2);
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM sale_revisions WHERE sale_id=?').get(localRow.id)?.n,1);
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM credit_local_sale_reconcile_prototype WHERE sale_id=?').get(offlineSaleId)?.n,1);
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,0);
+  const alreadyCompared=await inspectTransport.inspectLocalSale(localRow.id,offlineSaleId);assert.equal(alreadyCompared.status,'same');
+  const replay=await isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,alreadyCompared.fingerprint,digest));assert.equal(replay.versionsAdded,0);
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM sale_revisions WHERE sale_id=?').get(localRow.id)?.n,1);
+  // Une nouvelle version distante après l’aperçu rend l'ancienne empreinte
+  // inutilisable ; la deuxième importation conserve les deux révisions.
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:offlineSaleId,version:3,recordedAt:'2026-11-07T13:30:00.000Z',sale:{...modifiedOffline,syncVersion:3},refund:0})).status,201);
+  const thirdHistory=await readLocalHistory();await assert.rejects(isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,thirdHistory,alreadyCompared.fingerprint,digest)),/changé depuis/);
+  await assert.rejects(inspectTransport.reconcileLocalSale(localRow.id,offlineSaleId,alreadyCompared.fingerprint),/changé depuis/);
+  const thirdPreview=await isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,thirdHistory,digest));
+  assert.equal((await isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,thirdHistory,thirdPreview.fingerprint,digest))).versionsAdded,1);
+  const historyAfter=await isolatedTransaction(()=>readCreditHistoryPrototype(isolatedTx,identity,clientId,digest));assert.equal(historyAfter.sales[0].revisions.length,2);assert.ok(historyAfter.sales[0].revisions.every(r=>r.origin==='remote'&&r.commercialId===first.id));
+  const updatedJournal=await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest));
+  assert.ok(updatedJournal.remoteSaleUpdates?.some(x=>x.saleId===offlineSaleId));assert.match(journalCsv(updatedJournal),/modification du .* enregistrée ailleurs/);
+  assert.ok(describeCreditJournalPrototype(updatedJournal).rows.flatMap(r=>r.sales).some(s=>s.syncSaleId===offlineSaleId&&s.remoteUpdateDay));
+
+  isolated.exec('SAVEPOINT tampered_audit');isolated.prepare('UPDATE credit_local_sale_reconcile_prototype SET event=? WHERE sale_id=?').run('{}',offlineSaleId);
+  await assert.rejects(readCreditHistoryPrototype(isolatedTx,identity,clientId,digest),/Historique distant incohérent/);
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Historique distant incohérent/);isolated.exec('ROLLBACK TO tampered_audit; RELEASE tampered_audit');
+  // Une édition faite ensuite sur ce téléphone garde son origine locale et
+  // peut être suivie d'une nouvelle version importée depuis un autre appareil.
+  const localVersion4={...modifiedOffline,syncVersion:4},localEditId=randomUUID(),localEditAt='2026-11-07T13:35:00.000Z';
+  isolated.prepare('INSERT INTO sale_revisions(sale_id,created_at,previous_payload,new_payload,refund) VALUES(?,?,?,?,?)').run(localRow.id,localEditAt,JSON.stringify({...modifiedOffline,syncVersion:3,id:localRow.id}),JSON.stringify({...localVersion4,id:localRow.id}),0);
+  isolated.prepare('UPDATE sales SET payload=? WHERE id=?').run(JSON.stringify(localVersion4),localRow.id);
+  isolated.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(localEditId,identity.commercialId,'sale',offlineSaleId,localEditAt);
+  assert.equal((await post(b.token,'sales',{operationId:localEditId,saleId:offlineSaleId,version:4,recordedAt:localEditAt,sale:localVersion4,refund:0})).status,201);
+  const afterLocalVersion=await get('reference');await isolatedTransaction(()=>saveVerifiedCreditReference(isolatedTx,identity,identity,afterLocalVersion,digest));
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:offlineSaleId,version:5,recordedAt:'2026-11-07T13:40:00.000Z',sale:{...localVersion4,syncVersion:5},refund:0})).status,201);
+  const afterLocalPreview=await inspectTransport.inspectLocalSale(localRow.id,offlineSaleId);assert.equal(afterLocalPreview.status,'updated');
+  assert.equal((await inspectTransport.reconcileLocalSale(localRow.id,offlineSaleId,afterLocalPreview.fingerprint)).versionsAdded,1);
+  const mixedOrigins=await isolatedTransaction(()=>readCreditHistoryPrototype(isolatedTx,identity,clientId,digest));assert.deepEqual(mixedOrigins.sales[0].revisions.map(r=>r.origin),['remote','local','remote','remote']);
+
+  assert.equal((await post(a.token,'credit-notes/sales',{operationId:randomUUID(),invoiceId:offlineSaleId,expectedVersion:5,recordedAt:'2026-11-07T14:00:00.000Z',choice:null})).status,201);
+  const cancelledLocal=await inspectTransport.inspectLocalSale(localRow.id,offlineSaleId);assert.equal(cancelledLocal.status,'cancelled');assert.equal(cancelledLocal.serverVersion,6);
+  const cancelledApplied=await inspectTransport.reconcileLocalSale(localRow.id,offlineSaleId,cancelledLocal.fingerprint);assert.equal(cancelledApplied.cancelled,true);assert.equal(cancelledApplied.versionsAdded,0);
+  assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,clientId,digest))).conflict,false);
+  const cancelledJournal=await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest));assert.ok(cancelledJournal.remoteCancellations?.some(x=>x.invoiceId===offlineSaleId));
+  assert.equal(JSON.parse(String(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(localRow.id)?.payload)).syncVersion,5);
+  // Les remboursements faits sur un autre appareil ne sont pas importés tant
+  // que leur attribution aux journaux n'est pas entièrement rapprochée.
+  const refundSaleId=randomUUID(),refundOp=randomUUID(),refundSale={...otherSale,syncSaleId:refundSaleId};
+  assert.equal((await post(b.token,'sales',{operationId:refundOp,saleId:refundSaleId,version:1,recordedAt:otherAt,sale:refundSale,refund:0})).status,201);
+  isolated.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(client2,JSON.stringify(refundSale));const refundId=Number(isolated.prepare('SELECT last_insert_rowid() AS id').get()?.id);
+  isolated.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(refundOp,identity.commercialId,'sale',refundSaleId,otherAt);
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:refundSaleId,version:2,recordedAt:'2026-11-07T10:00:00.000Z',sale:{...remoteModified,syncSaleId:refundSaleId},refund:2400})).status,201);
+  const refundResponse=await fetch(`${origin}/v5/local-sales/${refundSaleId}/history`,{headers:headers(b.token)});assert.equal(refundResponse.status,200);const refundHistory=await refundResponse.json();
+  const refundPreview=await isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,refundId,refundSaleId,refundHistory,digest));assert.equal(refundPreview.status,'updated');
+  await assert.rejects(isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,identity,identity,refundId,refundSaleId,refundHistory,refundPreview.fingerprint,digest)),/remboursement.*rapprochement manuel/i);
+  assert.equal(JSON.parse(String(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(refundId)?.payload)).syncVersion,1);assert.equal(isolated.prepare('SELECT count(*) AS n FROM sale_revisions WHERE sale_id=?').get(refundId)?.n,0);
+
+  // Deux factures divergentes du même client peuvent être rapprochées une par
+  // une ; entre les deux, son solde et la clôture restent bloqués.
+  const twoSales:{id:string;localId:number;updated:typeof offlineSale}[]=[];
+  for(let i=0;i<2;i++){
+   const id=randomUUID(),op=randomUUID(),original={...offlineSale,syncSaleId:id};
+   assert.equal((await post(b.token,'sales',{operationId:op,saleId:id,version:1,recordedAt:otherAt,sale:original,refund:0})).status,201);
+   isolated.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(original));const localId=Number(isolated.prepare('SELECT last_insert_rowid() AS id').get()?.id);
+   isolated.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(op,identity.commercialId,'sale',id,otherAt);
+   const updated={...original,syncVersion:2,lines:original.lines.map(line=>({...line,quantity:line.quantity*2})),total:original.total*2,remaining:original.remaining*2};
+   assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:id,version:2,recordedAt:'2026-11-07T13:00:00.000Z',sale:updated,refund:0})).status,201);twoSales.push({id,localId,updated});
+  }
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:twoSales[1].id,version:3,recordedAt:'2026-11-07T13:30:00.000Z',sale:{...twoSales[1].updated,syncVersion:3},refund:0})).status,201);
+  const firstPreview=await inspectTransport.inspectLocalSale(twoSales[0].localId,twoSales[0].id),secondPreview=await inspectTransport.inspectLocalSale(twoSales[1].localId,twoSales[1].id);
+  const firstImport=await inspectTransport.reconcileLocalSale(twoSales[0].localId,twoSales[0].id,firstPreview.fingerprint);assert.equal(firstImport.versionsAdded,1);assert.equal(firstImport.balance,null);
+  assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,clientId,digest))).conflict,true);
+  await assert.rejects(isolatedTransaction(()=>prepareVerifiedPrototypeClose(isolatedTx,identity,'2026-11-06',0,randomUUID,digest)),/conflit|rapprochement/i);
+  const secondImport=await inspectTransport.reconcileLocalSale(twoSales[1].localId,twoSales[1].id,secondPreview.fingerprint);assert.equal(secondImport.versionsAdded,2);assert.notEqual(secondImport.balance,null);
+  const appended=isolated.prepare('SELECT previous_payload,new_payload FROM sale_revisions WHERE sale_id=? ORDER BY id').all(twoSales[1].localId) as {previous_payload:string;new_payload:string}[];assert.equal(appended.length,2);assert.ok(appended.every(r=>JSON.parse(r.previous_payload).id===twoSales[1].localId&&JSON.parse(r.new_payload).id===twoSales[1].localId));
+  assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,clientId,digest))).conflict,false);
 
   }finally{isolated.close();}
 

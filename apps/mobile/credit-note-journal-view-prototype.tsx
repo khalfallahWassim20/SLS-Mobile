@@ -21,7 +21,7 @@ export function CreditJournalViewPrototype({model,onCredit,onPayment,onExport,bu
   {model.rows.map(row=><View key={row.clientId} style={styles.card}>
    <Text style={styles.heading}>{row.clientName}</Text><Text>Facturé brut : {money(row.grossTotal)}</Text>
    {row.preInvoice&&<View><Text>Préétablie : {money(row.preInvoice.amount)}</Text>{row.preInvoice.cancellation&&<Text style={styles.warning}>{mark(row.preInvoice.cancellation)}</Text>}</View>}
-   {row.sales.map(s=><View key={s.id}><Text>Vente supplémentaire : {money(s.total)}</Text>{s.cancellation&&<Text style={styles.warning}>{mark(s.cancellation)}</Text>}</View>)}
+   {row.sales.map(s=><View key={s.id}><Text>Vente supplémentaire : {money(s.total)}</Text>{s.remoteUpdateDay&&<Text style={styles.warning}>Modification du {s.remoteUpdateDay} enregistrée sur un autre appareil.</Text>}{s.cancellation&&<Text style={styles.warning}>{mark(s.cancellation)}</Text>}</View>)}
    {row.preInvoice&&!row.preInvoice.cancellation&&<TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>onPayment(row.clientId,row.preInvoice!.id)}><Text style={styles.link}>Paiement du journal</Text></TouchableOpacity>}
    <TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>onCredit(row.clientId)}><Text style={styles.link}>Préparer un avoir</Text></TouchableOpacity>
   </View>)}

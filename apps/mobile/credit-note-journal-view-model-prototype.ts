@@ -12,9 +12,10 @@ export function describeCreditJournalPrototype(data:JournalExport) {
  const marks=new Map<string,{day:string;origin:'local'|'remote';pending:boolean}>();
  for(const {note,pending} of data.credits)marks.set(`${note.kind}:${note.command.invoiceId}`,{day:tunisDay(new Date(note.command.recordedAt)),origin:'local',pending});
  for(const remote of data.remoteCancellations??[])marks.set(`${remote.kind}:${remote.invoiceId}`,{day:remote.day,origin:'remote',pending:false});
+ const updates=new Map((data.remoteSaleUpdates??[]).map(u=>[u.saleId,u.day]));
  const rows=data.rows.map(row=>({clientId:row.clientId,clientName:row.clientName,sector:row.sector,grossTotal:row.total,
   preInvoice:row.preInvoice?{...row.preInvoice,cancellation:marks.get(`preinvoice:${row.preInvoice.id}`)??null}:null,
-  sales:row.sales.map(s=>({...s,cancellation:s.syncSaleId?marks.get(`sale:${s.syncSaleId}`)??null:null}))}));
+  sales:row.sales.map(s=>({...s,cancellation:s.syncSaleId?marks.get(`sale:${s.syncSaleId}`)??null:null,remoteUpdateDay:s.syncSaleId?updates.get(s.syncSaleId)??null:null}))}));
  const events=data.credits.filter(x=>tunisDay(new Date(x.note.command.recordedAt))===data.day).map(({note,pending})=>{
   const source=note.source as Record<string,any>,invoice=note.kind==='sale'?source:source.invoice;
   return {operationId:note.command.operationId,kind:note.kind,invoiceId:note.command.invoiceId,clientName:invoice.clientName,invoiceTotal:note.kind==='sale'?invoice.total:invoice.amount,refund:note.refund,retainedCredit:note.retainedCredit,pending};

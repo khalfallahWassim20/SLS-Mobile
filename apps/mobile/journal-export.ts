@@ -5,7 +5,7 @@ import {canonicalJson,prepareFullCreditNote,calculatePreInvoiceCancellation} fro
 import {tunisDay} from './journal';
 
 /** Instantané local, distinct du journal consolidé reçu sur le serveur. */
-export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[] };
+export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[] };
 const amount = (value: number) => {
  if (!Number.isSafeInteger(value)) throw new Error('Montant invalide dans le journal.');
  const n = BigInt(value), abs = n < 0n ? -n : n;
@@ -48,6 +48,12 @@ function lines(data: JournalExport): string[][] {
   if(!['sale','preinvoice'].includes(entry.kind)||typeof entry.invoiceId!=='string'||!entry.invoiceId||!/^\d{4}-\d{2}-\d{2}$/.test(entry.day)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==entry.day||!entry.source||typeof entry.source!=='object'||Array.isArray(entry.source)||byInvoice.has(key)||remoteByInvoice.has(key))throw Error('Annulation distante invalide.');
   remoteByInvoice.set(key,entry);
  }
+ const updates=new Map<string,string>();
+ for(const entry of data.remoteSaleUpdates??[]){
+  const parsed=new Date(`${entry.day}T00:00:00.000Z`);
+  if(typeof entry.saleId!=='string'||!entry.saleId||updates.has(entry.saleId)||!/^\d{4}-\d{2}-\d{2}$/.test(entry.day)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==entry.day||!data.rows.some(r=>r.sales.some(s=>s.syncSaleId===entry.saleId)))throw Error('Modification distante invalide.');
+  updates.set(entry.saleId,entry.day);
+ }
  const rows: string[][] = [
   ['Journal de tournée — instantané local (données fictives)'],
   ['Date',data.day,'Commercial',data.commercial],
@@ -66,7 +72,8 @@ function lines(data: JournalExport): string[][] {
    const key=`sale:${s.syncSaleId}`,e=s.syncSaleId?byInvoice.get(key):undefined,remote=s.syncSaleId?remoteByInvoice.get(key):undefined;
    if(e||remote){const {id:_id,...source}=s;if(canonicalJson(source)!==canonicalJson(e?.note.source??remote?.source))throw Error('Vente modifiée après avoir : export refusé.');}
    const label=e?` · avoir du ${e.day} · ${e.pending?'en attente':'synchronisé'}`:remote?` · avoir du ${remote.day} · enregistré ailleurs`:'';
-   rows.push([r.clientName,r.sector,e||remote?'Vente supplémentaire — annulée par avoir':'Vente supplémentaire',`Vente locale ${s.id}${label}`,amount(s.total),amount(s.paid),'',s.paymentMode,'']);
+   const update=s.syncSaleId&&updates.get(s.syncSaleId)?` · modification du ${updates.get(s.syncSaleId)} enregistrée ailleurs`:'';
+   rows.push([r.clientName,r.sector,e||remote?'Vente supplémentaire — annulée par avoir':'Vente supplémentaire',`Vente locale ${s.id}${label}${update}`,amount(s.total),amount(s.paid),'',s.paymentMode,'']);
   }
   for(const p of data.receipts.filter(p=>p.clientId===r.clientId && p.journalDate===data.day)) rows.push([r.clientName,r.sector,p.creditFull?'Journal — crédit total':'Règlement journal',p.createdAt,'',amount(p.prePaid),amount(p.oldDebtPaid),p.mode,'']);
  }
@@ -91,6 +98,7 @@ function lines(data: JournalExport): string[][] {
   rows.push(['ENCAISSÉ LOCAL MOINS REMBOURSEMENTS DES AVOIRS','','','','',amount(asSafe(BigInt(gross)-refund))]);
   rows.push(['Note avoirs','Les avoirs sont datés du jour de création, même si la facture est d’un autre jour. Les paiements d’ancienne dette sont conservés. Une préétablie reste à corriger séparément dans le système principal.']);
  }
+ if(updates.size)rows.push(['Modifications enregistrées ailleurs','Les ventes indiquées ont été actualisées depuis un autre appareil. Les remboursements distants ne sont pas importés par ce parcours.']);
  if(remoteByInvoice.size)rows.push(['Annulations enregistrées ailleurs','Les factures sont signalées comme annulées. Ces avoirs et leurs remboursements ne sont pas ajoutés aux totaux de ce téléphone ; consultez le journal serveur pour une vue consolidée.']);
  rows.push(['NOMBRE DE CLIENTS',String(data.rows.length)]);
  rows.push(['Note','Le total facturé ne représente pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.']);

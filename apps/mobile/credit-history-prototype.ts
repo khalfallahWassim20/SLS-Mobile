@@ -1,3 +1,4 @@
+import {canonicalJson} from '@sls/domain';
 /** Historique LOCAL v5 : ne prétend pas inclure les opérations d'autres téléphones. */
 import type {DeviceIdentity} from './identified-device';
 import type {SavedSale,Revision,Settlement,TourJournalReceipt} from './storage';
@@ -18,8 +19,9 @@ export async function readCreditHistoryPrototype(tx:Tx,identity:DeviceIdentity,c
   const sale={...parse<Omit<SavedSale,'id'>>(row.payload),id:row.id};
   if(sale.clientId!==clientId)throw Error('Vente locale incohérente.');
   const choice=choices.items.find(x=>x.kind==='sale'&&x.invoiceId===sale.syncSaleId&&x.origin==='local');
-  const rs=await tx.getAllAsync<{id:number;created_at:string;previous_payload:string;new_payload:string;refund:number}>('SELECT id,created_at,previous_payload,new_payload,refund FROM sale_revisions WHERE sale_id=? ORDER BY id DESC',row.id);
-  const revisions:Revision[]=rs.map(r=>({id:r.id,createdAt:r.created_at,previous:parse<SavedSale>(r.previous_payload),current:parse<SavedSale>(r.new_payload),refund:r.refund}));
+  const rs=await tx.getAllAsync<{id:number;created_at:string;previous_payload:string;new_payload:string;refund:number;remoteOperation:string|null;remoteActor:string|null;remoteEvent:string|null;remoteSaleId:string|null}>(`SELECT r.id,r.created_at,r.previous_payload,r.new_payload,r.refund,m.operation_id AS remoteOperation,m.commercial_id AS remoteActor,m.event AS remoteEvent,m.sale_id AS remoteSaleId FROM sale_revisions r LEFT JOIN credit_local_sale_reconcile_prototype m ON m.revision_id=r.id WHERE r.sale_id=? ORDER BY r.id DESC`,row.id);
+  const revisions:(Revision&{origin:'local'|'remote';commercialId:string|null;operationId:string|null})[]=rs.map(r=>({id:r.id,createdAt:r.created_at,previous:parse<SavedSale>(r.previous_payload),current:parse<SavedSale>(r.new_payload),refund:r.refund,origin:r.remoteOperation?'remote':'local',commercialId:r.remoteActor,operationId:r.remoteOperation}));
+  for(const [i,r] of rs.entries())if(r.remoteOperation){const event=parse<Record<string,any>>(r.remoteEvent??''),{id:_id,...current}=revisions[i].current;if(!r.remoteActor||r.remoteSaleId!==sale.syncSaleId||event.operationId!==r.remoteOperation||event.saleId!==sale.syncSaleId||event.version!==current.syncVersion||event.recordedAt!==r.created_at||event.refund!==r.refund||canonicalJson(event.sale)!==canonicalJson(current))throw Error('Historique distant incohérent.');}else if(r.remoteActor||r.remoteEvent||r.remoteSaleId)throw Error('Origine de révision incohérente.');
   if(revisions.some(r=>r.previous.id!==row.id||r.current.id!==row.id||r.previous.clientId!==clientId||r.current.clientId!==clientId||!Number.isSafeInteger(r.refund)||r.refund<0))throw Error('Historique de vente incohérent.');
   sales.push({sale,revisions,editable:!!choice&&!choice.blocked&&!client.conflict,blocked:choice?.blocked??(!choice?'rapprochement':null)});
  }

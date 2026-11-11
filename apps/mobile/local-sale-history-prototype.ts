@@ -41,6 +41,8 @@ export async function inspectLocalSaleHistoryPrototype(tx:Tx,identity:DeviceIden
   const known=events.find(e=>e.event.version===local.syncVersion),{id:_localId,...localSource}=local,{id:_knownId,...knownSource}=known?.event.sale??({id:0} as typeof local);
   const same=!!known&&canonicalJson(localSource)===canonicalJson(knownSource);
   const status=pending.n?'pending' as const:!same?'diverged' as const:state.creditNote?'cancelled' as const:last.version>local.syncVersion!?'updated' as const:'same' as const;
-  return {saleId,clientId:row.clientId,status,local,events,cancelled:!!state.creditNote,serverVersion:state.version};
+  const fingerprint=await digest(canonicalJson({ownerId:response.ownerId,localId,saleId,clientId:row.clientId,local:localSource,pending:!!pending.n,events:response.events,state,proof}));
+  if(!/^[0-9a-f]{64}$/.test(fingerprint))throw Error('Empreinte de comparaison invalide.');
+  return {saleId,clientId:row.clientId,status,local,events,cancelled:!!state.creditNote,serverVersion:state.version,fingerprint};
  }finally{await tx.runAsync('ROLLBACK TO local_sale_history');await tx.runAsync('RELEASE local_sale_history');}
 }
