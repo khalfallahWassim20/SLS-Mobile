@@ -153,6 +153,12 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
     );
     -- Réservées aux tests : routes et soldes d'avoir non activés.
     CREATE TABLE IF NOT EXISTS credit_note_prototype_operation_ids (operation_id uuid PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS credit_note_abandon_prototype (
+      operation_id uuid PRIMARY KEY REFERENCES credit_note_prototype_operation_ids(operation_id),
+      kind text NOT NULL CHECK(kind IN ('sale','preinvoice')), invoice_id uuid NOT NULL,
+      commercial_id uuid NOT NULL REFERENCES commercials(id), command jsonb NOT NULL,
+      abandoned_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS credit_note_prototype_events (
       operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE, event jsonb NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now()

@@ -1,3 +1,4 @@
+import {creditAbandonInputSchema} from './credit-note-abandon-prototype.js';
 /** Projection intégrée réservée aux tests. Aucun routeur actif ne l'expose ;
  * elle ne rend pas les registres expérimentaux utilisables en production. */
 import type {Pool,PoolClient} from 'pg';
@@ -34,7 +35,14 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    if(seen.has(row.operation_id)||noteIds.has(row.operation_id)||row.event?.command?.operationId!==row.operation_id||row.event?.command?.invoiceId!==row.invoice_id)throw new RangeError('Identifiant d’avoir incohérent ou dupliqué.');
    noteIds.add(row.operation_id);
   }
-  if(ids.rows.length!==noteIds.size||ids.rows.some(r=>!noteIds.has(r.operation_id)))throw new RangeError('Registre des identifiants incohérent.');
+  const abandoned=await db.query('SELECT operation_id,kind,invoice_id,commercial_id,command FROM credit_note_abandon_prototype');
+  const allIds=new Set(noteIds);
+  for(const row of abandoned.rows){
+   const value=creditAbandonInputSchema.parse({kind:row.kind,command:row.command});
+   if(seen.has(row.operation_id)||allIds.has(row.operation_id)||value.command.operationId!==row.operation_id||value.command.invoiceId!==row.invoice_id||typeof row.commercial_id!=='string')throw new RangeError('Identifiant d’abandon incohérent.');
+   allIds.add(row.operation_id);
+  }
+  if(ids.rows.length!==allIds.size||ids.rows.some(r=>!allIds.has(r.operation_id)))throw new RangeError('Registre des identifiants incohérent.');
   const saleMovements=await db.query('SELECT operation_id,kind,balance_delta::text AS delta FROM credit_note_prototype_movements');
   const balances=projectPrototypeCreditNotes(base.clients.map(c=>({clientId:c.id,balance:asNumber(c.serverBalance)})),base.saleStates.map(s=>({invoiceId:s.saleId,clientId:s.clientId,version:s.version,total:asNumber(s.total),netPaid:asNumber(s.paid)})),saleNotes.rows.map(r=>r.event as CreditNoteEvent),saleMovements.rows.map(r=>({operationId:r.operation_id,kind:r.kind,balanceDelta:asNumber(r.delta)})));
   const projectedBalances=new Map(balances.map(b=>[b.clientId,b.balance]));

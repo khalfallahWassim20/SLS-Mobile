@@ -9,6 +9,7 @@ import {JournalAuthenticationError,JournalConflict,TourDayClosed,storeJournalSna
 import {readLocalSaleHistoryPrototype} from './local-sale-history-prototype.js';
 import {readRemoteSaleReceiptPrototype} from './remote-sale-receipt-prototype.js';
 import {abandonRemoteSalePrototype} from './remote-sale-abandon-prototype.js';
+import {abandonCreditNotePrototype} from './credit-note-abandon-prototype.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from './identified-operations.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
 import {readIdentifiedJournalDay} from './identified-journal-day.js';
@@ -38,6 +39,10 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  const supportsCredit=(req:import('express').Request)=>options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5';
  r.get('/reference',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(supportsCredit(req)?await readPrototypeCreditReference(pool,false):await readIdentifiedReference(pool,false,enforceMode));}catch(e){errorHandler(e,res,next);}});
  // Uniquement pour une base de test isolée, jamais activé par défaut.
+ if(options.allowCreditProtocol===true)r.post('/credit-notes-abandon',async(req,res,next)=>{try{
+  if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
+  res.json(await abandonCreditNotePrototype(pool,req.body,{secret,token:bearer(req.get('Authorization'))}));
+ }catch(e){errorHandler(e,res,next);}});
  if(options.allowCreditProtocol===true)r.use('/credit-notes',(req,res,next)=>{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}next();},prototypeCommercialCreditRoutes(pool,secret));
  if(options.allowCreditProtocol===true)r.post('/remote-sale-edits/abandon',async(req,res,next)=>{try{
   if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}

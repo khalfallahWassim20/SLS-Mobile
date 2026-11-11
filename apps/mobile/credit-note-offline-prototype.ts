@@ -16,6 +16,10 @@ export const offlineCreditPrototypeSchema=`CREATE TABLE IF NOT EXISTS offline_cr
  operation_id TEXT PRIMARY KEY, invoice_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('sale','preinvoice')),
  commercial_id TEXT NOT NULL, server_origin TEXT NOT NULL, payload TEXT NOT NULL, pending INTEGER NOT NULL CHECK(pending IN (0,1)),
  UNIQUE(invoice_id,kind)
+);
+CREATE TABLE IF NOT EXISTS credit_abandoned_note_prototype (
+ operation_id TEXT PRIMARY KEY, commercial_id TEXT NOT NULL, server_origin TEXT NOT NULL,
+ payload TEXT NOT NULL, receipt TEXT NOT NULL, abandoned_at TEXT NOT NULL
 );`;
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
 async function bound(tx:Tx,identity:DeviceIdentity){
@@ -32,7 +36,7 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
  await assertNoRemoteCreditNote(tx,identity,kind,command.invoiceId);
  const proof=await tx.getFirstAsync<{commercialId:string}>(`SELECT commercial_id AS commercialId FROM identified_local_operations WHERE entity_id=? AND operation_kind=? LIMIT 1`,command.invoiceId,kind==='sale'?'sale':'journal');
  if(proof&&proof.commercialId!==identity.commercialId)throw Error('Facture liée à une autre identité : rapprochement nécessaire.');
- const taken=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_id=?) OR EXISTS(SELECT 1 FROM offline_credit_prototype WHERE operation_id=?) AS n`,command.operationId,command.operationId);
+ const taken=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_id=?) OR EXISTS(SELECT 1 FROM offline_credit_prototype WHERE operation_id=?) OR EXISTS(SELECT 1 FROM credit_abandoned_note_prototype WHERE operation_id=?) AS n`,command.operationId,command.operationId,command.operationId);
  if(!taken||taken.n)throw Error('Identifiant d’opération déjà utilisé.');
  const previous=await tx.getFirstAsync<{n:number}>(`SELECT count(*) AS n FROM offline_credit_prototype WHERE invoice_id=? AND kind=?`,command.invoiceId,kind);
  if(!previous||previous.n)throw Error('Facture déjà annulée.');
@@ -136,4 +140,15 @@ export async function acknowledgeOfflineCreditPrototype(tx:Tx,identity:DeviceIde
  const row=await tx.getFirstAsync<LocalRow>(`SELECT payload,pending,commercial_id AS commercialId,server_origin AS serverOrigin,kind,invoice_id AS invoiceId,operation_id AS operationId FROM offline_credit_prototype WHERE operation_id=?`,note.command.operationId);
  if(!row||row.pending!==1||canonicalJson(validateRow(row,identity))!==canonicalJson(note))throw Error('Avoir modifié : accusé refusé.');
  await tx.runAsync('UPDATE offline_credit_prototype SET pending=0 WHERE operation_id=?',note.command.operationId);
+}
+/** Archives indicatives : ne sont plus des avoirs actifs ni des remboursements. */
+export async function readAbandonedCreditNotesPrototype(tx:Tx,identity:DeviceIdentity){
+ await bound(tx,identity);
+ const rows=await tx.getAllAsync<{operationId:string;commercialId:string;serverOrigin:string;payload:string;receipt:string;abandonedAt:string}>('SELECT operation_id AS operationId,commercial_id AS commercialId,server_origin AS serverOrigin,payload,receipt,abandoned_at AS abandonedAt FROM credit_abandoned_note_prototype ORDER BY rowid DESC LIMIT 100');
+ return rows.map(row=>{
+  let raw:Note,r:Record<string,unknown>;try{raw=JSON.parse(row.payload);r=JSON.parse(row.receipt);}catch{throw Error('Archive d’avoir illisible.');}
+  const note=validateRow({payload:row.payload,commercialId:row.commercialId,serverOrigin:row.serverOrigin,kind:raw?.kind,invoiceId:raw?.command?.invoiceId,operationId:row.operationId,pending:1},identity);
+  if(!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).sort().join(',')!=='invoiceId,kind,operationId,status'||r.status!=='abandoned'||r.kind!==note.kind||r.operationId!==note.command.operationId||r.invoiceId!==note.command.invoiceId||!Number.isFinite(Date.parse(row.abandonedAt))||new Date(row.abandonedAt).toISOString()!==row.abandonedAt)throw Error('Archive d’avoir incohérente.');
+  return {note,abandonedAt:row.abandonedAt};
+ });
 }

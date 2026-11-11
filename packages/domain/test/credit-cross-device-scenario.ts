@@ -1,3 +1,5 @@
+import {readPendingCreditAbandonPrototype,resolveCreditAbandonPrototype} from '../../../apps/mobile/credit-note-abandon-prototype.js';
+import {readAbandonedCreditNotesPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
@@ -330,6 +332,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
     request:async(url,options)=>{const response=await fetch(url.replace(identity.serverOrigin+'/api/mobile/identified',origin+'/v5'),options);if(options.method==='POST'&&url.includes('/credit-notes/')&&lose){lose=false;assert.equal(response.status,201);throw Error('réponse perdue');}if(options.method==='POST'&&url.endsWith('/close')&&loseClose){loseClose=false;assert.equal(response.status,201);throw Error('clôture réponse perdue');}return response;},
     cacheReference:(x,y,v,guard)=>transaction(async()=>{guard();await saveVerifiedCreditReference(tx,x,y,v,digest);guard();}),
     cacheSources:(x,y,id,v,guard)=>transaction(async()=>{guard();await saveCreditSourcesPrototype(tx,x,y,id,v,digest);guard();}),
+    creditAbandon:{read:(id,op,guard)=>transaction(async()=>{guard();return readPendingCreditAbandonPrototype(tx,id,op);}),resolve:(id,verified,note,response,reference,guard)=>transaction(async()=>{guard();await resolveCreditAbandonPrototype(tx,id,verified,note,response,reference,digest);guard();})},
     synchronize:(x,y,transport,guard)=>syncCreditPrototype(x,y,{...io,...transport,
      acknowledgeCredit:(note,response)=>transaction(async()=>{guard();await acknowledgeOfflineCreditPrototype(tx,identity,note,response);if(expireDuringAck){expireDuringAck=false;clock=expiry;}guard();}),
      saveReference:(id,verified,value)=>transaction(async()=>{guard();await saveVerifiedCreditReference(tx,id,verified,value,digest);guard();}),
@@ -346,6 +349,9 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await controller.refreshSources(clientId);
   await assert.rejects(controller.synchronize(),/réponse perdue/);
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
+  assert.equal(await controller.abandonCredit(saleCommand.operationId),'already-received');
+  assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_abandoned_note_prototype').get()?.n,0);
   // L'expiration entre l'accusé et le commit doit annuler la transaction.
   expireDuringAck=true;await assert.rejects(controller.synchronize(),/expirée/);
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
@@ -354,6 +360,16 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'sale',saleId,saleProof,undefined,true)),/rapprochement/);
   await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'journal',invoiceId,undefined,journalProof,true)),/rapprochement/);
   assert.match(journalCsv(await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest))),/synchronisé/);
+  for(const [kind,command] of [['sale',saleCommand],['preinvoice',preCommand]] as const){
+   const received=await post(b.token,'credit-notes-abandon',{kind,command});assert.equal(received.status,200);assert.equal((await received.json()).status,'already-received');
+   assert.equal((await post(a.token,'credit-notes-abandon',{kind,command})).status,409);
+   assert.equal((await post(b.token,'credit-notes-abandon',{kind,command:{...command,expectedVersion:command.expectedVersion+1}})).status,409);
+  }
+  const abandonedPre={...preCommand,operationId:randomUUID()};
+  const preAbandon=await post(b.token,'credit-notes-abandon',{kind:'preinvoice',command:abandonedPre});assert.equal(preAbandon.status,200);assert.equal((await preAbandon.json()).status,'abandoned');
+  assert.equal((await post(b.token,'credit-notes/preinvoices',abandonedPre)).status,409);
+  const afterPreAbandon=await get('reference');assert.equal(afterPreAbandon.version,5);
+
   // Les deux factures existent sur ce téléphone, mais leurs annulations sont
   // connues uniquement par la référence serveur (créées sur un autre appareil).
   mobile.exec('SAVEPOINT remote_export');mobile.exec('DELETE FROM offline_credit_prototype');await assert.rejects(assertLegacyMobileCreditSafe(tx,identity),/Des avoirs existent/);mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
@@ -841,6 +857,31 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal((await post(b.token,'credit-notes/sales',thirdCommand)).status,409);
   assert.equal(isolated.prepare('SELECT pending FROM offline_credit_prototype WHERE operation_id=?').get(thirdCommand.operationId)?.pending,1);
   await assert.rejects(isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)),/conflit/);
+  const abandonPayload={kind:'sale',command:thirdCommand};
+  assert.equal((await post('invalid','credit-notes-abandon',abandonPayload)).status,401);
+  const firstAbandon=await post(b.token,'credit-notes-abandon',abandonPayload);assert.equal(firstAbandon.status,200);const lostReceipt=await firstAbandon.json();assert.equal(lostReceipt.status,'abandoned');
+  assert.equal((await post(a.token,'credit-notes-abandon',abandonPayload)).status,409);
+  assert.equal((await post(b.token,'credit-notes/sales',thirdCommand)).status,409);
+  assert.equal(isolated.prepare('SELECT pending FROM offline_credit_prototype WHERE operation_id=?').get(thirdCommand.operationId)?.pending,1);
+  let expireAbandon=false;
+  const creditAbandonTransport=createCreditTransportPrototype({id:second.id,name:'Deuxième',serverOrigin:identity.serverOrigin,token:b.token,expiresAt:new Date(Date.now()+3600000).toISOString()},identity,{
+   request:(url,options)=>fetch(url.replace(identity.serverOrigin+'/api/mobile/identified',origin+'/v5'),options),
+   cacheReference:async()=>{throw Error('inattendu');},cacheSources:async()=>{throw Error('inattendu');},synchronize:async()=>{throw Error('inattendu');},
+   creditAbandon:{read:(id,op,guard)=>isolatedTransaction(async()=>{guard();return readPendingCreditAbandonPrototype(isolatedTx,id,op);}),
+    resolve:(id,verified,note,response,reference,guard)=>isolatedTransaction(async()=>{guard();await resolveCreditAbandonPrototype(isolatedTx,id,verified,note,response,reference,digest);if(expireAbandon)throw Error('session expirée');guard();})}
+  });
+  const pendingThird=await isolatedTransaction(()=>readPendingCreditAbandonPrototype(isolatedTx,identity,thirdCommand.operationId));
+  await assert.rejects(isolatedTransaction(()=>resolveCreditAbandonPrototype(isolatedTx,identity,identity,pendingThird,{...lostReceipt,invoiceId:randomUUID()},newerReference,digest)),/Accusé/);
+  expireAbandon=true;await assert.rejects(creditAbandonTransport.abandonCredit(thirdCommand.operationId),/session expirée/);expireAbandon=false;
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM credit_abandoned_note_prototype').get()?.n,0);
+  assert.equal(isolated.prepare('SELECT pending FROM offline_credit_prototype WHERE operation_id=?').get(thirdCommand.operationId)?.pending,1);
+  assert.equal(await creditAbandonTransport.abandonCredit(thirdCommand.operationId),'abandoned');
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM offline_credit_prototype WHERE operation_id=?').get(thirdCommand.operationId)?.n,0);
+  assert.equal((await isolatedTransaction(()=>readAbandonedCreditNotesPrototype(isolatedTx,identity)))[0].note.command.operationId,thirdCommand.operationId);
+  isolated.exec('SAVEPOINT bad_note_archive');isolated.prepare('UPDATE credit_abandoned_note_prototype SET receipt=? WHERE operation_id=?').run('{}',thirdCommand.operationId);
+  await assert.rejects(readAbandonedCreditNotesPrototype(isolatedTx,identity),/Archive d’avoir incohérente/);isolated.exec('ROLLBACK TO bad_note_archive; RELEASE bad_note_archive');
+  assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client3,digest))).conflict,false);
+  assert.equal((await post(b.token,'credit-notes/sales',thirdCommand)).status,409);
 
   }finally{isolated.close();}
 

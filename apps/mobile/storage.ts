@@ -1,3 +1,4 @@
+import {readPendingCreditAbandonPrototype,resolveCreditAbandonPrototype} from './credit-note-abandon-prototype';
 import {reconcileLocalSalePrototype} from './local-sale-reconcile-prototype';
 import {prepareVerifiedPrototypeClose} from './credit-note-verified-close-prototype';
 import {inspectLocalSaleHistoryPrototype} from './local-sale-history-prototype';
@@ -13,7 +14,7 @@ import {identifiedDeviceSchema,getDeviceIdentity,bindVerifiedDevice,saveVerified
 import {validateIdentifiedReference} from './identified-reference';
 import {tunisDay} from './journal';
 import {resetLocalTestOperations} from './reset-test-operations';
-import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readAllOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Kind,type Note} from './credit-note-offline-prototype';
+import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readAllOfflineCreditPrototype,readAbandonedCreditNotesPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Kind,type Note} from './credit-note-offline-prototype';
 import {assertNoLocalCreditNote,assertNoRemoteCreditNote} from './credit-note-local-guard';
 import {creditReferencePrototypeSchema,readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {saveVerifiedCreditReference} from './credit-note-sync-reference';
@@ -340,6 +341,10 @@ export async function getLocalCreditPrototypes(identity:DeviceIdentity):Promise<
  const database=await db();let result:{note:Note;pending:boolean}[]=[];
  await database.withExclusiveTransactionAsync(async tx=>{result=await readAllOfflineCreditPrototype(tx,identity);});return result;
 }
+export async function getAbandonedCreditNotesPrototype(identity:DeviceIdentity) {
+ const database=await db();let result:Awaited<ReturnType<typeof readAbandonedCreditNotesPrototype>>=[];
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readAbandonedCreditNotesPrototype(tx,identity);});return result;
+}
 export async function getReadyLocalCreditPrototypes(identity:DeviceIdentity):Promise<Note[]> {
  const database=await db();let result:Note[]=[];
  await database.withExclusiveTransactionAsync(async tx=>{result=await readReadyOfflineCreditPrototype(tx,identity);});return result;
@@ -447,6 +452,10 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
   localSaleInspect:async(id,verified,localId,saleId,response,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof inspectLocalSaleHistoryPrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await inspectLocalSaleHistoryPrototype(tx,id,verified,localId,saleId,response,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   remoteRecover:async(id,verified,operationId,response,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof recoverReceivedRemoteEditPrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await recoverReceivedRemoteEditPrototype(tx,id,verified,operationId,response,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   remoteCompare:async(id,verified,operationId,reference,sources,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof comparePendingRemoteEditPrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await comparePendingRemoteEditPrototype(tx,id,verified,operationId,reference,sources,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
+  creditAbandon:{
+   read:async(id,operationId,guard)=>{const database=await db();let result:Note|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await readPendingCreditAbandonPrototype(tx,id,operationId);guard();});return result!;},
+   resolve:async(id,verified,note,response,reference,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await resolveCreditAbandonPrototype(tx,id,verified,note,response,reference,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});}
+  },
   remoteAbandon:{
    read:async(id,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof readRemoteAbandonCandidatePrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await readRemoteAbandonCandidatePrototype(tx,id);guard();});return result!;},
    resolve:async(id,verified,entry,response,reference,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await resolveRemoteAbandonPrototype(tx,id,verified,entry,response,reference,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});}

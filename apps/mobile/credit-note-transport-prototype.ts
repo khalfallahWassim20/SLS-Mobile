@@ -7,6 +7,7 @@ import type {recoverReceivedRemoteEditPrototype} from './credit-remote-sale-conf
 import type {comparePendingRemoteEditPrototype} from './credit-remote-sale-confirm-prototype';
 import type {IdentifiedEntry} from './identified-upload';
 import type {DeviceIdentity} from './identified-device';
+import type {Note} from './credit-note-offline-prototype';
 import {sendPreparedTourClose,type Attempt} from './tour-close-queue';
 
 type Response={ok:boolean;status:number;json:()=>Promise<unknown>};
@@ -22,6 +23,7 @@ type Dependencies={
  localSaleInspect?:(identity:DeviceIdentity,verified:DeviceIdentity,localId:number,saleId:string,response:unknown,guard:()=>void)=>Promise<Awaited<ReturnType<typeof inspectLocalSaleHistoryPrototype>>>;
  remoteRecover?:(identity:DeviceIdentity,verified:DeviceIdentity,operationId:string,response:unknown,guard:()=>void)=>Promise<Awaited<ReturnType<typeof recoverReceivedRemoteEditPrototype>>>;
  remoteCompare?:(identity:DeviceIdentity,verified:DeviceIdentity,operationId:string,reference:unknown,sources:unknown,guard:()=>void)=>Promise<Awaited<ReturnType<typeof comparePendingRemoteEditPrototype>>>;
+ creditAbandon?:{read:(identity:DeviceIdentity,operationId:string,guard:()=>void)=>Promise<Note>;resolve:(identity:DeviceIdentity,verified:DeviceIdentity,note:Note,response:unknown,reference:unknown,guard:()=>void)=>Promise<void>};
  remoteAbandon?:{
   read:(identity:DeviceIdentity,guard:()=>void)=>Promise<{entry:IdentifiedEntry;event:unknown}>;
   resolve:(identity:DeviceIdentity,verified:DeviceIdentity,entry:IdentifiedEntry,response:unknown,reference:unknown,guard:()=>void)=>Promise<void>;
@@ -95,6 +97,16 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
    if(!io.remoteCompare||!uuid(operationId)||!uuid(clientId))throw Error('Comparaison indisponible.');check();
    const reference=await fetchReference();check();const sources=await read(`credit-sources/${encodeURIComponent(clientId)}`);check();
    return io.remoteCompare(identity,identity,operationId,reference,sources,check);
+  }),
+  abandonCredit:(operationId:string)=>exclusive(async()=>{
+   if(!io.creditAbandon||!uuid(operationId))throw Error('Abandon d’avoir indisponible.');check();
+   const note=await io.creditAbandon.read(identity,operationId,check);check();
+   const response=await request('credit-notes-abandon','POST',JSON.stringify({kind:note.kind,command:note.command}));const body=await response.json().catch(()=>null);check();
+   if(!response.ok){const e=object(body);throw Error(typeof e?.error==='string'?e.error:`Erreur serveur (${response.status}).`);}
+   const result=object(body);if(!result||Object.keys(result).sort().join(',')!=='invoiceId,kind,operationId,status'||result.operationId!==operationId||result.invoiceId!==note.command.invoiceId||result.kind!==note.kind)throw Error('Accusé invalide : avoir conservé.');
+   if(result.status==='already-received')return 'already-received' as const;
+   if(result.status!=='abandoned')throw Error('Accusé invalide : avoir conservé.');
+   const reference=await fetchReference();check();await io.creditAbandon.resolve(identity,identity,note,body,reference,check);check();return 'abandoned' as const;
   }),
   abandonRemoteEdit:()=>exclusive(async()=>{
    if(!io.remoteAbandon)throw Error('Abandon sécurisé indisponible.');check();

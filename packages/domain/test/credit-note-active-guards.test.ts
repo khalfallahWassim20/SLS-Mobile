@@ -20,7 +20,7 @@ test('gardes serveur : base migrée, ancien schéma et migration partielle',asyn
   await assertInvoiceNotCredited(tx,'preinvoice',invoice);
   await db.exec('DROP TABLE pre_invoice_credit_prototype_movements; DROP TABLE pre_invoice_credit_prototype_events');
   await assert.rejects(assertInvoiceNotCredited(tx,'sale',invoice),/incomplète/);await assert.rejects(assertOldCreditProtocolSafe(tx),/incomplète/);
-  await db.exec('DROP TABLE credit_note_prototype_movements; DROP TABLE credit_note_prototype_events; DROP TABLE credit_note_prototype_operation_ids');
+  await db.exec('DROP TABLE credit_note_prototype_movements; DROP TABLE credit_note_prototype_events; DROP TABLE credit_note_abandon_prototype; DROP TABLE credit_note_prototype_operation_ids');
   await assertCreditOperationAvailable(tx,op);await assertInvoiceNotCredited(tx,'sale',invoice);await assertOldCreditProtocolSafe(tx);
  }finally{await db.close();}
 });

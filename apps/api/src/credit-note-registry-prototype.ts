@@ -7,7 +7,7 @@ import {z} from 'zod';
 import {prepareFullCreditNote,type CreditNoteActor,type CreditNoteEvent,type CreditNoteCommand} from '@sls/domain';
 import {verifyCommercialSession} from './commercial-session.js';
 import {JournalAuthenticationError,JournalConflict} from './journal-store.js';
-import {lockIdentifiedOperation} from './identified-overlap.js';
+import {lockIdentifiedOperation,assertOperationUnambiguous} from './identified-overlap.js';
 import {assertIdentifiedMode,lockSyncModeExclusive} from './tour-sync-mode.js';
 import {lockCreditNoteSale} from './credit-note-sale-lock.js';
 
@@ -41,6 +41,7 @@ export async function storePrototypeCreditNote(pool:Pool,raw:unknown,principal:P
    actor={id:principal.actorId,role:'admin'};
   }
   await lockIdentifiedOperation(db,command.operationId);
+  await assertOperationUnambiguous(db,command.operationId,'sale');
   // Défense contre les UUID déjà occupés par une opération d'un autre type.
   const collision=await db.query(`SELECT EXISTS(SELECT 1 FROM demo_sale_events WHERE operation_id=$1)
    OR EXISTS(SELECT 1 FROM demo_settlements WHERE operation_id=$1)
