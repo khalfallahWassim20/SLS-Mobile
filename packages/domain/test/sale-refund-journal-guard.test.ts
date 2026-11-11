@@ -76,7 +76,12 @@ test('même commercial et même journée : le remboursement est déjà dans le p
   await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:2,recordedAt:`${day}T10:00:00.000Z`,sale:revised,refund:38100},auth);
   const journal=await readPrototypeCreditJournal(pool,a.id,day);
   assert.equal(journal.totalBilled,11900);assert.equal(journal.totalCollected,11900);assert.equal(journal.collectedAfterRefunds,11900);
-  assert.equal(journal.rows[0].tourPaid,11900);
+  assert.equal(journal.rows[0].tourPaid,11900);assert.equal(journal.saleRefundTotal,38100);assert.equal(journal.saleRefundEvents.length,1);assert.equal(journal.saleRefundEvents[0].refund,38100);
+  await db.query("UPDATE identified_sale_events SET payload_hash='corruption' WHERE sale_id=$1 AND version=2",[saleId]);
+  await assert.rejects(readPrototypeCreditJournal(pool,a.id,day),/Historique de remboursement incohérent/);
+  const {createHash}=await import('node:crypto');const eventRow=await db.query('SELECT payload FROM identified_sale_events WHERE sale_id=$1 AND version=2',[saleId]);
+  const {saleEventSchema}=await import('../../../apps/api/src/identified-operations.js');
+  await db.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE sale_id=$2 AND version=2',[createHash('sha256').update(JSON.stringify(saleEventSchema.parse((eventRow.rows[0] as {payload:unknown}).payload))).digest('hex'),saleId]);
   const principal={kind:'commercial' as const,secret,token:session.token};
   const {storePrototypeCreditNote}=await import('../../../apps/api/src/credit-note-registry-prototype.js');
   await storePrototypeCreditNote(pool,{operationId:randomUUID(),invoiceId:saleId,expectedVersion:2,recordedAt:`${day}T10:30:00.000Z`,choice:'refund'},principal);

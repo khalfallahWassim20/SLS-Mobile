@@ -39,10 +39,15 @@ test('serveur réel : v5 uniquement sur option de test, authentification et avoi
   const adminHeaders={Authorization:`Bearer ${admin}`,'Content-Type':'application/json','X-SLS-Reference-Version':'5'};
   const at=new Date().toISOString(),saleId=randomUUID(),sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
   response=await fetch(`${base}/mobile/identified/sales`,{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0})});assert.equal(response.status,201);
-  const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:new Date().toISOString(),choice:'refund'};
+  const revised={...sale,syncVersion:2,lines:[{...sale.lines[0],unitPrice:10000}],total:11900,paid:11900,remaining:0};
+  response=await fetch(`${base}/mobile/identified/sales`,{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({operationId:randomUUID(),saleId,version:2,recordedAt:new Date().toISOString(),sale:revised,refund:38100})});assert.equal(response.status,201);
+  const tunisDay=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
+  response=await fetch(`${base}/identified-tour/${commercial.id}/${tunisDay}`,{headers:adminHeaders});assert.equal(response.status,200);const journal=await response.json();
+  assert.equal(journal.saleRefundTotal,38100);assert.equal(journal.saleRefundEvents[0].saleId,saleId);assert.equal(journal.totalCollected,11900);
+  const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:2,recordedAt:new Date().toISOString(),choice:'refund'};
   response=await fetch(`${base}/identified-tour-actions/credit-notes/preview`,{method:'POST',headers:adminHeaders,body:JSON.stringify({clientId,kind:'sale',command})});assert.equal(response.status,200);const review=await response.json();
   response=await fetch(`${base}/identified-tour-actions/credit-notes/reviewed/sales`,{method:'POST',headers:adminHeaders,body:JSON.stringify({command,review})});assert.equal(response.status,201);
-  response=await fetch(`${base}/mobile/identified/reference`,{headers:auth});assert.equal((await response.json()).saleStates[0].creditNote.refund,50000);
+  response=await fetch(`${base}/mobile/identified/reference`,{headers:auth});assert.equal((await response.json()).saleStates[0].creditNote.refund,11900);
   response=await fetch(`${base}/mobile/identified/reference`,{headers:{Authorization:`Bearer ${session.token}`}});assert.equal(response.status,409);
  }finally{await stop();if(pool)await pool.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}
 });

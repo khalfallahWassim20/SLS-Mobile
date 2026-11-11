@@ -22,6 +22,24 @@ const summary = j => [
  ['Règlements globaux (DT)',amount(j.globalSettlementTotal)],
  ['Total encaissé (DT)',amount(j.totalCollected)]
 ];
+
+const saleRefundHeaders=['Client','Vente','Version','Date de saisie (UTC)','Remboursement DT'];
+export function saleRefundDetails(j){
+ if(j.creditVersion===undefined)return null;
+ if(j.creditVersion!==5||!Array.isArray(j.saleRefundEvents)||!Number.isSafeInteger(j.saleRefundTotal)||j.saleRefundTotal<0)throw Error('Remboursements de ventes indisponibles.');
+ const uuid=x=>typeof x==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x);
+ const seen=new Set();let total=0n;
+ const rows=j.saleRefundEvents.map(e=>{
+  if(!e||typeof e!=='object'||typeof e.recordedAt!=='string')throw Error('Remboursement de vente incohérent.');
+  const d=new Date(e.recordedAt),day=Number.isFinite(d.getTime())?new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(d):'';
+  if(!uuid(e.operationId)||seen.has(e.operationId)||!uuid(e.saleId)||!uuid(e.clientId)||typeof e.clientName!=='string'||!e.clientName.trim()||!Number.isSafeInteger(e.version)||e.version<2||!Number.isSafeInteger(e.refund)||e.refund<=0||day!==j.day||!j.rows.some(r=>r.clientId===e.clientId))throw Error('Remboursement de vente incohérent.');
+  seen.add(e.operationId);total+=BigInt(e.refund);
+  return [e.clientName,e.saleId,String(e.version),d.toISOString(),amount(e.refund)];
+ });
+ if(total>BigInt(Number.MAX_SAFE_INTEGER)||Number(total)!==j.saleRefundTotal)throw Error('Total des remboursements de ventes incohérent.');
+ return {rows,total:amount(j.saleRefundTotal)};
+}
+
 export function creditDetails(j){
  if(j.creditVersion===undefined)return null;
  if(j.creditVersion!==5||!Array.isArray(j.creditEvents)||!j.commercial?.id)throw new Error('Journal d’avoirs invalide.');
@@ -38,13 +56,14 @@ const detailColumns=(j,r)=>j.creditVersion===5?[...columns(r).slice(0,-1),r.preI
 const state = j => `${j.closure.status==='closed'?'Clôturée':'Ouverte'} · version ${j.closure.version}`;
 const note = 'Données identifiées reçues par le serveur pour ce commercial et cette date uniquement. Les opérations non synchronisées, les autres commerciaux et les anciennes opérations non attribuées ne sont pas inclus dans le journal. Les paiements sur anciennes factures non attribuées sont indiqués séparément. Le total facturé n’est pas un chiffre d’affaires consolidé. Les ventes sont présentées à leur dernière version reçue ; cet export n’est pas un historique des corrections.';
 export function journalServerCsv(j, generatedAt) {
- const credits=creditDetails(j);
+ const credits=creditDetails(j),saleRefunds=saleRefundDetails(j);
  const rows=[['Journal de tournée identifié — synthèse serveur (données fictives)'],['Date',j.day,'Commercial',j.commercial.name],['État',state(j),'Exporté le (UTC)',generatedAt],['Périmètre',note],[],detailHeaders(j),...j.rows.map(r=>detailColumns(j,r)),[],...summary(j),[],['Paiements sur anciennes factures non attribuées'],['Client','Paiement facture DT','Ancienne dette réglée DT'],...j.inheritedJournalPayments.map(r=>[r.clientName,amount(r.prePaid),amount(r.oldDebtPaid)])];
+ if(saleRefunds)rows.push([],['Remboursements de modifications — déjà inclus dans les paiements nets'],saleRefundHeaders,...saleRefunds.rows,['Total remboursements de modifications DT',saleRefunds.total],['Note','Ne pas déduire à nouveau ces remboursements du total encaissé. Leur enregistrement ne prouve pas le versement physique.']);
  if(credits)rows.push([],['Avoirs créés ce jour — distincts des factures d’origine'],creditHeaders,...credits.rows,[],...credits.summary,['Note','Le règlement d’ancienne dette reste conservé. Les avoirs sont datés de leur création. Une préétablie doit être corrigée séparément dans le système principal.']);
  return '\uFEFF'+rows.map(row=>row.map(csvCell).join(';')).join('\r\n')+'\r\n';
 }
 export function journalServerHtml(j, generatedAt) {
- const credits=creditDetails(j);
+ const credits=creditDetails(j),saleRefunds=saleRefundDetails(j);
  const table=(head,rows)=>`<table><thead><tr>${head.map(x=>`<th>${esc(x)}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(row=>`<tr>${row.map(x=>`<td>${esc(x)}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${head.length}">Aucune donnée reçue.</td></tr>`}</tbody></table>`;
- return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Journal de tournée ${esc(j.day)}</title><style>@page{size:landscape;margin:12mm}body{font:11px Arial,sans-serif;color:#193c35}h1{font-size:21px}p{line-height:1.4}table{border-collapse:collapse;width:100%;margin:12px 0;table-layout:auto}th,td{border:1px solid #a9beb2;padding:5px;text-align:left;overflow-wrap:anywhere}th{background:#e3f2e8}thead{display:table-header-group}tr{break-inside:avoid}.note{padding:10px;background:#fff7e3}</style></head><body><h1>Journal de tournée identifié — synthèse serveur</h1><p>Données fictives · Date : ${esc(j.day)} · Commercial : ${esc(j.commercial.name)} · ${esc(state(j))} · Exporté le ${esc(generatedAt)} (UTC)</p><p class="note">${esc(note)}</p>${table(detailHeaders(j),j.rows.map(r=>detailColumns(j,r)))}<h2>Totaux</h2>${table(['Indicateur','Valeur'],summary(j))}<h2>Paiements sur anciennes factures non attribuées</h2>${table(['Client','Paiement facture DT','Ancienne dette réglée DT'],j.inheritedJournalPayments.map(r=>[r.clientName,amount(r.prePaid),amount(r.oldDebtPaid)]))}${credits?`<h2>Avoirs créés ce jour — distincts des factures d’origine</h2><p>Le règlement d’ancienne dette reste conservé. Une préétablie doit être corrigée séparément dans le système principal.</p>${table(creditHeaders,credits.rows)}${table(['Indicateur','Valeur'],credits.summary)}`:''}<p>Règlements globaux : montant total uniquement ; détail par client non disponible dans cette vue.</p></body></html>`;
+ return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Journal de tournée ${esc(j.day)}</title><style>@page{size:landscape;margin:12mm}body{font:11px Arial,sans-serif;color:#193c35}h1{font-size:21px}p{line-height:1.4}table{border-collapse:collapse;width:100%;margin:12px 0;table-layout:auto}th,td{border:1px solid #a9beb2;padding:5px;text-align:left;overflow-wrap:anywhere}th{background:#e3f2e8}thead{display:table-header-group}tr{break-inside:avoid}.note{padding:10px;background:#fff7e3}</style></head><body><h1>Journal de tournée identifié — synthèse serveur</h1><p>Données fictives · Date : ${esc(j.day)} · Commercial : ${esc(j.commercial.name)} · ${esc(state(j))} · Exporté le ${esc(generatedAt)} (UTC)</p><p class="note">${esc(note)}</p>${table(detailHeaders(j),j.rows.map(r=>detailColumns(j,r)))}<h2>Totaux</h2>${table(['Indicateur','Valeur'],summary(j))}<h2>Paiements sur anciennes factures non attribuées</h2>${table(['Client','Paiement facture DT','Ancienne dette réglée DT'],j.inheritedJournalPayments.map(r=>[r.clientName,amount(r.prePaid),amount(r.oldDebtPaid)]))}${saleRefunds?`<h2>Remboursements de modifications</h2><p>Déjà inclus dans les paiements nets des ventes : ne pas les déduire à nouveau. Leur enregistrement ne prouve pas le versement physique. Total : ${esc(saleRefunds.total)} DT.</p>${table(saleRefundHeaders,saleRefunds.rows)}`:''}${credits?`<h2>Avoirs créés ce jour — distincts des factures d’origine</h2><p>Le règlement d’ancienne dette reste conservé. Une préétablie doit être corrigée séparément dans le système principal.</p>${table(creditHeaders,credits.rows)}${table(['Indicateur','Valeur'],credits.summary)}`:''}<p>Règlements globaux : montant total uniquement ; détail par client non disponible dans cette vue.</p></body></html>`;
 }
