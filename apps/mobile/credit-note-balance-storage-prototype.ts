@@ -47,7 +47,7 @@ export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceId
  // Les sources d'un autre appareil ne sont jamais copiées dans les tables
  // actives. Pour calculer un avoir local, elles sont utilisées en mémoire,
  // exclusivement si leur empreinte correspond à la référence courante.
- let sourceConflict=false;
+ const sourceConflicts=new Set<string>();
  for(const note of notes){
   const src=note.source as Record<string,any>,id=note.command.invoiceId;
   const exists=note.kind==='sale'?sales.some(s=>s.syncSaleId===id):journals.some(j=>j.id===id);
@@ -55,11 +55,11 @@ export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceId
   if(!digest)throw Error('Preuve de facture distante indispensable.');
   if(note.kind==='sale'){
    const state=reference.saleStates.find(s=>s.saleId===id),proof=state?.creditNote?reference.saleProofs.find(p=>p.saleId===id):reference.eligibleSaleProofs.find(p=>p.saleId===id);
-   if(!state||!proof||proof.version!==note.command.expectedVersion||await digest(canonicalJson(src))!==proof.hash)sourceConflict=true;
+   if(!state||!proof||proof.version!==note.command.expectedVersion||await digest(canonicalJson(src))!==proof.hash)sourceConflicts.add(src.clientId);
    sales.push(src as Parameters<typeof prototypeCreditBalance>[0]['sales'][number]);
   }else{
    const state=reference.journalStates.find(s=>s.id===id),proof=reference.journalProofs.find(p=>p.id===id),invoice=src.invoice;
-   if(!state||!proof||proof.version!==note.command.expectedVersion||await digest(canonicalJson(src))!==proof.hash)sourceConflict=true;
+   if(!state||!proof||proof.version!==note.command.expectedVersion||await digest(canonicalJson(src))!==proof.hash)sourceConflicts.add(invoice.clientId);
    journals.push({id,clientId:invoice.clientId,journalDate:invoice.journalDate,version:src.version,total:invoice.amount,receipts:src.receipts,snapshot:src});
   }
  }
@@ -88,7 +88,7 @@ export async function loadCreditBalanceSnapshotPrototype(tx:Tx,identity:DeviceId
  // plusieurs clients sans relire SQLite ou recalculer les empreintes.
  return {reference,balanceFor:(clientId:string)=>{
   const balance=prototypeCreditBalance({clientId,identity,reference,sales,journals,settlements,notes,verifiedRemoteSales,verifiedRemoteJournals});
-  return {...balance,conflict:balance.conflict||sourceConflict||blockedClients.has(clientId)};
+  return {...balance,conflict:balance.conflict||sourceConflicts.has(clientId)||blockedClients.has(clientId)};
  }};
 }
 export async function readPrototypeCreditBalance(tx:Tx,identity:DeviceIdentity,clientId:string,digest?:(data:string)=>Promise<string>,allowPendingRemote=false) {

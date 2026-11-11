@@ -288,6 +288,19 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await transaction(()=>confirmLocalCreditReview(tx,identity,preReview,preCommand,digest));
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,0);assert.equal(mobile.prepare('SELECT count(*) AS n FROM tour_pre_invoices').get()?.n,0);
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:350000,conflict:false});
+  // Une preuve de source distante périmée bloque le client concerné, mais
+  // ne doit pas empêcher une vente pour un autre client sans conflit.
+  for(const kind of ['sale','preinvoice'] as const){
+   mobile.exec('SAVEPOINT stale_note_source');
+   const raw=mobile.prepare('SELECT payload FROM credit_reference_prototype_cache WHERE id=1').get()!.payload as string,ref=JSON.parse(raw);
+   const proof=kind==='sale'?ref.eligibleSaleProofs.find((p:{saleId:string})=>p.saleId===saleId):ref.journalProofs.find((p:{id:string})=>p.id===invoiceId);
+   proof.hash='0'.repeat(64);mobile.prepare('UPDATE credit_reference_prototype_cache SET payload=? WHERE id=1').run(JSON.stringify(ref));
+   assert.equal((await readPrototypeCreditBalance(tx,identity,clientId,digest)).conflict,true);
+   assert.equal((await readPrototypeCreditBalance(tx,identity,client2,digest)).conflict,false);
+   assert.equal((await assertCreditWritePrototype(tx,{identity,expectedBalance:0},{kind:'sale',clientId:client2},digest)).balance,0);
+   await assert.rejects(readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest),/conflit/);
+   mobile.exec('ROLLBACK TO stale_note_source; RELEASE stale_note_source');
+  }
   const preparedView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(preparedView.clients[0].balance,350000);assert.equal(preparedView.pendingCredits,2);assert.equal(preparedView.pendingOperations,0);
   const exportBefore=await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest));
   const workspace=await transaction(()=>readCreditMobileWorkspacePrototype(tx,identity,day,'Deuxième',digest));assert.equal(workspace.clients.clients[0].balance,350000);assert.equal(workspace.clients.pendingCredits,2);assert.equal(workspace.view.totals.creditNotes,719000);
@@ -805,6 +818,29 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const secondImport=await inspectTransport.reconcileLocalSale(twoSales[1].localId,twoSales[1].id,secondPreview.fingerprint);assert.equal(secondImport.versionsAdded,2);assert.notEqual(secondImport.balance,null);
   const appended=isolated.prepare('SELECT previous_payload,new_payload FROM sale_revisions WHERE sale_id=? ORDER BY id').all(twoSales[1].localId) as {previous_payload:string;new_payload:string}[];assert.equal(appended.length,2);assert.ok(appended.every(r=>JSON.parse(r.previous_payload).id===twoSales[1].localId&&JSON.parse(r.new_payload).id===twoSales[1].localId));
   assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,clientId,digest))).conflict,false);
+
+
+  // Course authentifiée : un avoir hors ligne vise une vente distante dont la
+  // version change ensuite sur le premier appareil. Le refus conserve l'avoir
+  // et n'empêche pas le commercial de travailler pour un autre client sain.
+  const client3=randomUUID(),thirdSaleId=randomUUID();
+  await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,0)',[client3,'Troisième client']);
+  const thirdSale={...offlineSale,clientId:client3,clientName:'Troisième client',syncSaleId:thirdSaleId};
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:thirdSaleId,version:1,recordedAt:otherAt,sale:thirdSale,refund:0})).status,201);
+  const refBeforeThird=await get('reference');await isolatedTransaction(()=>saveVerifiedCreditReference(isolatedTx,identity,identity,refBeforeThird,digest));
+  const thirdSources=await get(`credit-sources/${client3}`);await isolatedTransaction(()=>saveCreditSourcesPrototype(isolatedTx,identity,identity,client3,thirdSources,digest));
+  const thirdCommand={operationId:randomUUID(),invoiceId:thirdSaleId,expectedVersion:1,recordedAt:'2026-11-07T14:00:00.000Z',choice:null};
+  const thirdReview=await isolatedTransaction(()=>previewLocalCredit(isolatedTx,identity,client3,'sale',thirdCommand,digest));
+  await isolatedTransaction(()=>confirmLocalCreditReview(isolatedTx,identity,thirdReview,thirdCommand,digest));
+  const thirdChanged={...thirdSale,syncVersion:2,clientName:'Troisième client modifié'};
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:thirdSaleId,version:2,recordedAt:'2026-11-07T13:30:00.000Z',sale:thirdChanged,refund:0})).status,201);
+  const newerReference=await get('reference');await isolatedTransaction(()=>saveVerifiedCreditReference(isolatedTx,identity,identity,newerReference,digest));
+  assert.equal((await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client3,digest))).conflict,true);
+  const unaffected=await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,clientId,digest));assert.equal(unaffected.conflict,false);
+  await isolatedTransaction(()=>assertCreditWritePrototype(isolatedTx,{identity,expectedBalance:unaffected.balance},{kind:'sale',clientId},digest));
+  assert.equal((await post(b.token,'credit-notes/sales',thirdCommand)).status,409);
+  assert.equal(isolated.prepare('SELECT pending FROM offline_credit_prototype WHERE operation_id=?').get(thirdCommand.operationId)?.pending,1);
+  await assert.rejects(isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)),/conflit/);
 
   }finally{isolated.close();}
 
