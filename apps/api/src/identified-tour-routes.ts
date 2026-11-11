@@ -6,6 +6,7 @@ import type {Pool} from 'pg';
 import {verifyCommercialSession} from './commercial-session.js';
 import {ClosureAuthenticationError,ClosureConflict,readTourClosure,requestTourTransition} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed,storeJournalSnapshot} from './journal-store.js';
+import {readLocalSaleHistoryPrototype} from './local-sale-history-prototype.js';
 import {readRemoteSaleReceiptPrototype} from './remote-sale-receipt-prototype.js';
 import {abandonRemoteSalePrototype} from './remote-sale-abandon-prototype.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from './identified-operations.js';
@@ -42,6 +43,11 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  if(options.allowCreditProtocol===true)r.post('/remote-sale-edits/abandon',async(req,res,next)=>{try{
   if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
   const result=await abandonRemoteSalePrototype(pool,req.body,{secret,token:bearer(req.get('Authorization'))});res.json(result);
+ }catch(e){errorHandler(e,res,next);}});
+ if(options.allowCreditProtocol===true)r.get('/local-sales/:saleId/history',async(req,res,next)=>{try{
+  if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
+  const result=await readLocalSaleHistoryPrototype(pool,req.params.saleId,{secret,token:bearer(req.get('Authorization'))});
+  if(!result){res.status(404).json({error:'Historique indisponible pour ce commercial.'});return;}res.json(result);
  }catch(e){errorHandler(e,res,next);}});
  if(options.allowCreditProtocol===true)r.get('/remote-sale-edits/:operationId/receipt',async(req,res,next)=>{try{
   if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}

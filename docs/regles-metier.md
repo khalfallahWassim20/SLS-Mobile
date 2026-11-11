@@ -176,3 +176,11 @@ Une réponse perdue ou une référence finale devenue plus récente ne doit pas 
 Ce parcours reste expérimental, désactivé dans l'application courante et non testé sur téléphone. Il ne fusionne pas automatiquement des modifications concurrentes.
 
 Les 100 derniers reçus récupérés sont consultables dans l’historique expérimental du téléphone, avec le total avant et après, le remboursement ou crédit enregistré et la version observée lors de la vérification. Une version plus récente peut être intervenue ensuite.
+
+### Vente de ce téléphone modifiée ailleurs (prototype v5)
+
+L’historique permet maintenant au commercial créateur de comparer en ligne une vente locale avec ses versions serveur : articles, montants, auteur et remboursements enregistrés. La réponse est limitée à 200 versions, liée à l’identité du créateur et vérifiée avec la référence du même instantané. Une facture annulée par avoir, une version locale divergente ou une opération encore en attente sont indiquées explicitement.
+
+Cette comparaison est **en lecture seule** : elle ne remplace pas la vente locale, ne supprime aucune file et ne débloque pas un solde en conflit. Les changements peuvent évoluer après la lecture et la fusion ou mise à jour locale sécurisée reste à terminer avant activation de la v5.
+
+Dans l’espace v5 expérimental, si un conflit empêche le journal de s’afficher, la liste des clients reste consultable avec ses gardes individuelles ; le client en conflit reste bloqué et son historique permet le diagnostic. La clôture v5 vérifie désormais dans la même transaction locale les files, les soldes et le journal avant de créer ou reprendre une demande. Une file vide ne suffit pas si une version locale diverge. Le journal et ses exports restent indisponibles tant que le conflit ne permet pas leur vérification.

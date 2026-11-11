@@ -9,6 +9,7 @@ import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {identifiedCommercialRoutes,identifiedAdminRoutes} from '../../../apps/api/src/identified-tour-routes.js';
 import {identifiedDeviceSchema,assertKnownDeviceEntity} from '../../../apps/mobile/identified-device.js';
 import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,assertLocalTourWritable} from '../../../apps/mobile/tour-close-queue.js';
+import {prepareVerifiedPrototypeClose} from '../../../apps/mobile/credit-note-verified-close-prototype.js';
 import {preparePrototypeClose} from '../../../apps/mobile/credit-note-close-prototype.js';
 import {offlineCreditPrototypeSchema,readReadyOfflineCreditPrototype,readAllOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
@@ -35,6 +36,7 @@ import {remoteSaleConfirmPrototypeSchema,confirmRemoteSaleEditPrototype,readRemo
 import {remoteSaleDraftPrototypeSchema,stageRemoteSaleEditDraftPrototype} from '../../../apps/mobile/credit-remote-sale-draft-prototype.js';
 import {captureRemoteSaleEditPrototype,previewRemoteSaleEditPrototype} from '../../../apps/mobile/credit-remote-sale-edit-prototype.js';
 import {readCreditHistoryPrototype} from '../../../apps/mobile/credit-history-prototype.js';
+import {inspectLocalSaleHistoryPrototype} from '../../../apps/mobile/local-sale-history-prototype.js';
 import {prepareCreditSale,prepareCreditSettlement} from '../../../apps/mobile/credit-sale-settlement-prototype.js';
 
 export type CreditScenarioDatabase={exec:(sql:string)=>Promise<unknown>;query:<T extends Record<string,unknown>=Record<string,unknown>>(sql:string,args?:unknown[])=>Promise<{rows:T[]}>};
@@ -664,6 +666,46 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal(recoveredArchive[1].operationId,receiptDraft.operationId);assert.equal(recoveredArchive[1].refund,2400);assert.equal(recoveredArchive[1].referenceVersion,3);
   isolated.exec('SAVEPOINT bad_recovery');isolated.prepare('UPDATE credit_remote_sale_receipt_prototype SET receipt=? WHERE operation_id=?').run('{}',receiptDraft.operationId);
   await assert.rejects(readRecoveredRemoteEditsPrototype(isolatedTx,identity,client2,digest),/incohérente/);isolated.exec('ROLLBACK TO bad_recovery; RELEASE bad_recovery');
+
+  // La vente locale de B a été révisée par A : diagnostiquer sans écraser
+  // la facture de B, ses versions locales ni ses éventuelles files.
+  const localRow=isolated.prepare('SELECT id,payload FROM sales WHERE client_id=?').get(clientId) as {id:number;payload:string};assert.ok(localRow);
+  const localHistoryUrl=`${origin}/v5/local-sales/${offlineSaleId}/history`;
+  assert.equal((await fetch(localHistoryUrl,{headers:headers(a.token)})).status,404);
+  assert.equal((await fetch(localHistoryUrl,{headers:headers('invalid')})).status,401);
+  assert.equal((await fetch(localHistoryUrl,{headers:{...headers(b.token),'X-SLS-Reference-Version':'4'}})).status,409);
+  assert.equal((await fetch(`${origin}/legacy/local-sales/${offlineSaleId}/history`,{headers:headers(b.token)})).status,404);
+  const readLocalHistory=async()=>{const response=await fetch(localHistoryUrl,{headers:headers(b.token)});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');return response.json();};
+  const sameHistory=await readLocalHistory();assert.equal(JSON.stringify(sameHistory).includes('purchase'),false);
+  const originalCache=isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload;
+  const sameResult=await isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,sameHistory,digest));assert.equal(sameResult.status,'same');
+  isolated.exec('SAVEPOINT close_consistent');await saveVerifiedCreditReference(isolatedTx,identity,identity,sameHistory.reference,digest);
+  assert.equal((await prepareVerifiedPrototypeClose(isolatedTx,identity,'2026-11-06',0,randomUUID,digest)).status,'closing');
+  isolated.exec('ROLLBACK TO close_consistent; RELEASE close_consistent');
+
+  const modifiedOffline={...offlineSale,syncVersion:2,lines:offlineSale.lines.map(line=>({...line,quantity:line.quantity*2})),total:offlineSale.total*2,remaining:offlineSale.remaining*2};
+  assert.equal((await post(a.token,'sales',{operationId:randomUUID(),saleId:offlineSaleId,version:2,recordedAt:'2026-11-07T13:00:00.000Z',sale:modifiedOffline,refund:0})).status,201);
+  const latestHistory=await readLocalHistory();const inspected=await isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,digest));
+  assert.equal(inspected.status,'updated');assert.equal(inspected.local.syncVersion,1);assert.equal(inspected.events.length,2);assert.equal(inspected.events[1].event.sale.total,offlineSale.total*2);assert.equal(inspected.events[1].commercialId,first.id);
+  assert.equal(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(localRow.id)?.payload,localRow.payload);assert.equal(isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,originalCache);
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,0);
+  // Une file vide ne suffit pas à autoriser la clôture si le solde local et
+  // la version serveur divergent ; aucune tentative n'est alors créée.
+  isolated.exec('SAVEPOINT close_conflict');await saveVerifiedCreditReference(isolatedTx,identity,identity,latestHistory.reference,digest);
+  await assert.rejects(prepareVerifiedPrototypeClose(isolatedTx,identity,'2026-11-06',0,randomUUID,digest),/conflit|rapprochement/i);
+  assert.equal(isolated.prepare('SELECT count(*) AS n FROM tour_close_attempts').get()?.n,0);isolated.exec('ROLLBACK TO close_conflict; RELEASE close_conflict');
+  await assert.rejects(isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,identity,{...identity,commercialId:first.id},localRow.id,offlineSaleId,latestHistory,digest)),/Identité/);
+  await assert.rejects(isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,{...latestHistory,events:latestHistory.events.slice(1)},digest)),/invalide|incohérente/);
+  await assert.rejects(isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,{...latestHistory,reference:sameHistory.reference},digest)),/incohérente/);
+  isolated.exec('SAVEPOINT pending_local');isolated.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),offlineSaleId,3,'{}');
+  assert.equal((await inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,digest)).status,'pending');isolated.exec('ROLLBACK TO pending_local; RELEASE pending_local');
+  isolated.exec('SAVEPOINT divergent_local');const divergent={...offlineSale,clientName:'Nom différent'};isolated.prepare('UPDATE sales SET payload=? WHERE id=?').run(JSON.stringify(divergent),localRow.id);
+  assert.equal((await inspectLocalSaleHistoryPrototype(isolatedTx,identity,identity,localRow.id,offlineSaleId,latestHistory,digest)).status,'diverged');isolated.exec('ROLLBACK TO divergent_local; RELEASE divergent_local');
+  const inspectTransport=createCreditTransportPrototype(session,identity,{now:()=>now,request:(url,opts)=>fetch(url.replace(`${identity.serverOrigin}/api/mobile/identified/`,`${origin}/v5/`),opts),cacheReference:async()=>{},cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),localSaleInspect:(id,verified,localId,saleId,body)=>isolatedTransaction(()=>inspectLocalSaleHistoryPrototype(isolatedTx,id,verified,localId,saleId,body,digest))});
+  assert.equal((await inspectTransport.inspectLocalSale(localRow.id,offlineSaleId)).status,'updated');
+  assert.equal((await post(a.token,'credit-notes/sales',{operationId:randomUUID(),invoiceId:offlineSaleId,expectedVersion:2,recordedAt:'2026-11-07T14:00:00.000Z',choice:null})).status,201);
+  const cancelledLocal=await inspectTransport.inspectLocalSale(localRow.id,offlineSaleId);assert.equal(cancelledLocal.status,'cancelled');assert.equal(cancelledLocal.serverVersion,3);
+  assert.equal(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(localRow.id)?.payload,localRow.payload);assert.equal(isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,originalCache);
 
   }finally{isolated.close();}
 

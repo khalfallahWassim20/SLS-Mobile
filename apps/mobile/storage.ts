@@ -1,3 +1,5 @@
+import {prepareVerifiedPrototypeClose} from './credit-note-verified-close-prototype';
+import {inspectLocalSaleHistoryPrototype} from './local-sale-history-prototype';
 import * as SQLite from 'expo-sqlite';
 import { validatePreInvoiceReceipt,type FullCreditChoice } from '@sls/domain';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
@@ -320,7 +322,7 @@ export async function getLocalCloseAttempt(identity:DeviceIdentity,day:string):P
 }
 export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number,creditAware=false):Promise<Attempt> {
  const database=await db();let result:Attempt|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);if(!creditAware)await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);});return result!;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);if(!creditAware){await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);}else result=await prepareVerifiedPrototypeClose(tx,identity,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
 }
 export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
@@ -440,6 +442,7 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
   cacheReference:cacheCreditReferencePrototype,cacheSources:cacheCreditSourcesPrototype,
   bindReference:async(id,verified,value,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(tx=>bindAndCacheCreditReferencePrototype(tx,id,verified,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data),guard));},
   synchronize:synchronizeCreditPrototype,
+  localSaleInspect:async(id,verified,localId,saleId,response,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof inspectLocalSaleHistoryPrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await inspectLocalSaleHistoryPrototype(tx,id,verified,localId,saleId,response,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   remoteRecover:async(id,verified,operationId,response,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof recoverReceivedRemoteEditPrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await recoverReceivedRemoteEditPrototype(tx,id,verified,operationId,response,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   remoteCompare:async(id,verified,operationId,reference,sources,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof comparePendingRemoteEditPrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await comparePendingRemoteEditPrototype(tx,id,verified,operationId,reference,sources,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   remoteAbandon:{
@@ -448,7 +451,7 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
   },
   tour:{
    getAttempt:async(id,day,guard)=>{const database=await db();let result:Attempt|null=null;await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);result=await findTourCloseAttempt(tx,id.commercialId,day);guard();});return result;},
-   prepare:async(id,day,version,guard)=>{const database=await db();let result:Attempt|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await preparePrototypeClose(tx,id,day,version,randomUUID);guard();});return result!;},
+   prepare:async(id,day,version,guard)=>{const database=await db();let result:Attempt|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await prepareVerifiedPrototypeClose(tx,id,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));guard();});return result!;},
    acknowledge:async(id,day,response,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);await acknowledgeTourClose(tx,id.commercialId,day,response);guard();});},
    observe:async(id,day,response,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);await observeVerifiedTourState(tx,id.commercialId,day,response);guard();});}
   }

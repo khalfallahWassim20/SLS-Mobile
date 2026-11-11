@@ -7,6 +7,7 @@ import {schemaSql} from '../src/schema.js';
 import {saveCommercial,setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale} from '../src/identified-operations.js';
+import {readLocalSaleHistoryPrototype} from '../src/local-sale-history-prototype.js';
 import {readRemoteSaleReceiptPrototype} from '../src/remote-sale-receipt-prototype.js';
 test('PostgreSQL : reçu et référence restent cohérents pendant une modification concurrente',async()=>{
  const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL manquante');
@@ -29,5 +30,14 @@ test('PostgreSQL : reçu et référence restent cohérents pendant une modificat
   }finally{release();}
   const snapshot=await pending;assert.ok(snapshot);assert.equal(snapshot.event.version,2);assert.equal(snapshot.reference.saleStates.find(s=>s.saleId===saleId)?.version,2);
   const updated=await readRemoteSaleReceiptPrototype(pool,event.operationId,auth);assert.ok(updated);assert.equal(updated.event.version,2);assert.equal(updated.reference.saleStates.find(s=>s.saleId===saleId)?.version,3);
+  let enterHistory!:()=>void,releaseHistory!:()=>void;const historyStarted=new Promise<void>(r=>{enterHistory=r;}),historyHold=new Promise<void>(r=>{releaseHistory=r;});
+  const pendingHistory=readLocalSaleHistoryPrototype(pool,saleId,auth,async()=>{enterHistory();await historyHold;});
+  try{
+   await historyStarted;
+   await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:4,recordedAt:'2026-11-07T12:00:00.000Z',sale:{...sale,syncVersion:4},refund:0},auth);
+  }finally{releaseHistory();}
+  const history=await pendingHistory;assert.ok(history);assert.equal(history.events.length,3);assert.equal(history.reference.saleStates.find(s=>s.saleId===saleId)?.version,3);
+  const currentHistory=await readLocalSaleHistoryPrototype(pool,saleId,auth);assert.ok(currentHistory);assert.equal(currentHistory.events.length,4);assert.equal(currentHistory.reference.saleStates.find(s=>s.saleId===saleId)?.version,4);
+
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });

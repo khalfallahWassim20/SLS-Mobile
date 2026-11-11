@@ -2,6 +2,7 @@
  * courant. Les opérations locales et leurs accusés restent gérés par SQLite. */
 import {validSession} from './secure-commercial-session';
 import type {CommercialSession} from './commercial-login';
+import type {inspectLocalSaleHistoryPrototype} from './local-sale-history-prototype';
 import type {recoverReceivedRemoteEditPrototype} from './credit-remote-sale-confirm-prototype';
 import type {comparePendingRemoteEditPrototype} from './credit-remote-sale-confirm-prototype';
 import type {IdentifiedEntry} from './identified-upload';
@@ -17,6 +18,7 @@ type Dependencies={
  bindReference?:(identity:DeviceIdentity,verified:DeviceIdentity,value:unknown,guard:()=>void)=>Promise<void>;
  cacheSources:(identity:DeviceIdentity,verified:DeviceIdentity,clientId:string,value:unknown,guard:()=>void)=>Promise<void>;
  synchronize:(identity:DeviceIdentity,verified:DeviceIdentity,transport:Transport,guard:()=>void)=>Promise<{operations:number;credits:number}>;
+ localSaleInspect?:(identity:DeviceIdentity,verified:DeviceIdentity,localId:number,saleId:string,response:unknown,guard:()=>void)=>Promise<Awaited<ReturnType<typeof inspectLocalSaleHistoryPrototype>>>;
  remoteRecover?:(identity:DeviceIdentity,verified:DeviceIdentity,operationId:string,response:unknown,guard:()=>void)=>Promise<Awaited<ReturnType<typeof recoverReceivedRemoteEditPrototype>>>;
  remoteCompare?:(identity:DeviceIdentity,verified:DeviceIdentity,operationId:string,reference:unknown,sources:unknown,guard:()=>void)=>Promise<Awaited<ReturnType<typeof comparePendingRemoteEditPrototype>>>;
  remoteAbandon?:{
@@ -72,6 +74,11 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
    if(!uuid(clientId))throw Error('Client invalide.');
    const reference=await fetchReference();check();await io.cacheReference(identity,identity,reference,check);check();
    const sources=await read(`credit-sources/${encodeURIComponent(clientId)}`);check();await io.cacheSources(identity,identity,clientId,sources,check);check();
+  }),
+  inspectLocalSale:(localId:number,saleId:string)=>exclusive(async()=>{
+   if(!io.localSaleInspect||!Number.isSafeInteger(localId)||localId<1||!uuid(saleId))throw Error('Comparaison indisponible.');check();
+   const response=await read(`local-sales/${encodeURIComponent(saleId)}/history`);check();
+   const result=await io.localSaleInspect(identity,identity,localId,saleId,response,check);check();return result;
   }),
   recoverRemoteEdit:(operationId:string)=>exclusive(async()=>{
    if(!io.remoteRecover||!uuid(operationId))throw Error('Vérification indisponible.');check();
