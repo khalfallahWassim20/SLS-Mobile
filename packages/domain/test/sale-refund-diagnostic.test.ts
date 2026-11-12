@@ -7,6 +7,8 @@ import {schemaSql} from '../../../apps/api/src/schema.js';
 import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {storeIdentifiedSale} from '../../../apps/api/src/identified-operations.js';
+import {readPrototypeCreditJournal} from '../../../apps/api/src/credit-note-journal-prototype.js';
+import {storePrototypeCreditNote} from '../../../apps/api/src/credit-note-registry-prototype.js';
 import {readSaleRefundDiagnostic} from '../../../apps/api/src/sale-refund-diagnostic-prototype.js';
 
 test('diagnostic des remboursements entre jours et commerciaux : lecture sans modification, contrôle des preuves',async()=>{
@@ -31,6 +33,14 @@ test('diagnostic des remboursements entre jours et commerciaux : lecture sans mo
   const owner=await readSaleRefundDiagnostic(pool,a.id,'2026-11-08'),actor=await readSaleRefundDiagnostic(pool,b.id,'2026-11-09');
   assert.deepEqual(owner.saleCashPreview.available&&[owner.saleCashPreview.received,owner.saleCashPreview.refund,owner.saleCashPreview.net],[100000,38100,61900]);
   assert.deepEqual(actor.saleCashPreview.available&&[actor.saleCashPreview.received,actor.saleCashPreview.refund,actor.saleCashPreview.net],[0,38100,-38100]);
+  const journalA=await readPrototypeCreditJournal(pool,a.id,'2026-11-08'),journalB=await readPrototypeCreditJournal(pool,b.id,'2026-11-09');
+  assert.equal(journalA.totalCollected,100000);assert.equal(journalA.saleRefundTotal,38100);assert.equal(journalA.collectedAfterRefunds,61900);
+  assert.equal(journalB.totalCollected,0);assert.equal(journalB.saleRefundTotal,38100);assert.equal(journalB.collectedAfterRefunds,-38100);assert.equal(journalB.saleRefundEvents[0].saleId,saleId);
+  // Avoir distinct et ultérieur : il n'efface pas l'entrée initiale ni le
+  // remboursement déjà attribué à l'autre commercial.
+  await storePrototypeCreditNote(pool,{operationId:randomUUID(),invoiceId:saleId,expectedVersion:2,recordedAt:'2026-11-10T11:00:00.000Z',choice:'refund'},{kind:'commercial',secret,token:sa.token});
+  const noteDay=await readPrototypeCreditJournal(pool,a.id,'2026-11-10');assert.equal(noteDay.totalCollected,0);assert.equal(noteDay.creditRefundTotal,11900);assert.equal(noteDay.collectedAfterRefunds,-11900);
+  assert.equal((await readPrototypeCreditJournal(pool,b.id,'2026-11-09')).collectedAfterRefunds,-38100);
   assert.equal(owner.entries.length,1);assert.deepEqual(owner.entries,actor.entries);assert.equal(owner.entries[0].refund,38100);assert.equal(owner.entries[0].previousPaid,50000);assert.equal(owner.entries[0].currentPaid,11900);assert.equal(owner.entries[0].actorName,'Bob fictif');assert.equal(owner.entries[0].ownerName,'Alice fictive');
   assert.equal((await readSaleRefundDiagnostic(pool,c.id,'2026-11-09')).entries.length,0);assert.equal((await readSaleRefundDiagnostic(pool,b.id,'2026-11-08')).entries.length,0);
   const originalHash=await db.query<{payload_hash:string}>('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[op]);

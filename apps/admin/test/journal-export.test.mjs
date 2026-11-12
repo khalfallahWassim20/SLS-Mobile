@@ -24,11 +24,20 @@ test('journal serveur avec avoir : facture, ancienne dette et mouvements restent
 test('remboursements de modification affichés sans double déduction et vérifiés dans les exports',async()=>{
  const {randomUUID}=await import('node:crypto'),owner=randomUUID(),clientId=randomUUID();
  const event={operationId:randomUUID(),saleId:randomUUID(),clientId,clientName:'<Fictif>',version:2,recordedAt:'2026-11-08T10:00:00.000Z',refund:38100};
- const report={...day,commercial:{id:owner,name:'Fictif'},rows:day.rows.map(r=>({...r,clientId,preInvoiceCancelled:false,cancelledSaleCount:0})),creditVersion:5,saleRefundEvents:[event],saleRefundTotal:38100,creditEvents:[],creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,billedAfterCredits:850000,collectedAfterRefunds:680000};
+ const report={...day,commercial:{id:owner,name:'Fictif'},rows:day.rows.map(r=>({...r,clientId,preInvoiceCancelled:false,cancelledSaleCount:0})),creditVersion:5,saleRefundEvents:[event],saleRefundTotal:38100,creditEvents:[],creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,billedAfterCredits:850000,collectedAfterRefunds:641900};
  const csv=journalServerCsv(report,'maintenant'),html=journalServerHtml(report,'maintenant');
- assert.match(csv,/38,100/);assert.match(csv,/Ne pas déduire à nouveau/);assert.match(csv,/680,000/);assert.match(html,/&lt;Fictif&gt;/);assert.match(html,/38,100/);
+ assert.match(csv,/38,100/);assert.match(csv,/déduit une seule fois/);assert.match(csv,/680,000/);assert.match(html,/&lt;Fictif&gt;/);assert.match(html,/38,100/);
  assert.throws(()=>journalServerCsv({...report,saleRefundTotal:1},'maintenant'),/incohérent/);
  assert.throws(()=>journalServerCsv({...report,saleRefundEvents:[event,event]},'maintenant'),/incohérent/);
  assert.throws(()=>journalServerHtml({...report,saleRefundEvents:[{...event,recordedAt:'2026-11-09T10:00:00.000Z'}]},'maintenant'),/incohérent/);
  assert.throws(()=>journalServerCsv({...report,saleRefundEvents:undefined},'maintenant'),/indisponibles/);
+});
+
+
+test('remboursement par un autre commercial : export sans vente locale ni double décompte',async()=>{
+ const {randomUUID}=await import('node:crypto'),owner=randomUUID();
+ const entry={operationId:randomUUID(),saleId:randomUUID(),clientId:randomUUID(),clientName:'Client fictif',version:2,recordedAt:'2026-11-09T10:00:00.000Z',refund:38100};
+ const j={...day,day:'2026-11-09',commercial:{id:owner,name:'Commercial B'},rows:[],clientCount:0,totalBilled:0,journalCollected:0,inheritedJournalTotal:0,globalSettlementTotal:0,totalCollected:0,inheritedJournalPayments:[],creditVersion:5,creditEvents:[],creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,billedAfterCredits:0,collectedAfterRefunds:-38100,saleRefundEvents:[entry],saleRefundTotal:38100};
+ const csv=journalServerCsv(j,'maintenant'),html=journalServerHtml(j,'maintenant');assert.match(csv,/38,100/);assert.match(csv,/-38,100/);assert.match(html,/-38,100/);assert.match(html,/sorties enregistrées ce jour/i);
+ assert.throws(()=>journalServerCsv({...j,collectedAfterRefunds:0},'maintenant'),/incohérents/);
 });

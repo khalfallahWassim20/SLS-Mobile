@@ -19,7 +19,7 @@ test('vue admin préparatoire : avoir antérieur, remboursement et ancienne dett
 
 test('vue admin : détail des remboursements de vente et avertissement sans double déduction',()=>{
  const owner=randomUUID(),clientId=randomUUID(),saleRefundEvents=[{operationId:randomUUID(),saleId:randomUUID(),clientId,clientName:'<Client>',version:2,recordedAt:'2026-11-09T10:00:00.000Z',refund:38100}];
- const journal={day:'2026-11-09',commercial:{id:owner},rows:[{clientId,preInvoiceId:null,preInvoiceCancelled:false,cancelledSaleCount:0}],creditVersion:5,saleRefundEvents,saleRefundTotal:38100,creditEvents:[],creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,totalBilled:11900,totalCollected:11900,billedAfterCredits:11900,collectedAfterRefunds:11900};
+ const journal={day:'2026-11-09',commercial:{id:owner},rows:[{clientId,preInvoiceId:null,preInvoiceCancelled:false,cancelledSaleCount:0}],creditVersion:5,saleRefundEvents,saleRefundTotal:38100,creditEvents:[],creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,totalBilled:11900,totalCollected:50000,billedAfterCredits:11900,collectedAfterRefunds:11900};
  const html=renderToStaticMarkup(React.createElement(CreditJournalView,{journal}));
- assert.match(html,/38,100 DT/);assert.match(html,/&lt;Client&gt;/);assert.match(html,/Ne les déduisez pas une seconde fois/);assert.match(html,/ne prouve pas le versement physique/);
+ assert.match(html,/38,100 DT/);assert.match(html,/&lt;Client&gt;/);assert.match(html,/déduites une seule fois/);assert.match(html,/ne prouve pas le versement physique/);
 });

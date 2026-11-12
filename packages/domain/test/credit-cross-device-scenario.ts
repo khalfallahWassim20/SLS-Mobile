@@ -619,9 +619,9 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const otherVersions=await db.query<{version:number;commercial_id:string}>('SELECT version,commercial_id FROM identified_sale_events WHERE sale_id=$1 ORDER BY version',[otherSaleId]);
   assert.deepEqual(otherVersions.rows.map(x=>[x.version,x.commercial_id]),[[1,first.id],[2,second.id],[3,second.id],[4,first.id]]);
   const dayA=await fetch(`${origin}/v5/day/${otherDay}/details`,{headers:headers(a.token)}),dayB=await fetch(`${origin}/v5/day/${otherDay}/details`,{headers:headers(b.token)});
-  assert.equal(dayA.status,409);assert.equal(dayB.status,409);
-  assert.match((await dayA.json() as {error:string}).error,/remboursement/i);
-  assert.match((await dayB.json() as {error:string}).error,/remboursement/i);
+  assert.equal(dayA.status,200);assert.equal(dayB.status,200);
+  const cashA=await dayA.json() as {rows:{clientId:string;tourPaid:number}[];saleRefundTotal:number},cashB=await dayB.json() as {saleRefundTotal:number};
+  assert.equal(cashA.rows.find(r=>r.clientId===client2)?.tourPaid,50000);assert.equal(cashA.saleRefundTotal,0);assert.equal(cashB.saleRefundTotal,2400);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[otherSaleId])).rows[0].n,4);
   // Un abandon côté serveur réserve l'UUID sous le même verrou que l'envoi.
   // Une opération déjà reçue n'est jamais effacée, même si sa réponse s'est perdue.

@@ -17,6 +17,7 @@ export async function readSaleCashPreview(db:PoolClient,commercialId:string,day:
   ORDER BY sale_id LIMIT 201`,[commercialId,day]);
  if(relevant.rows.length>200)return {available:false as const,reason:'Plus de 200 ventes concernées : aperçu incomplet refusé.'};
  let received=0n,refund=0n;
+ const refundEvents:{operationId:string;saleId:string;version:number;clientId:string;clientName:string;recordedAt:string;refund:number}[]=[];
  const entries:{saleId:string;clientId:string;clientName:string;saleDay:string;initialPaid:number;receivedHere:number;refundedHere:number}[]=[];
  for(const row of relevant.rows){
   const events=await db.query(`SELECT operation_id AS "operationId",sale_id AS "saleId",version,client_id AS "clientId",commercial_id AS "actorId",journal_date::text AS "saleDay",event_date::text AS "eventDay",payload,payload_hash AS hash
@@ -32,7 +33,7 @@ export async function readSaleCashPreview(db:PoolClient,commercialId:string,day:
    if(total!==event.sale.total||event.sale.remaining!==Math.max(0,event.sale.total-event.sale.paid)||Date.parse(event.recordedAt)<Date.parse(event.sale.createdAt))throw new RangeError('Totaux de vente incohérents : aperçu des flux refusé.');
    if(!previous){owner=r.actorId;client=r.clientId;saleDay=r.saleDay;initialPaid=event.sale.paid;if(event.refund!==0||initialPaid>event.sale.total||Date.parse(event.recordedAt)!==Date.parse(event.sale.createdAt))throw new RangeError('Premier paiement incohérent.');}
    else if(r.clientId!==client||r.saleDay!==saleDay||event.sale.createdAt!==previous.sale.createdAt||Date.parse(event.recordedAt)<Date.parse(previous.recordedAt)||event.sale.paid!==previous.sale.paid-event.refund||event.refund>Math.max(0,previous.sale.paid-event.sale.total))throw new RangeError('Révision de vente incohérente : aperçu des flux refusé.');
-   if(r.actorId===commercialId&&r.eventDay===day)refundHere+=BigInt(event.refund);
+   if(r.actorId===commercialId&&r.eventDay===day){refundHere+=BigInt(event.refund);if(event.refund>0)refundEvents.push({operationId:event.operationId,saleId:event.saleId,version:event.version,clientId:event.sale.clientId,clientName:event.sale.clientName,recordedAt:event.recordedAt,refund:event.refund});}
    previous=event;
   }
   if(!previous||!owner||!client||!saleDay)throw new RangeError('Historique de vente incomplet.');
@@ -40,5 +41,5 @@ export async function readSaleCashPreview(db:PoolClient,commercialId:string,day:
   received+=BigInt(here);refund+=refundHere;
   entries.push({saleId:row.saleId as string,clientId:client,clientName:previous.sale.clientName,saleDay,initialPaid,receivedHere:here,refundedHere:safe(refundHere)});
  }
- return {available:true as const,entries,received:safe(received),refund:safe(refund),net:safe(received-refund)};
+ return {available:true as const,entries,refundEvents,received:safe(received),refund:safe(refund),net:safe(received-refund)};
 }

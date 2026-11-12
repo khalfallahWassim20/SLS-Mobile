@@ -43,7 +43,7 @@ test('serveur réel : v5 uniquement sur option de test, authentification et avoi
   response=await fetch(`${base}/mobile/identified/sales`,{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({operationId:randomUUID(),saleId,version:2,recordedAt:new Date().toISOString(),sale:revised,refund:38100})});assert.equal(response.status,201);
   const tunisDay=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
   response=await fetch(`${base}/identified-tour/${commercial.id}/${tunisDay}`,{headers:adminHeaders});assert.equal(response.status,200);const journal=await response.json();
-  assert.equal(journal.saleRefundTotal,38100);assert.equal(journal.saleRefundEvents[0].saleId,saleId);assert.equal(journal.totalCollected,11900);
+  assert.equal(journal.saleRefundTotal,38100);assert.equal(journal.saleRefundEvents[0].saleId,saleId);assert.equal(journal.totalCollected,50000);
   // Un remboursement d'une autre journée bloque le journal mais le diagnostic
   // reste disponible uniquement à l'administrateur authentifié en v5.
   const olderId=randomUUID(),oldAt='2026-10-01T09:00:00.000Z',older={...sale,createdAt:oldAt,syncSaleId:olderId};
@@ -54,7 +54,7 @@ test('serveur réel : v5 uniquement sur option de test, authentification et avoi
   assert.equal((await fetch(diagnosticUrl,{headers:{Authorization:`Bearer ${admin}`}})).status,409);
   response=await fetch(diagnosticUrl,{headers:adminHeaders});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');const diagnostic=await response.json();assert.equal(diagnostic.entries.length,1);assert.equal(diagnostic.entries[0].saleId,olderId);assert.equal(diagnostic.entries[0].refund,38100);assert.equal(diagnostic.saleCashPreview.received,50000);assert.equal(diagnostic.saleCashPreview.refund,0);assert.equal(diagnostic.saleCashPreview.net,50000);
   response=await fetch(`${base}/identified-tour/${commercial.id}/2026-10-02/refund-diagnostic`,{headers:adminHeaders});const laterPreview=(await response.json()).saleCashPreview;assert.equal(laterPreview.received,0);assert.equal(laterPreview.refund,38100);assert.equal(laterPreview.net,-38100);
-  assert.equal((await fetch(`${base}/identified-tour/${commercial.id}/2026-10-01`,{headers:adminHeaders})).status,409);
+  response=await fetch(`${base}/identified-tour/${commercial.id}/2026-10-01`,{headers:adminHeaders});assert.equal(response.status,200);assert.equal((await response.json()).collectedAfterRefunds,50000);
   // Clôture historique simulée : le diagnostic permet toujours d'obtenir sa
   // version et l'administrateur peut la rouvrir sans lever la garde du journal.
   await pool.query("UPDATE tour_closures SET status='closed',version=1,closed_at=now() WHERE commercial_id=$1 AND journal_date='2026-10-01'",[commercial.id]);
@@ -64,11 +64,13 @@ test('serveur réel : v5 uniquement sur option de test, authentification et avoi
   response=await fetch(reopenUrl,{method:'POST',headers:adminHeaders,body:JSON.stringify(reopen)});assert.equal(response.status,201);
   response=await fetch(reopenUrl,{method:'POST',headers:adminHeaders,body:JSON.stringify(reopen)});assert.equal(response.status,200);assert.equal((await response.json()).status,'duplicate');
   response=await fetch(diagnosticUrl,{headers:adminHeaders});assert.deepEqual((await response.json()).closure,{status:'open',version:2});
-  assert.equal((await fetch(`${base}/identified-tour/${commercial.id}/2026-10-01`,{headers:adminHeaders})).status,409);
+  assert.equal((await fetch(`${base}/identified-tour/${commercial.id}/2026-10-01`,{headers:adminHeaders})).status,200);
   const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:2,recordedAt:new Date().toISOString(),choice:'refund'};
   response=await fetch(`${base}/identified-tour-actions/credit-notes/preview`,{method:'POST',headers:adminHeaders,body:JSON.stringify({clientId,kind:'sale',command})});assert.equal(response.status,200);const review=await response.json();
   response=await fetch(`${base}/identified-tour-actions/credit-notes/reviewed/sales`,{method:'POST',headers:adminHeaders,body:JSON.stringify({command,review})});assert.equal(response.status,201);
   response=await fetch(`${base}/mobile/identified/reference`,{headers:auth});assert.equal((await response.json()).saleStates.find((s:{saleId:string})=>s.saleId===saleId).creditNote.refund,11900);
   response=await fetch(`${base}/mobile/identified/reference`,{headers:{Authorization:`Bearer ${session.token}`}});assert.equal(response.status,409);
+  await pool.query("UPDATE identified_sale_events SET payload_hash='corruption' WHERE sale_id=$1 AND version=2",[olderId]);
+  response=await fetch(`${base}/identified-tour/${commercial.id}/2026-10-01`,{headers:adminHeaders});assert.equal(response.status,409);assert.match((await response.json()).error,/incohérent/);
  }finally{await stop();if(pool)await pool.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}
 });

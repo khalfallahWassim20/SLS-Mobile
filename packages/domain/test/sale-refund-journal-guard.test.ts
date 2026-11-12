@@ -51,11 +51,11 @@ test('clôture v5 : remboursement reçu bloque une nouvelle clôture sans empêc
   const status=await db.query('SELECT status,version FROM tour_closures WHERE commercial_id=$1 AND journal_date=$2::date',[a.id,day]);assert.deepEqual(status.rows[0],{status:'open',version:2});
   // Tester le refus directement avant la construction des totaux, sans dépendre
   // d'un payload de vente minimal non conforme au schéma du journal.
-  await assert.rejects(readPrototypeCreditJournal(pool,a.id,day),/remboursement/i);
+  await assert.rejects(readPrototypeCreditJournal(pool,a.id,day),/incohérent/i);
  }finally{await db.close();}
 });
 
-test('même commercial et même journée : le remboursement est déjà dans le paiement net et la clôture reste possible',async()=>{
+test('même commercial et même journée : paiement initial, remboursement distinct et clôture possible',async()=>{
  const {saveCommercial,setCommercialCredentials}=await import('../../../apps/api/src/commercials.js');
  const {loginCommercial}=await import('../../../apps/api/src/commercial-session.js');
  const {storeIdentifiedSale}=await import('../../../apps/api/src/identified-operations.js');
@@ -75,10 +75,10 @@ test('même commercial et même journée : le remboursement est déjà dans le p
   const revised={...sale,syncVersion:2,lines:[{...line,unitPrice:10000}],total:11900,paid:11900,remaining:0};
   await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:2,recordedAt:`${day}T10:00:00.000Z`,sale:revised,refund:38100},auth);
   const journal=await readPrototypeCreditJournal(pool,a.id,day);
-  assert.equal(journal.totalBilled,11900);assert.equal(journal.totalCollected,11900);assert.equal(journal.collectedAfterRefunds,11900);
-  assert.equal(journal.rows[0].tourPaid,11900);assert.equal(journal.saleRefundTotal,38100);assert.equal(journal.saleRefundEvents.length,1);assert.equal(journal.saleRefundEvents[0].refund,38100);
+  assert.equal(journal.totalBilled,11900);assert.equal(journal.totalCollected,50000);assert.equal(journal.collectedAfterRefunds,11900);
+  assert.equal(journal.rows[0].tourPaid,50000);assert.equal(journal.saleRefundTotal,38100);assert.equal(journal.saleRefundEvents.length,1);assert.equal(journal.saleRefundEvents[0].refund,38100);
   await db.query("UPDATE identified_sale_events SET payload_hash='corruption' WHERE sale_id=$1 AND version=2",[saleId]);
-  await assert.rejects(readPrototypeCreditJournal(pool,a.id,day),/Historique de remboursement incohérent/);
+  await assert.rejects(readPrototypeCreditJournal(pool,a.id,day),/Historique de vente incohérent/);
   const {createHash}=await import('node:crypto');const eventRow=await db.query('SELECT payload FROM identified_sale_events WHERE sale_id=$1 AND version=2',[saleId]);
   const {saleEventSchema}=await import('../../../apps/api/src/identified-operations.js');
   await db.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE sale_id=$2 AND version=2',[createHash('sha256').update(JSON.stringify(saleEventSchema.parse((eventRow.rows[0] as {payload:unknown}).payload))).digest('hex'),saleId]);
@@ -86,7 +86,7 @@ test('même commercial et même journée : le remboursement est déjà dans le p
   const {storePrototypeCreditNote}=await import('../../../apps/api/src/credit-note-registry-prototype.js');
   await storePrototypeCreditNote(pool,{operationId:randomUUID(),invoiceId:saleId,expectedVersion:2,recordedAt:`${day}T10:30:00.000Z`,choice:'refund'},principal);
   const cancelled=await readPrototypeCreditJournal(pool,a.id,day);
-  assert.equal(cancelled.totalCollected,11900);assert.equal(cancelled.creditRefundTotal,11900);assert.equal(cancelled.collectedAfterRefunds,0);assert.equal(cancelled.billedAfterCredits,0);
+  assert.equal(cancelled.totalCollected,50000);assert.equal(cancelled.creditRefundTotal,11900);assert.equal(cancelled.collectedAfterRefunds,0);assert.equal(cancelled.billedAfterCredits,0);
   const {readSaleRefundDiagnostic}=await import('../../../apps/api/src/sale-refund-diagnostic-prototype.js');const preview=(await readSaleRefundDiagnostic(pool,a.id,day)).saleCashPreview;
   assert.equal(preview.available,true);if(preview.available){assert.equal(preview.received,50000);assert.equal(preview.refund,38100);assert.equal(preview.net,11900);}
   // L'aperçu exclut explicitement le remboursement séparé de l'avoir.
