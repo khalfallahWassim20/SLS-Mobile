@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import type {Pool} from 'pg';
 import {z} from 'zod';
 import {journalDateSchema} from './journal-protocol.js';
+import {readSaleCashPreview} from './sale-cash-preview-prototype.js';
 import {saleEventSchema} from './identified-operations.js';
 import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
 
@@ -34,6 +35,7 @@ export async function readSaleRefundDiagnostic(pool:Pool,commercialId:string,day
    if(e.operationId!==row.operationId||e.saleId!==row.saleId||e.version!==row.version||e.sale.syncSaleId!==row.saleId||e.sale.syncVersion!==e.version||e.sale.clientId!==row.clientId||p.saleId!==row.saleId||p.sale.syncSaleId!==row.saleId||p.sale.syncVersion!==p.version||p.version+1!==e.version||p.sale.clientId!==row.clientId||p.sale.createdAt!==e.sale.createdAt||tunisDay(e.sale.createdAt)!==row.saleDay||(row.refundDay!==null&&tunisDay(e.recordedAt)!==row.refundDay)||e.refund<=0||p.sale.paid-e.refund!==e.sale.paid||e.refund>Math.max(0,p.sale.paid-e.sale.total)||hash(e)!==row.hash||hash(p)!==row.previousHash)throw new RangeError('Historique de remboursement incohérent.');
    return {operationId:e.operationId,saleId:e.saleId,version:e.version,clientId:row.clientId as string,clientName:e.sale.clientName,ownerId:row.ownerId as string,ownerName:row.ownerName as string,saleDay:row.saleDay as string,actorId:row.actorId as string,actorName:row.actorName as string,recordedAt:e.recordedAt,refundDay:row.refundDay as string|null,previousPaid:p.sale.paid,currentPaid:e.sale.paid,refund:e.refund};
   });
-  await db.query('COMMIT');return {version:5 as const,commercialId,day,closure:closure.rows[0]??{status:'open',version:0},entries,truncated:result.rows.length>200};
+  const saleCashPreview=await readSaleCashPreview(db,commercialId,day);
+  await db.query('COMMIT');return {version:5 as const,commercialId,day,closure:closure.rows[0]??{status:'open',version:0},entries,truncated:result.rows.length>200,saleCashPreview};
  }catch(e){await db.query('ROLLBACK');throw e;}finally{db.release();}
 }

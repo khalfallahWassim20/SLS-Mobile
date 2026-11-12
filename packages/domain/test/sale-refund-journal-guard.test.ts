@@ -87,6 +87,9 @@ test('même commercial et même journée : le remboursement est déjà dans le p
   await storePrototypeCreditNote(pool,{operationId:randomUUID(),invoiceId:saleId,expectedVersion:2,recordedAt:`${day}T10:30:00.000Z`,choice:'refund'},principal);
   const cancelled=await readPrototypeCreditJournal(pool,a.id,day);
   assert.equal(cancelled.totalCollected,11900);assert.equal(cancelled.creditRefundTotal,11900);assert.equal(cancelled.collectedAfterRefunds,0);assert.equal(cancelled.billedAfterCredits,0);
+  const {readSaleRefundDiagnostic}=await import('../../../apps/api/src/sale-refund-diagnostic-prototype.js');const preview=(await readSaleRefundDiagnostic(pool,a.id,day)).saleCashPreview;
+  assert.equal(preview.available,true);if(preview.available){assert.equal(preview.received,50000);assert.equal(preview.refund,38100);assert.equal(preview.net,11900);}
+  // L'aperçu exclut explicitement le remboursement séparé de l'avoir.
   assert.equal((await requestTourTransition(pool,{requestId:randomUUID(),day,expectedVersion:0},principal,true,true)).status,'received');
   await assert.rejects(storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:3,recordedAt:`${day}T11:00:00.000Z`,sale:{...revised,syncVersion:3},refund:0},auth),/clôtur|avoir|annulée/i);
  }finally{await db.close();}

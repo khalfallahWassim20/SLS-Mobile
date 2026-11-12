@@ -52,7 +52,8 @@ test('serveur réel : v5 uniquement sur option de test, authentification et avoi
   const diagnosticUrl=`${base}/identified-tour/${commercial.id}/2026-10-01/refund-diagnostic`;
   assert.equal((await fetch(diagnosticUrl,{headers:{'X-SLS-Reference-Version':'5'}})).status,401);
   assert.equal((await fetch(diagnosticUrl,{headers:{Authorization:`Bearer ${admin}`}})).status,409);
-  response=await fetch(diagnosticUrl,{headers:adminHeaders});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');const diagnostic=await response.json();assert.equal(diagnostic.entries.length,1);assert.equal(diagnostic.entries[0].saleId,olderId);assert.equal(diagnostic.entries[0].refund,38100);
+  response=await fetch(diagnosticUrl,{headers:adminHeaders});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');const diagnostic=await response.json();assert.equal(diagnostic.entries.length,1);assert.equal(diagnostic.entries[0].saleId,olderId);assert.equal(diagnostic.entries[0].refund,38100);assert.equal(diagnostic.saleCashPreview.received,50000);assert.equal(diagnostic.saleCashPreview.refund,0);assert.equal(diagnostic.saleCashPreview.net,50000);
+  response=await fetch(`${base}/identified-tour/${commercial.id}/2026-10-02/refund-diagnostic`,{headers:adminHeaders});const laterPreview=(await response.json()).saleCashPreview;assert.equal(laterPreview.received,0);assert.equal(laterPreview.refund,38100);assert.equal(laterPreview.net,-38100);
   assert.equal((await fetch(`${base}/identified-tour/${commercial.id}/2026-10-01`,{headers:adminHeaders})).status,409);
   // Clôture historique simulée : le diagnostic permet toujours d'obtenir sa
   // version et l'administrateur peut la rouvrir sans lever la garde du journal.

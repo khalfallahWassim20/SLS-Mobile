@@ -44,6 +44,18 @@ export async function loadSaleRefundDiagnostic(request,commercialId,day){
  if(!uuid(commercialId)||!validDay(day))throw Error('Commercial ou date invalide.');
  const value=await request(`identified-tour/${encodeURIComponent(commercialId)}/${encodeURIComponent(day)}/refund-diagnostic`,options());
  if(!value||value.version!==5||value.commercialId!==commercialId||value.day!==day||typeof value.truncated!=='boolean'||!Array.isArray(value.entries)||value.entries.length>200||!['open','closed'].includes(value.closure?.status)||!Number.isSafeInteger(value.closure.version)||value.closure.version<0)throw Error('Diagnostic de remboursement incohérent.');
+ const preview=value.saleCashPreview;
+ if(!preview||typeof preview.available!=='boolean')throw Error('Aperçu des flux de ventes indisponible.');
+ if(!preview.available){if(typeof preview.reason!=='string'||!preview.reason.trim())throw Error('Aperçu des flux de ventes incohérent.');}
+ else{
+  if(!Array.isArray(preview.entries)||preview.entries.length>200||!Number.isSafeInteger(preview.received)||preview.received<0||!Number.isSafeInteger(preview.refund)||preview.refund<0||!Number.isSafeInteger(preview.net))throw Error('Aperçu des flux de ventes incohérent.');
+  let received=0n,refund=0n;const saleIds=new Set();
+  for(const p of preview.entries){
+   if(!p||!uuid(p.saleId)||saleIds.has(p.saleId)||!uuid(p.clientId)||typeof p.clientName!=='string'||!p.clientName.trim()||!validDay(p.saleDay)||!Number.isSafeInteger(p.initialPaid)||p.initialPaid<0||!Number.isSafeInteger(p.receivedHere)||![0,p.initialPaid].includes(p.receivedHere)||(p.receivedHere>0&&p.saleDay!==day)||!Number.isSafeInteger(p.refundedHere)||p.refundedHere<0||p.refundedHere>p.initialPaid)throw Error('Flux de vente incohérent.');
+   saleIds.add(p.saleId);received+=BigInt(p.receivedHere);refund+=BigInt(p.refundedHere);
+  }
+  if(received!==BigInt(preview.received)||refund!==BigInt(preview.refund)||received-refund!==BigInt(preview.net))throw Error('Totaux des flux de ventes incohérents.');
+ }
  const seen=new Set();
  for(const e of value.entries){
   const actualDay=typeof e?.recordedAt==='string'&&Number.isFinite(Date.parse(e.recordedAt))?new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(e.recordedAt)):'';

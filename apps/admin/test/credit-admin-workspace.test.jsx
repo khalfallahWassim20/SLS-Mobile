@@ -62,10 +62,12 @@ test('diagnostic de remboursement : périmètre vérifié, pas de déblocage imp
  const {loadSaleRefundDiagnostic}=await import('../src/credit-admin-workspace-prototype.js');
  const {randomUUID}=await import('node:crypto'),owner=randomUUID(),actor=randomUUID(),client=randomUUID(),day='2026-11-08';
  const entry={operationId:randomUUID(),saleId:randomUUID(),version:2,clientId:client,clientName:'Fictif',ownerId:owner,ownerName:'A',saleDay:day,actorId:actor,actorName:'B',recordedAt:'2026-11-09T10:00:00.000Z',refundDay:'2026-11-09',previousPaid:50000,currentPaid:11900,refund:38100};
- const response={version:5,commercialId:owner,day,closure:{status:'closed',version:1},entries:[entry],truncated:false};
+ const response={version:5,commercialId:owner,day,closure:{status:'closed',version:1},entries:[entry],truncated:false,saleCashPreview:{available:true,entries:[{saleId:entry.saleId,clientId:client,clientName:'Fictif',saleDay:day,initialPaid:50000,receivedHere:50000,refundedHere:0}],received:50000,refund:0,net:50000}};
  let calls=0;const request=async(path,options)=>{calls++;assert.match(path,/refund-diagnostic/);assert.equal(options.headers['X-SLS-Reference-Version'],'5');return response;};
  assert.equal((await loadSaleRefundDiagnostic(request,owner,day)).entries[0].refund,38100);assert.equal(calls,1);
  await assert.rejects(loadSaleRefundDiagnostic(async()=>({...response,entries:[{...entry,refund:38000}]}),owner,day),/incohérent/);
  await assert.rejects(loadSaleRefundDiagnostic(async()=>({...response,entries:[{...entry,ownerId:randomUUID()}]}),owner,day),/incohérent/);
  await assert.rejects(loadSaleRefundDiagnostic(async()=>({...response,entries:[{...entry,refundDay:'2026-11-10'}]}),owner,day),/incohérent/);
+ await assert.rejects(loadSaleRefundDiagnostic(async()=>({...response,saleCashPreview:{...response.saleCashPreview,net:0}}),owner,day),/incohérent/);
+ assert.equal((await loadSaleRefundDiagnostic(async()=>({...response,saleCashPreview:{available:false,reason:'Date absente'}}),owner,day)).saleCashPreview.available,false);
 });
