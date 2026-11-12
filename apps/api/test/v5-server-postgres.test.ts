@@ -44,10 +44,30 @@ test('serveur réel : v5 uniquement sur option de test, authentification et avoi
   const tunisDay=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
   response=await fetch(`${base}/identified-tour/${commercial.id}/${tunisDay}`,{headers:adminHeaders});assert.equal(response.status,200);const journal=await response.json();
   assert.equal(journal.saleRefundTotal,38100);assert.equal(journal.saleRefundEvents[0].saleId,saleId);assert.equal(journal.totalCollected,11900);
+  // Un remboursement d'une autre journée bloque le journal mais le diagnostic
+  // reste disponible uniquement à l'administrateur authentifié en v5.
+  const olderId=randomUUID(),oldAt='2026-10-01T09:00:00.000Z',older={...sale,createdAt:oldAt,syncSaleId:olderId};
+  response=await fetch(`${base}/mobile/identified/sales`,{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({operationId:randomUUID(),saleId:olderId,version:1,recordedAt:oldAt,sale:older,refund:0})});assert.equal(response.status,201);
+  response=await fetch(`${base}/mobile/identified/sales`,{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({operationId:randomUUID(),saleId:olderId,version:2,recordedAt:'2026-10-02T10:00:00.000Z',sale:{...revised,createdAt:oldAt,syncSaleId:olderId},refund:38100})});assert.equal(response.status,201);
+  const diagnosticUrl=`${base}/identified-tour/${commercial.id}/2026-10-01/refund-diagnostic`;
+  assert.equal((await fetch(diagnosticUrl,{headers:{'X-SLS-Reference-Version':'5'}})).status,401);
+  assert.equal((await fetch(diagnosticUrl,{headers:{Authorization:`Bearer ${admin}`}})).status,409);
+  response=await fetch(diagnosticUrl,{headers:adminHeaders});assert.equal(response.status,200);assert.equal(response.headers.get('cache-control'),'no-store');const diagnostic=await response.json();assert.equal(diagnostic.entries.length,1);assert.equal(diagnostic.entries[0].saleId,olderId);assert.equal(diagnostic.entries[0].refund,38100);
+  assert.equal((await fetch(`${base}/identified-tour/${commercial.id}/2026-10-01`,{headers:adminHeaders})).status,409);
+  // Clôture historique simulée : le diagnostic permet toujours d'obtenir sa
+  // version et l'administrateur peut la rouvrir sans lever la garde du journal.
+  await pool.query("UPDATE tour_closures SET status='closed',version=1,closed_at=now() WHERE commercial_id=$1 AND journal_date='2026-10-01'",[commercial.id]);
+  response=await fetch(diagnosticUrl,{headers:adminHeaders});assert.deepEqual((await response.json()).closure,{status:'closed',version:1});
+  const reopen={requestId:randomUUID(),day:'2026-10-01',expectedVersion:1};
+  const reopenUrl=`${base}/identified-tour-actions/${commercial.id}/reopen`;
+  response=await fetch(reopenUrl,{method:'POST',headers:adminHeaders,body:JSON.stringify(reopen)});assert.equal(response.status,201);
+  response=await fetch(reopenUrl,{method:'POST',headers:adminHeaders,body:JSON.stringify(reopen)});assert.equal(response.status,200);assert.equal((await response.json()).status,'duplicate');
+  response=await fetch(diagnosticUrl,{headers:adminHeaders});assert.deepEqual((await response.json()).closure,{status:'open',version:2});
+  assert.equal((await fetch(`${base}/identified-tour/${commercial.id}/2026-10-01`,{headers:adminHeaders})).status,409);
   const command={operationId:randomUUID(),invoiceId:saleId,expectedVersion:2,recordedAt:new Date().toISOString(),choice:'refund'};
   response=await fetch(`${base}/identified-tour-actions/credit-notes/preview`,{method:'POST',headers:adminHeaders,body:JSON.stringify({clientId,kind:'sale',command})});assert.equal(response.status,200);const review=await response.json();
   response=await fetch(`${base}/identified-tour-actions/credit-notes/reviewed/sales`,{method:'POST',headers:adminHeaders,body:JSON.stringify({command,review})});assert.equal(response.status,201);
-  response=await fetch(`${base}/mobile/identified/reference`,{headers:auth});assert.equal((await response.json()).saleStates[0].creditNote.refund,11900);
+  response=await fetch(`${base}/mobile/identified/reference`,{headers:auth});assert.equal((await response.json()).saleStates.find((s:{saleId:string})=>s.saleId===saleId).creditNote.refund,11900);
   response=await fetch(`${base}/mobile/identified/reference`,{headers:{Authorization:`Bearer ${session.token}`}});assert.equal(response.status,409);
  }finally{await stop();if(pool)await pool.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}
 });

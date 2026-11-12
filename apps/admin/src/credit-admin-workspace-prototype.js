@@ -38,3 +38,17 @@ export async function exportCreditAdminJournal(request,commercialId,day,format,n
  const journal=await loadCreditAdminJournal(request,commercialId,day),generatedAt=now().toISOString();
  return {journal,content:format==='csv'?journalServerCsv(journal,generatedAt):journalServerHtml(journal,generatedAt),name:`journal-${day}-${commercialId}.${format==='csv'?'csv':'html'}`};
 }
+
+/** Lecture explicite, indicative et limitée aux événements déjà reçus. */
+export async function loadSaleRefundDiagnostic(request,commercialId,day){
+ if(!uuid(commercialId)||!validDay(day))throw Error('Commercial ou date invalide.');
+ const value=await request(`identified-tour/${encodeURIComponent(commercialId)}/${encodeURIComponent(day)}/refund-diagnostic`,options());
+ if(!value||value.version!==5||value.commercialId!==commercialId||value.day!==day||typeof value.truncated!=='boolean'||!Array.isArray(value.entries)||value.entries.length>200||!['open','closed'].includes(value.closure?.status)||!Number.isSafeInteger(value.closure.version)||value.closure.version<0)throw Error('Diagnostic de remboursement incohérent.');
+ const seen=new Set();
+ for(const e of value.entries){
+  const actualDay=typeof e?.recordedAt==='string'&&Number.isFinite(Date.parse(e.recordedAt))?new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(e.recordedAt)):'';
+  if(!e||!uuid(e.operationId)||seen.has(e.operationId)||!uuid(e.saleId)||!uuid(e.clientId)||!uuid(e.ownerId)||!uuid(e.actorId)||!validDay(e.saleDay)||(e.refundDay!==null&&!validDay(e.refundDay))||typeof e.clientName!=='string'||!e.clientName.trim()||typeof e.ownerName!=='string'||!e.ownerName.trim()||typeof e.actorName!=='string'||!e.actorName.trim()||!actualDay||(e.refundDay!==null&&actualDay!==e.refundDay)||!Number.isSafeInteger(e.version)||e.version<2||!Number.isSafeInteger(e.previousPaid)||!Number.isSafeInteger(e.currentPaid)||!Number.isSafeInteger(e.refund)||e.refund<=0||e.currentPaid<0||e.previousPaid-e.currentPaid!==e.refund||!((e.ownerId===commercialId&&e.saleDay===day)||(e.actorId===commercialId&&(e.refundDay===day||e.refundDay===null))))throw Error('Mouvement de remboursement incohérent.');
+  seen.add(e.operationId);
+ }
+ return value;
+}

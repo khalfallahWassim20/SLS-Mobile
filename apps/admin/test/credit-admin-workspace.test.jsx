@@ -57,3 +57,15 @@ test('espace v5 assemblé : serveur HTTP, soldes, avoir, journal et exports',asy
   const html=renderToStaticMarkup(<CreditAdminWorkspacePrototype request={request} commercials={[rep]} initialDay={day} onExport={()=>{}}/>);assert.match(html,/Espace administrateur/);assert.match(html,/hors ligne/);assert.match(html,/système principal/);
  }finally{if(server)await new Promise(r=>server.close(r));await db.close();}
 });
+
+test('diagnostic de remboursement : périmètre vérifié, pas de déblocage implicite',async()=>{
+ const {loadSaleRefundDiagnostic}=await import('../src/credit-admin-workspace-prototype.js');
+ const {randomUUID}=await import('node:crypto'),owner=randomUUID(),actor=randomUUID(),client=randomUUID(),day='2026-11-08';
+ const entry={operationId:randomUUID(),saleId:randomUUID(),version:2,clientId:client,clientName:'Fictif',ownerId:owner,ownerName:'A',saleDay:day,actorId:actor,actorName:'B',recordedAt:'2026-11-09T10:00:00.000Z',refundDay:'2026-11-09',previousPaid:50000,currentPaid:11900,refund:38100};
+ const response={version:5,commercialId:owner,day,closure:{status:'closed',version:1},entries:[entry],truncated:false};
+ let calls=0;const request=async(path,options)=>{calls++;assert.match(path,/refund-diagnostic/);assert.equal(options.headers['X-SLS-Reference-Version'],'5');return response;};
+ assert.equal((await loadSaleRefundDiagnostic(request,owner,day)).entries[0].refund,38100);assert.equal(calls,1);
+ await assert.rejects(loadSaleRefundDiagnostic(async()=>({...response,entries:[{...entry,refund:38000}]}),owner,day),/incohérent/);
+ await assert.rejects(loadSaleRefundDiagnostic(async()=>({...response,entries:[{...entry,ownerId:randomUUID()}]}),owner,day),/incohérent/);
+ await assert.rejects(loadSaleRefundDiagnostic(async()=>({...response,entries:[{...entry,refundDay:'2026-11-10'}]}),owner,day),/incohérent/);
+});
