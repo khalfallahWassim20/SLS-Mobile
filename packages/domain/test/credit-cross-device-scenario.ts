@@ -374,6 +374,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   // Les deux factures existent sur ce téléphone, mais leurs annulations sont
   // connues uniquement par la référence serveur (créées sur un autre appareil).
   mobile.exec('SAVEPOINT remote_export');mobile.exec('DELETE FROM offline_credit_prototype');await assert.rejects(assertLegacyMobileCreditSafe(tx,identity),/Des avoirs existent/);mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
+  mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(randomUUID(),identity.commercialId,'sale',saleId,sale.createdAt);
   mobile.prepare('INSERT INTO tour_pre_invoices(id,client_id,journal_date,payload) VALUES(?,?,?,?)').run(invoiceId,clientId,day,JSON.stringify(invoice));
   mobile.prepare('INSERT INTO tour_journal_receipts(id,pre_invoice_id,client_id,journal_date,payload) VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,clientId,day,JSON.stringify(receipt));
   const preSource=sources.items.find((x:{kind:string})=>x.kind==='preinvoice').source;
@@ -801,9 +802,9 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   isolated.exec('SAVEPOINT local_refund_next_day');
   const fakePrevious={...modifiedOffline,syncVersion:2,id:localRow.id,paid:1000},fakeCurrent={...fakePrevious,syncVersion:3,total:0,paid:0};
   isolated.prepare('INSERT INTO sale_revisions(sale_id,created_at,previous_payload,new_payload,refund) VALUES(?,?,?,?,?)').run(localRow.id,'2026-11-08T10:00:00.000Z',JSON.stringify(fakePrevious),JSON.stringify(fakeCurrent),1000);
-  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/autre journée/);
-  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,'2026-11-08','Deuxième',digest),/autre journée/);
-  await assert.rejects(prepareVerifiedPrototypeClose(isolatedTx,identity,'2026-11-08',0,randomUUID,digest),/autre journée|conflit|rapprochement/i);
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/incomplet/);
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,'2026-11-08','Deuxième',digest),/incomplet/);
+  await assert.rejects(prepareVerifiedPrototypeClose(isolatedTx,identity,'2026-11-08',0,randomUUID,digest),/incomplet|conflit|rapprochement/i);
   isolated.exec('ROLLBACK TO local_refund_next_day; RELEASE local_refund_next_day');
 
   isolated.exec('SAVEPOINT tampered_audit');isolated.prepare('UPDATE credit_local_sale_reconcile_prototype SET event=? WHERE sale_id=?').run('{}',offlineSaleId);
@@ -814,7 +815,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Historique distant incohérent/);isolated.exec('ROLLBACK TO bad_actor; RELEASE bad_actor');
   isolated.exec('SAVEPOINT bad_previous');isolated.prepare("UPDATE sale_revisions SET previous_payload=json_set(previous_payload,'$.paid',999) WHERE sale_id=?").run(localRow.id);
   await assert.rejects(readCreditHistoryPrototype(isolatedTx,identity,clientId,digest),/Historique distant incohérent/);
-  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Historique distant incohérent/);isolated.exec('ROLLBACK TO bad_previous; RELEASE bad_previous');
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Historique (distant|de vente) incohérent/);isolated.exec('ROLLBACK TO bad_previous; RELEASE bad_previous');
   // Une édition faite ensuite sur ce téléphone garde son origine locale et
   // peut être suivie d'une nouvelle version importée depuis un autre appareil.
   const localVersion4={...modifiedOffline,syncVersion:4},localEditId=randomUUID(),localEditAt='2026-11-07T13:35:00.000Z';
@@ -847,8 +848,9 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const appliedRefund=await isolatedTransaction(()=>reconcileLocalSalePrototype(isolatedTx,identity,identity,refundId,refundSaleId,refundHistory,refundPreview.fingerprint,digest));assert.equal(appliedRefund.versionsAdded,1);
   assert.equal(JSON.parse(String(isolated.prepare('SELECT payload FROM sales WHERE id=?').get(refundId)?.payload)).syncVersion,2);assert.equal(isolated.prepare('SELECT count(*) AS n FROM sale_revisions WHERE sale_id=?').get(refundId)?.n,1);
   const refundHistoryLocal=await isolatedTransaction(()=>readCreditHistoryPrototype(isolatedTx,identity,client2,digest));assert.ok(refundHistoryLocal.sales.some(s=>s.sale.syncSaleId===refundSaleId&&s.revisions.some(r=>r.origin==='remote'&&r.refund===2400&&r.commercialId===first.id)));
-  await assert.rejects(isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)),/Remboursement enregistré ailleurs/);
-  await assert.rejects(isolatedTransaction(()=>prepareVerifiedPrototypeClose(isolatedTx,identity,otherDay,0,randomUUID,digest)),/Remboursement enregistré ailleurs|conflit|rapprochement/i);
+  const importedRefundJournal=await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest));
+  assert.equal(importedRefundJournal.initialSalePayments?.find(p=>p.saleId===refundId)?.paid,50000);
+  assert.equal(importedRefundJournal.saleRefunds?.some(r=>r.saleId===refundId),false);
   isolated.exec('SAVEPOINT bad_refund_audit');isolated.prepare('UPDATE sale_revisions SET refund=refund+1 WHERE sale_id=?').run(refundId);
   await assert.rejects(readCreditHistoryPrototype(isolatedTx,identity,client2,digest),/Historique distant incohérent/);isolated.exec('ROLLBACK TO bad_refund_audit; RELEASE bad_refund_audit');
 
@@ -893,7 +895,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await isolatedTransaction(()=>assertCreditWritePrototype(isolatedTx,{identity,expectedBalance:unaffected.balance},{kind:'sale',clientId},digest));
   assert.equal((await post(b.token,'credit-notes/sales',thirdCommand)).status,409);
   assert.equal(isolated.prepare('SELECT pending FROM offline_credit_prototype WHERE operation_id=?').get(thirdCommand.operationId)?.pending,1);
-  await assert.rejects(isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)),/conflit|Remboursement enregistré ailleurs/);
+  await assert.rejects(isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)),/conflit/);
   const abandonPayload={kind:'sale',command:thirdCommand};
   assert.equal((await post('invalid','credit-notes-abandon',abandonPayload)).status,401);
   const firstAbandon=await post(b.token,'credit-notes-abandon',abandonPayload);assert.equal(firstAbandon.status,200);const lostReceipt=await firstAbandon.json();assert.equal(lostReceipt.status,'abandoned');

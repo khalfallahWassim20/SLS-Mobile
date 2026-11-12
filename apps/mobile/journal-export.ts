@@ -1,4 +1,4 @@
-import type {LocalSaleRefund} from './credit-sale-refund-journal-prototype';
+import type {LocalSaleRefund,InitialSalePayment} from './credit-sale-refund-journal-prototype';
 import type { JournalRow } from './journal.js';
 import type { TourJournalReceipt } from './storage.js';
 import type {Note} from './credit-note-offline-prototype';
@@ -6,7 +6,7 @@ import {canonicalJson,prepareFullCreditNote,calculatePreInvoiceCancellation} fro
 import {tunisDay} from './journal';
 
 /** Instantané local, distinct du journal consolidé reçu sur le serveur. */
-export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[]; remoteSaleRefunds?: {operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[] };
+export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[]; initialSalePayments?:InitialSalePayment[]; remoteSaleRefunds?: {operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[] };
 const amount = (value: number) => {
  if (!Number.isSafeInteger(value)) throw new Error('Montant invalide dans le journal.');
  const n = BigInt(value), abs = n < 0n ? -n : n;
@@ -41,7 +41,18 @@ function creditEvents(data:JournalExport) {
   });
  return events;
 }
+export function initialSalePaymentMap(data:JournalExport):Map<number,number>|null {
+ if(data.initialSalePayments===undefined)return null;
+ const sales=data.rows.flatMap(r=>r.sales),map=new Map<number,number>();
+ for(const item of data.initialSalePayments){
+  if(!Number.isSafeInteger(item.saleId)||item.saleId<1||!Number.isSafeInteger(item.paid)||item.paid<0||map.has(item.saleId)||!sales.some(s=>s.id===item.saleId))throw Error('Paiement initial de vente invalide.');
+  map.set(item.saleId,item.paid);
+ }
+ if(map.size!==sales.length||sales.some(s=>!map.has(s.id)))throw Error('Paiements initiaux incomplets.');
+ return map;
+}
 function lines(data: JournalExport): string[][] {
+ const initial=initialSalePaymentMap(data);
  const allEvents=creditEvents(data),byInvoice=new Map(allEvents.map(e=>[`${e.note.kind}:${e.note.command.invoiceId}`,e]));
  const remoteByInvoice=new Map<string,NonNullable<JournalExport['remoteCancellations']>[number]>();
  for(const entry of data.remoteCancellations??[]){
@@ -74,7 +85,7 @@ function lines(data: JournalExport): string[][] {
    if(e||remote){const {id:_id,...source}=s;if(canonicalJson(source)!==canonicalJson(e?.note.source??remote?.source))throw Error('Vente modifiée après avoir : export refusé.');}
    const label=e?` · avoir du ${e.day} · ${e.pending?'en attente':'synchronisé'}`:remote?` · avoir du ${remote.day} · enregistré ailleurs`:'';
    const update=s.syncSaleId&&updates.get(s.syncSaleId)?` · modification du ${updates.get(s.syncSaleId)} enregistrée ailleurs`:'';
-   rows.push([r.clientName,r.sector,e||remote?'Vente supplémentaire — annulée par avoir':'Vente supplémentaire',`Vente locale ${s.id}${label}${update}`,amount(s.total),amount(s.paid),'',s.paymentMode,'']);
+   rows.push([r.clientName,r.sector,e||remote?'Vente supplémentaire — annulée par avoir':'Vente supplémentaire',`Vente locale ${s.id}${label}${update}`,amount(s.total),amount(initial?.get(s.id)??s.paid),'',s.paymentMode,'']);
   }
   for(const p of data.receipts.filter(p=>p.clientId===r.clientId && p.journalDate===data.day)) rows.push([r.clientName,r.sector,p.creditFull?'Journal — crédit total':'Règlement journal',p.createdAt,'',amount(p.prePaid),amount(p.oldDebtPaid),p.mode,'']);
  }
@@ -82,17 +93,17 @@ function lines(data: JournalExport): string[][] {
  const journalReceipts=data.receipts.filter(p=>p.journalDate===data.day && data.rows.some(r=>r.clientId===p.clientId));
  rows.push(['TOTAL PAIEMENTS FACTURE PRÉÉTABLIE','','','','',amount(sum(journalReceipts.map(p=>p.prePaid)))]);
  rows.push(['TOTAL ANCIENNE DETTE RÉGLÉE','','','','','',amount(sum(journalReceipts.map(p=>p.oldDebtPaid)))]);
- rows.push(['TOTAL ENCAISSÉ LOCAL AVANT AVOIRS ET REMBOURSEMENTS DISTANTS','','','','',amount(sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>s.paid))]))]);
+ rows.push([initial?'TOTAL ENCAISSÉ LOCAL AVANT REMBOURSEMENTS':'TOTAL ENCAISSÉ LOCAL AVANT AVOIRS ET REMBOURSEMENTS DISTANTS','','','','',amount(sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>initial?.get(s.id)??s.paid))]))]);
  if(data.saleRefunds){
   const seen=new Set<string>();
-  rows.push(['REMBOURSEMENTS DE MODIFICATIONS — DÉJÀ INCLUS DANS LES PAIEMENTS NETS']);
+  rows.push([initial?'REMBOURSEMENTS DE MODIFICATIONS — SORTIES LOCALES DU JOUR':'REMBOURSEMENTS DE MODIFICATIONS — DÉJÀ INCLUS DANS LES PAIEMENTS NETS']);
   for(const r of data.saleRefunds){
    const key=String(r.revisionId);
-   if(!Number.isSafeInteger(r.revisionId)||r.revisionId<1||!Number.isSafeInteger(r.saleId)||r.saleId<1||typeof r.clientId!=='string'||typeof r.clientName!=='string'||!r.clientName.trim()||!Number.isSafeInteger(r.refund)||r.refund<=0||!Number.isFinite(Date.parse(r.recordedAt))||tunisDay(new Date(r.recordedAt))!==data.day||!data.rows.some(row=>row.clientId===r.clientId&&row.sales.some(s=>s.id===r.saleId))||seen.has(key))throw Error('Remboursement de vente invalide.');
+   if(!Number.isSafeInteger(r.revisionId)||r.revisionId<1||!Number.isSafeInteger(r.saleId)||r.saleId<1||typeof r.clientId!=='string'||typeof r.clientName!=='string'||!r.clientName.trim()||!Number.isSafeInteger(r.refund)||r.refund<=0||!Number.isFinite(Date.parse(r.recordedAt))||tunisDay(new Date(r.recordedAt))!==data.day||(!initial&&!data.rows.some(row=>row.clientId===r.clientId&&row.sales.some(s=>s.id===r.saleId)))||seen.has(key))throw Error('Remboursement de vente invalide.');
    seen.add(key);rows.push([r.clientName,'','Remboursement de modification',`Vente locale ${r.saleId} · ${r.recordedAt}`,'',amount(r.refund)]);
   }
   rows.push(['TOTAL REMBOURSEMENTS DE MODIFICATIONS','','','','',amount(sum(data.saleRefunds.map(r=>r.refund)))]);
-  rows.push(['Note remboursements','Déjà inclus dans les paiements nets : ne pas les déduire à nouveau. L’enregistrement ne prouve pas le versement physique.']);
+  rows.push(['Note remboursements',initial?'Ces sorties sont déduites une seule fois du paiement initial, à la date de modification. L’enregistrement ne prouve pas le versement physique.':'Déjà inclus dans les paiements nets : ne pas les déduire à nouveau. L’enregistrement ne prouve pas le versement physique.']);
  }
  const remoteRefunds=data.remoteSaleRefunds??[],seenRemote=new Set<string>();
  if(data.remoteSaleRefunds&&!data.credits)throw Error('Avoirs locaux indisponibles.');
@@ -114,16 +125,16 @@ function lines(data: JournalExport): string[][] {
    total+=BigInt(e.invoiceTotal);refund+=BigInt(e.note.refund);
    rows.push([e.name,'',e.note.kind==='sale'?'Avoir vente':'Avoir facture préétablie',`${e.note.command.invoiceId} · facture du ${e.invoiceDay} · ${e.pending?'en attente':'synchronisé'}`,amount(-e.invoiceTotal),amount(e.note.refund),'',e.note.retainedCredit?`Crédit conservé ${amount(e.note.retainedCredit)} DT`:'','']);
   }
-  const billed=sum(data.rows.map(r=>r.total)),gross=sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>s.paid))]);
+  const billed=sum(data.rows.map(r=>r.total)),gross=sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>initial?.get(s.id)??s.paid))]);
   const asSafe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw Error('Total trop élevé');return Number(n);};
   rows.push(['TOTAL AVOIRS DU JOUR','','','',amount(asSafe(total))]);
   rows.push(['FACTURÉ DU JOUR MOINS AVOIRS DU JOUR','','','','','','','',amount(asSafe(BigInt(billed)-total))]);
   rows.push(['REMBOURSEMENTS DES AVOIRS DU JOUR','','','','',amount(asSafe(refund))]);
   const remoteRefundTotal=BigInt(sum(remoteRefunds.map(r=>r.refund)));
-  rows.push(['ENCAISSÉ LOCAL MOINS REMBOURSEMENTS DES AVOIRS ET VENTES DISTANTES','','','','',amount(asSafe(BigInt(gross)-refund-remoteRefundTotal))]);
+  rows.push(['ENCAISSÉ LOCAL APRÈS REMBOURSEMENTS DES VENTES ET AVOIRS','','','','',amount(asSafe(BigInt(gross)-refund-remoteRefundTotal-(initial?BigInt(sum((data.saleRefunds??[]).map(r=>r.refund))):0n)))]);
   rows.push(['Note avoirs','Les avoirs sont datés du jour de création, même si la facture est d’un autre jour. Les paiements d’ancienne dette sont conservés. Une préétablie reste à corriger séparément dans le système principal.']);
  }
- if(updates.size)rows.push(['Modifications enregistrées ailleurs','Les ventes indiquées ont été actualisées depuis un autre appareil. Un remboursement enregistré ailleurs peut empêcher cet export en attendant le rapprochement des encaissements.']);
+ if(updates.size)rows.push(['Modifications enregistrées ailleurs','Les ventes indiquées ont été actualisées depuis un autre appareil. Les remboursements effectués ailleurs ne sont pas déduits de la caisse de ce téléphone.']);
  if(remoteByInvoice.size)rows.push(['Annulations enregistrées ailleurs','Les factures sont signalées comme annulées. Ces avoirs et leurs remboursements ne sont pas ajoutés aux totaux de ce téléphone ; consultez le journal serveur pour une vue consolidée.']);
  rows.push(['NOMBRE DE CLIENTS',String(data.rows.length)]);
  rows.push(['Note','Le total facturé ne représente pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.']);

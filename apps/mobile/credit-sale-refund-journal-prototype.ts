@@ -1,25 +1,49 @@
-import type {SavedSale} from './storage';
+import {canonicalJson} from '@sls/domain';
+import {assertImportedSaleRevision} from './credit-local-revision-audit-prototype';
 import {tunisDay} from './journal';
+import type {DeviceIdentity} from './identified-device';
+import type {SavedSale} from './storage';
 
-type Tx={getAllAsync<T>(sql:string,...args:(string|number|null)[]):Promise<T[]>};
+type Bind=string|number|null;
+type Tx={getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>};
 export type LocalSaleRefund={revisionId:number;saleId:number;clientId:string;clientName:string;recordedAt:string;refund:number};
-function parseSale(raw:string):SavedSale{try{const v=JSON.parse(raw);if(!v||typeof v!=='object'||Array.isArray(v))throw Error();return v;}catch{throw Error('Historique de remboursement illisible.');}}
-/** Chaque paiement de vente étant projeté à sa dernière version au jour de
- * création, ne pas publier les deux journées si un remboursement est daté
- * d'un autre jour. Un remboursement local le jour même est déjà inclus dans
- * le paiement net et n'est jamais déduit une seconde fois. */
-export async function readLocalSaleRefundsForJournal(tx:Tx,sales:SavedSale[],day:string):Promise<LocalSaleRefund[]> {
- const rows=await tx.getAllAsync<{revisionId:number;saleId:number;createdAt:string;previous:string;current:string;refund:number;imported:number}>(`SELECT r.id AS revisionId,r.sale_id AS saleId,r.created_at AS createdAt,r.previous_payload AS previous,r.new_payload AS current,r.refund,
-  EXISTS(SELECT 1 FROM credit_local_sale_reconcile_prototype m WHERE m.revision_id=r.id) AS imported
-  FROM sale_revisions r WHERE r.refund<>0 ORDER BY r.id`);
- const byId=new Map(sales.map(s=>[s.id,s])),result:LocalSaleRefund[]=[];
- for(const r of rows){
-  const sale=byId.get(r.saleId),previous=parseSale(r.previous),current=parseSale(r.current),created=new Date(r.createdAt);
-  if(!sale||!Number.isSafeInteger(r.revisionId)||r.revisionId<1||!Number.isSafeInteger(r.refund)||r.refund<=0||!Number.isFinite(created.getTime())||previous.id!==sale.id||current.id!==sale.id||previous.clientId!==sale.clientId||current.clientId!==sale.clientId||previous.syncSaleId!==sale.syncSaleId||current.syncSaleId!==sale.syncSaleId||previous.createdAt!==sale.createdAt||current.createdAt!==sale.createdAt||typeof current.clientName!=='string'||!current.clientName.trim()||(sale.syncSaleId&&(!Number.isSafeInteger(previous.syncVersion)||!Number.isSafeInteger(current.syncVersion)||!Number.isSafeInteger(sale.syncVersion)||previous.syncVersion!+1!==current.syncVersion||current.syncVersion!>sale.syncVersion!))||!Number.isSafeInteger(previous.paid)||previous.paid<0||!Number.isSafeInteger(current.paid)||current.paid<0||!Number.isSafeInteger(current.total)||current.total<0||previous.paid-r.refund!==current.paid||r.refund>Math.max(0,previous.paid-current.total)||![0,1].includes(r.imported))throw Error('Historique de remboursement incohérent : export refusé.');
-  const invoiceDay=tunisDay(new Date(sale.createdAt)),refundDay=tunisDay(created);
-  if(invoiceDay!==refundDay&&(day===invoiceDay||day===refundDay))throw Error('Remboursement sur une autre journée : rapprochement des encaissements nécessaire avant journal ou clôture.');
-  if(r.imported&&day===invoiceDay)throw Error('Remboursement enregistré ailleurs : rapprochement des encaissements nécessaire avant journal ou clôture de cette journée.');
-  if(day===invoiceDay&&day===refundDay&&!r.imported)result.push({revisionId:r.revisionId,saleId:sale.id,clientId:sale.clientId,clientName:current.clientName,recordedAt:r.createdAt,refund:r.refund});
+export type InitialSalePayment={saleId:number;paid:number};
+function parseSale(raw:string):SavedSale {try{const v=JSON.parse(raw);if(!v||typeof v!=='object'||Array.isArray(v))throw Error();return v;}catch{throw Error('Historique de vente illisible.');}}
+/** Reconstruit le paiement initial et les sorties locales de chaque journée.
+ * La facture reste à sa dernière version pour l'avoir. Les révisions importées
+ * ont été remboursées ailleurs et ne constituent pas une sortie de ce téléphone. */
+export async function readLocalSaleCashLedger(tx:Tx,identity:DeviceIdentity,sales:SavedSale[],day:string):Promise<{initialPayments:InitialSalePayment[];refunds:LocalSaleRefund[]}> {
+ const initialPayments:InitialSalePayment[]=[],refunds:LocalSaleRefund[]=[];
+ for(const sale of sales){
+  if(!sale.syncSaleId||!Number.isSafeInteger(sale.syncVersion)||sale.syncVersion!<1)throw Error('Vente locale non identifiée : rapprochement nécessaire avant journal.');
+  const rows=await tx.getAllAsync<{revisionId:number;createdAt:string;previous:string;current:string;refund:number;operationId:string|null;remoteSaleId:string|null;actor:string|null;event:string|null}>(`SELECT r.id AS revisionId,r.created_at AS createdAt,r.previous_payload AS previous,r.new_payload AS current,r.refund,
+   m.operation_id AS operationId,m.sale_id AS remoteSaleId,m.commercial_id AS actor,m.event
+   FROM sale_revisions r LEFT JOIN credit_local_sale_reconcile_prototype m ON m.revision_id=r.id WHERE r.sale_id=? ORDER BY r.id`,sale.id);
+  const originDay=tunisDay(new Date(sale.createdAt));
+  const affectsDay=originDay===day||rows.some(r=>r.refund>0&&Number.isFinite(Date.parse(r.createdAt))&&tunisDay(new Date(r.createdAt))===day);
+  if(!affectsDay)continue;
+  if(rows.length!==sale.syncVersion!-1)throw Error('Historique local de vente incomplet : rapprochement nécessaire.');
+  let previous:SavedSale|undefined,first:SavedSale=sale,previousAt=Date.parse(sale.createdAt);
+  if(!Number.isFinite(previousAt))throw Error('Date de vente invalide.');
+  const origin=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_kind='sale' AND entity_id=? AND commercial_id=? AND recorded_at=?) AS n`,sale.syncSaleId,identity.commercialId,sale.createdAt);
+  if(!origin?.n)throw Error('Origine locale de la vente non prouvée.');
+  for(const [i,r] of rows.entries()){
+   const before=parseSale(r.previous),after=parseSale(r.current),at=Date.parse(r.createdAt);
+   if(!Number.isSafeInteger(r.revisionId)||r.revisionId<1||!Number.isFinite(at)||at<previousAt||before.id!==sale.id||after.id!==sale.id||before.clientId!==sale.clientId||after.clientId!==sale.clientId||before.syncSaleId!==sale.syncSaleId||after.syncSaleId!==sale.syncSaleId||before.createdAt!==sale.createdAt||after.createdAt!==sale.createdAt||before.syncVersion!==i+1||after.syncVersion!==i+2||!Number.isSafeInteger(before.paid)||before.paid<0||!Number.isSafeInteger(after.paid)||after.paid<0||!Number.isSafeInteger(after.total)||after.total<0||!Number.isSafeInteger(r.refund)||r.refund<0||before.paid-r.refund!==after.paid||r.refund>Math.max(0,before.paid-after.total)||(previous&&canonicalJson(previous)!==canonicalJson(before)))throw Error('Historique de vente incohérent : journal refusé.');
+   if(i===0)first=before;
+   if(r.operationId){
+    let event:unknown;try{event=JSON.parse(r.event??'');}catch{throw Error('Historique distant incohérent.');}
+    assertImportedSaleRevision({operationId:r.operationId,saleId:r.remoteSaleId!,actor:r.actor!,event,createdAt:r.createdAt,previous:before,current:after,refund:r.refund},sale.id,sale.syncSaleId,sale.clientId);
+   }else{
+    const marker=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_kind='sale' AND entity_id=? AND commercial_id=? AND recorded_at=?) AS n`,sale.syncSaleId,identity.commercialId,r.createdAt);
+    if(!marker?.n)throw Error('Origine de la révision locale non prouvée.');
+    if(r.refund>0&&tunisDay(new Date(r.createdAt))===day)refunds.push({revisionId:r.revisionId,saleId:sale.id,clientId:sale.clientId,clientName:after.clientName,recordedAt:r.createdAt,refund:r.refund});
+   }
+   previous=after;previousAt=at;
+  }
+  if(previous&&canonicalJson(previous)!==canonicalJson(sale))throw Error('Dernière version locale de vente incohérente.');
+  if(!Number.isSafeInteger(first.paid)||first.paid<0||!Number.isSafeInteger(first.total)||first.paid>first.total)throw Error('Paiement initial de vente incohérent.');
+  if(tunisDay(new Date(sale.createdAt))===day)initialPayments.push({saleId:sale.id,paid:first.paid});
  }
- return result;
+ return {initialPayments,refunds};
 }
