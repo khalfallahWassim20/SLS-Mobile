@@ -1,5 +1,6 @@
 /** Lecture atomique préparatoire d'un export v5 ; non utilisée par l'écran v3. */
 import {canonicalJson} from '@sls/domain';
+import {readLocalSaleRefundsForJournal} from './credit-sale-refund-journal-prototype';
 import {assertImportedSaleRevision} from './credit-local-revision-audit-prototype';
 import type {DeviceIdentity} from './identified-device';
 import type {SavedSale,TourPreInvoice,TourJournalReceipt} from './storage';
@@ -31,6 +32,7 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
  const receipts=receiptRows.map(row=>value<TourJournalReceipt>(row.payload));
  const sectors=new Map(reference.clients.map(c=>[c.id,c.sector]));
  const rows=buildJournal(day,invoices,sales,sectors),clientIds=new Set(rows.map(r=>r.clientId));
+ const saleRefunds=await readLocalSaleRefundsForJournal(tx,sales,day);
  for(const receipt of receipts.filter(r=>r.journalDate===day)){
   if(!rows.some(row=>row.clientId===receipt.clientId&&row.preInvoice?.id===receipt.preInvoiceId))throw Error('Règlement du journal sans facture : export refusé.');
   clientIds.add(receipt.clientId);
@@ -67,5 +69,5 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   if(source.version!==local.version||canonicalJson(source.invoice)!==canonicalJson(invoice)||canonicalJson(source.receipts)!==canonicalJson(receipts.filter(r=>r.preInvoiceId===invoice.id))||await digest(canonicalJson(source))!==proof.hash)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
   remoteCancellations.push({kind:'preinvoice',invoiceId:invoice.id,day:tunisDay(new Date(state.creditNote.recordedAt)),source});
  }
- return {day,commercial,rows,receipts,credits,remoteCancellations,remoteSaleUpdates};
+ return {day,commercial,rows,receipts,credits,remoteCancellations,remoteSaleUpdates,saleRefunds};
 }

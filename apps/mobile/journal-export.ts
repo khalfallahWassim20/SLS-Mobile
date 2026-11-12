@@ -1,3 +1,4 @@
+import type {LocalSaleRefund} from './credit-sale-refund-journal-prototype';
 import type { JournalRow } from './journal.js';
 import type { TourJournalReceipt } from './storage.js';
 import type {Note} from './credit-note-offline-prototype';
@@ -5,7 +6,7 @@ import {canonicalJson,prepareFullCreditNote,calculatePreInvoiceCancellation} fro
 import {tunisDay} from './journal';
 
 /** Instantané local, distinct du journal consolidé reçu sur le serveur. */
-export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[] };
+export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[] };
 const amount = (value: number) => {
  if (!Number.isSafeInteger(value)) throw new Error('Montant invalide dans le journal.');
  const n = BigInt(value), abs = n < 0n ? -n : n;
@@ -82,6 +83,17 @@ function lines(data: JournalExport): string[][] {
  rows.push(['TOTAL PAIEMENTS FACTURE PRÉÉTABLIE','','','','',amount(sum(journalReceipts.map(p=>p.prePaid)))]);
  rows.push(['TOTAL ANCIENNE DETTE RÉGLÉE','','','','','',amount(sum(journalReceipts.map(p=>p.oldDebtPaid)))]);
  rows.push(['TOTAL ENCAISSÉ LOCAL','','','','',amount(sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>s.paid))]))]);
+ if(data.saleRefunds){
+  const seen=new Set<string>();
+  rows.push(['REMBOURSEMENTS DE MODIFICATIONS — DÉJÀ INCLUS DANS LES PAIEMENTS NETS']);
+  for(const r of data.saleRefunds){
+   const key=String(r.revisionId);
+   if(!Number.isSafeInteger(r.revisionId)||r.revisionId<1||!Number.isSafeInteger(r.saleId)||r.saleId<1||typeof r.clientId!=='string'||typeof r.clientName!=='string'||!r.clientName.trim()||!Number.isSafeInteger(r.refund)||r.refund<=0||!Number.isFinite(Date.parse(r.recordedAt))||tunisDay(new Date(r.recordedAt))!==data.day||!data.rows.some(row=>row.clientId===r.clientId&&row.sales.some(s=>s.id===r.saleId))||seen.has(key))throw Error('Remboursement de vente invalide.');
+   seen.add(key);rows.push([r.clientName,'','Remboursement de modification',`Vente locale ${r.saleId} · ${r.recordedAt}`,'',amount(r.refund)]);
+  }
+  rows.push(['TOTAL REMBOURSEMENTS DE MODIFICATIONS','','','','',amount(sum(data.saleRefunds.map(r=>r.refund)))]);
+  rows.push(['Note remboursements','Déjà inclus dans les paiements nets : ne pas les déduire à nouveau. L’enregistrement ne prouve pas le versement physique.']);
+ }
  if(data.credits) {
   let total=0n,refund=0n;
   const events=allEvents.filter(e=>e.day===data.day);

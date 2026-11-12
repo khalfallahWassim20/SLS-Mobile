@@ -776,6 +776,15 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const updatedJournal=await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest));
   assert.ok(updatedJournal.remoteSaleUpdates?.some(x=>x.saleId===offlineSaleId));assert.match(journalCsv(updatedJournal),/modification du .* enregistrée ailleurs/);
   assert.ok(describeCreditJournalPrototype(updatedJournal).rows.flatMap(r=>r.sales).some(s=>s.syncSaleId===offlineSaleId&&s.remoteUpdateDay));
+  // Une ancienne vente remboursée un autre jour ne peut pas produire un
+  // journal ou une demande de clôture trompeuse pour l'une des deux dates.
+  isolated.exec('SAVEPOINT local_refund_next_day');
+  const fakePrevious={...modifiedOffline,syncVersion:2,id:localRow.id,paid:1000},fakeCurrent={...fakePrevious,syncVersion:3,total:0,paid:0};
+  isolated.prepare('INSERT INTO sale_revisions(sale_id,created_at,previous_payload,new_payload,refund) VALUES(?,?,?,?,?)').run(localRow.id,'2026-11-08T10:00:00.000Z',JSON.stringify(fakePrevious),JSON.stringify(fakeCurrent),1000);
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/autre journée/);
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,'2026-11-08','Deuxième',digest),/autre journée/);
+  await assert.rejects(prepareVerifiedPrototypeClose(isolatedTx,identity,'2026-11-08',0,randomUUID,digest),/autre journée|conflit|rapprochement/i);
+  isolated.exec('ROLLBACK TO local_refund_next_day; RELEASE local_refund_next_day');
 
   isolated.exec('SAVEPOINT tampered_audit');isolated.prepare('UPDATE credit_local_sale_reconcile_prototype SET event=? WHERE sale_id=?').run('{}',offlineSaleId);
   await assert.rejects(readCreditHistoryPrototype(isolatedTx,identity,clientId,digest),/Historique distant incohérent/);
