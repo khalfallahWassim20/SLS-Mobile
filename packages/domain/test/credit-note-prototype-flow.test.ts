@@ -20,7 +20,9 @@ import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {offlineCreditPrototypeSchema,prepareOfflineCreditPrototype,readReadyOfflineCreditPrototype,readAllOfflineCreditPrototype,acknowledgeOfflineCreditPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {uploadPrototypeCreditNotes} from '../../../apps/mobile/credit-note-upload-prototype.js';
-import {ClosedDaySyncError} from '../../../apps/mobile/identified-upload.js';
+import {createRequire} from 'node:module';
+// Utiliser le même chargement CommonJS que les modules mobiles sous tsx.
+const {ClosedDaySyncError}:typeof import('../../../apps/mobile/identified-upload.js')=createRequire(import.meta.url)('../../../apps/mobile/identified-upload.ts');
 import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
 import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync-reference.js';
 
