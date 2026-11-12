@@ -49,6 +49,15 @@ test('espace v5 assemblé : serveur HTTP, soldes, avoir, journal et exports',asy
   const csv=await exportCreditAdminJournal(request,rep.id,day,'csv',()=>new Date('2026-11-09T12:00:00.000Z'));assert.match(csv.content,/119,000/);assert.match(csv.content,/50,000/);assert.match(csv.content,/Avoirs des factures du commercial/);
   assert.match(csv.content,/600,000/);assert.match(csv.content,/400,000/);assert.match(csv.content,/250,000/);
   const pdf=await exportCreditAdminJournal(request,rep.id,day,'pdf',()=>new Date('2026-11-09T12:00:00.000Z'));assert.match(pdf.content,/système principal/);assert.match(pdf.name,/\.html$/);
+  const assignment={requestId:randomUUID(),noteOperationId:command.operationId,refund:50000,commercialId:null};
+  const assignmentPath='identified-tour-actions/credit-notes/refund-assignment';
+  assert.equal((await fetch(`${base}/api/${assignmentPath}`,{method:'POST',headers:{'Content-Type':'application/json','X-SLS-Reference-Version':'5'},body:JSON.stringify(assignment)})).status,401);
+  assert.equal((await fetch(`${base}/api/${assignmentPath}`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer admin-test'},body:JSON.stringify(assignment)})).status,409);
+  const assign=()=>request(assignmentPath,{method:'POST',headers:header,body:JSON.stringify(assignment)});
+  assert.equal((await assign()).status,'received');assert.equal((await assign()).status,'duplicate');
+  await assert.rejects(request(assignmentPath,{method:'POST',headers:header,body:JSON.stringify({...assignment,commercialId:rep.id})}),/déjà/);
+  const attributed=await loadCreditAdminJournal(request,rep.id,day);assert.equal(attributed.creditRefundUnassignedTotal,0);assert.equal(attributed.adminCashCreditRefundEvents.length,1);assert.equal(attributed.creditEvents.find(e=>e.operationId===command.operationId).cashAssignment.requestId,assignment.requestId);
+  const assignedCsv=await exportCreditAdminJournal(request,rep.id,day,'csv');assert.match(assignedCsv.content,/caisse administrative/);
   assert.ok(calls.every(x=>x.options.headers?.['X-SLS-Reference-Version']==='5'));assert.ok(!calls.some(x=>x.path.startsWith('demo-')));
   await assert.rejects(loadCreditAdminSnapshot(async()=>({version:4,balances:[],sales:[]})),/invalide/);
   await assert.rejects(loadCreditAdminJournal(async()=>({...journal,creditVersion:undefined}),rep.id,day),/incohérent/);

@@ -31,5 +31,22 @@ test('avoirs vente et préétablie : sorties chez l’auteur, dette ancienne con
   assert.equal(owner.creditNoteTotal,719000);assert.equal(owner.creditRefundTotal,0);assert.equal(owner.creditCashEvents.length,0);assert.equal(owner.rows[0].oldDebtPaid,400000);assert.equal(owner.collectedAfterRefunds,700000);
   assert.equal(author.creditNoteTotal,0);assert.equal(author.creditRefundTotal,300000);assert.equal(author.creditCashEvents.length,2);assert.equal(author.collectedAfterRefunds,-300000);
   assert.deepEqual(author.creditCashEvents.map(e=>e.kind).sort(),['preinvoice','sale']);assert.equal(owner.creditRefundUnassignedTotal,0);
+  // Un avoir admin est attribué explicitement à B : visible au serveur,
+  // mais clôture B encore bloquée tant que son téléphone n'est pas rapproché.
+  const extraId=randomUUID(),extra={...sale,syncSaleId:extraId};
+  await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId:extraId,version:1,recordedAt:at,sale:extra,refund:0},auth);
+  const command={operationId:randomUUID(),invoiceId:extraId,expectedVersion:1,recordedAt:'2026-11-09T10:00:00.000Z',choice:'refund' as const};
+  await storePrototypeCreditNote(pool,command,{kind:'admin',actorId:'admin'});
+  const {assignAdminCreditRefund}=await import('../../../apps/api/src/credit-refund-assignment-prototype.js');
+  await assert.rejects(assignAdminCreditRefund(pool,{requestId:randomUUID(),noteOperationId:command.operationId,refund:49999,commercialId:b.id},'admin'),/montant modifié/);
+  const assignment={requestId:randomUUID(),noteOperationId:command.operationId,refund:50000,commercialId:b.id};
+  assert.equal((await assignAdminCreditRefund(pool,assignment,'admin')).status,'received');assert.equal((await assignAdminCreditRefund(pool,assignment,'admin')).status,'duplicate');
+  const nextA=await readPrototypeCreditJournal(pool,a.id,'2026-11-09'),nextB=await readPrototypeCreditJournal(pool,b.id,'2026-11-09');
+  assert.equal(nextA.creditNoteTotal,119000);assert.equal(nextA.creditRefundUnassignedTotal,0);assert.equal(nextA.creditRefundTotal,0);
+  assert.equal(nextB.creditNoteTotal,0);assert.equal(nextB.creditRefundTotal,50000);assert.equal(nextB.creditCashEvents[0].cashAssignment?.requestId,assignment.requestId);assert.equal(nextB.collectedAfterRefunds,-50000);
+  const {requestTourTransition}=await import('../../../apps/api/src/tour-closure-store.js');
+  await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-09',expectedVersion:0},actor,true,true),/rapprochement du téléphone/);
+  await db.query('UPDATE credit_refund_assignment_prototype SET refund=1 WHERE request_id=$1',[assignment.requestId]);
+  await assert.rejects(readPrototypeCreditJournal(pool,b.id,'2026-11-09'),/Attribution de remboursement incohérente/);
  }finally{await db.close();}
 });

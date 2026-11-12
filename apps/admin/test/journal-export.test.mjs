@@ -10,7 +10,7 @@ test('journal vide',()=>{const empty={...day,rows:[],inheritedJournalPayments:[]
 test('journal serveur avec avoir : facture, ancienne dette et mouvements restent distincts',async()=>{
  const {randomUUID}=await import('node:crypto'),owner=randomUUID();
  const entry={kind:'preinvoice',operationId:randomUUID(),invoiceId:randomUUID(),invoiceDay:'2026-11-08',recordedAt:'2026-11-08T12:00:00.000Z',recordedDay:'2026-11-08',clientId:randomUUID(),clientName:'=Fictif',ownerId:owner,actor:{id:'admin',role:'admin'},version:2,invoiceTotal:600000,netPaid:250000,oldDebtPaid:400000,wasDeclared:true,refund:0,retainedCredit:250000,balanceDelta:-600000};
- const report={...day,rows:day.rows.map(r=>({...r,preInvoiceCancelled:true,cancelledSaleCount:2})),commercial:{id:owner,name:'<Commercial>'},creditVersion:5,saleRefundEvents:[],saleRefundTotal:0,creditEvents:[entry],creditCashEvents:[],unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0,creditNoteTotal:600000,creditRefundTotal:0,creditRetainedTotal:250000,billedAfterCredits:250000,collectedAfterRefunds:680000};
+ const report={...day,rows:day.rows.map(r=>({...r,preInvoiceCancelled:true,cancelledSaleCount:2})),commercial:{id:owner,name:'<Commercial>'},creditVersion:5,saleRefundEvents:[],saleRefundTotal:0,creditEvents:[entry],creditCashEvents:[],adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0,creditNoteTotal:600000,creditRefundTotal:0,creditRetainedTotal:250000,billedAfterCredits:250000,collectedAfterRefunds:680000};
  const csv=journalServerCsv(report,'2026-11-08T12:00:00Z'),html=journalServerHtml(report,'2026-11-08T12:00:00Z');
  assert.match(csv,/Annulée par avoir/);assert.match(csv,/Ventes de cette journée annulées/);assert.match(csv,/Avoirs des factures du commercial/);assert.match(csv,/Facturé moins avoirs du jour/);assert.match(csv,/400,000/);assert.match(csv,/250,000/);assert.match(csv,/'=Fictif/);
  assert.match(html,/système principal/);assert.match(html,/&lt;Commercial&gt;/);assert.match(html,/Avoirs créés ce jour/);
@@ -24,7 +24,7 @@ test('journal serveur avec avoir : facture, ancienne dette et mouvements restent
 test('remboursements de modification affichés sans double déduction et vérifiés dans les exports',async()=>{
  const {randomUUID}=await import('node:crypto'),owner=randomUUID(),clientId=randomUUID();
  const event={operationId:randomUUID(),saleId:randomUUID(),clientId,clientName:'<Fictif>',version:2,recordedAt:'2026-11-08T10:00:00.000Z',refund:38100};
- const report={...day,commercial:{id:owner,name:'Fictif'},rows:day.rows.map(r=>({...r,clientId,preInvoiceCancelled:false,cancelledSaleCount:0})),creditVersion:5,saleRefundEvents:[event],saleRefundTotal:38100,creditEvents:[],creditCashEvents:[],unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0,creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,billedAfterCredits:850000,collectedAfterRefunds:641900};
+ const report={...day,commercial:{id:owner,name:'Fictif'},rows:day.rows.map(r=>({...r,clientId,preInvoiceCancelled:false,cancelledSaleCount:0})),creditVersion:5,saleRefundEvents:[event],saleRefundTotal:38100,creditEvents:[],creditCashEvents:[],adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0,creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,billedAfterCredits:850000,collectedAfterRefunds:641900};
  const csv=journalServerCsv(report,'maintenant'),html=journalServerHtml(report,'maintenant');
  assert.match(csv,/38,100/);assert.match(csv,/déduit une seule fois/);assert.match(csv,/680,000/);assert.match(html,/&lt;Fictif&gt;/);assert.match(html,/38,100/);
  assert.throws(()=>journalServerCsv({...report,saleRefundTotal:1},'maintenant'),/incohérent/);
@@ -37,7 +37,7 @@ test('remboursements de modification affichés sans double déduction et vérifi
 test('remboursement par un autre commercial : export sans vente locale ni double décompte',async()=>{
  const {randomUUID}=await import('node:crypto'),owner=randomUUID();
  const entry={operationId:randomUUID(),saleId:randomUUID(),clientId:randomUUID(),clientName:'Client fictif',version:2,recordedAt:'2026-11-09T10:00:00.000Z',refund:38100};
- const j={...day,day:'2026-11-09',commercial:{id:owner,name:'Commercial B'},rows:[],clientCount:0,totalBilled:0,journalCollected:0,inheritedJournalTotal:0,globalSettlementTotal:0,totalCollected:0,inheritedJournalPayments:[],creditVersion:5,creditEvents:[],creditCashEvents:[],unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0,creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,billedAfterCredits:0,collectedAfterRefunds:-38100,saleRefundEvents:[entry],saleRefundTotal:38100};
+ const j={...day,day:'2026-11-09',commercial:{id:owner,name:'Commercial B'},rows:[],clientCount:0,totalBilled:0,journalCollected:0,inheritedJournalTotal:0,globalSettlementTotal:0,totalCollected:0,inheritedJournalPayments:[],creditVersion:5,creditEvents:[],creditCashEvents:[],adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0,creditNoteTotal:0,creditRefundTotal:0,creditRetainedTotal:0,billedAfterCredits:0,collectedAfterRefunds:-38100,saleRefundEvents:[entry],saleRefundTotal:38100};
  const csv=journalServerCsv(j,'maintenant'),html=journalServerHtml(j,'maintenant');assert.match(csv,/38,100/);assert.match(csv,/-38,100/);assert.match(html,/-38,100/);assert.match(html,/sorties enregistrées ce jour/i);
  assert.throws(()=>journalServerCsv({...j,collectedAfterRefunds:0},'maintenant'),/incohérents/);
 });
@@ -46,14 +46,14 @@ test('avoirs intercommerciaux : sortie imputée à l’auteur, admin non attribu
  const {randomUUID}=await import('node:crypto'),owner=randomUUID(),actor=randomUUID(),clientId=randomUUID();
  const base={...day,commercial:{id:actor,name:'Commercial B'},rows:[],clientCount:0,totalBilled:0,journalCollected:0,inheritedJournalTotal:0,globalSettlementTotal:0,totalCollected:0,inheritedJournalPayments:[],creditVersion:5,saleRefundEvents:[],saleRefundTotal:0};
  const note={kind:'sale',operationId:randomUUID(),invoiceId:randomUUID(),invoiceDay:'2026-11-07',recordedAt:'2026-11-08T10:00:00.000Z',recordedDay:'2026-11-08',clientId,clientName:'Client fictif',ownerId:owner,actor:{id:actor,role:'commercial'},version:1,invoiceTotal:119000,netPaid:50000,oldDebtPaid:0,wasDeclared:true,refund:50000,retainedCredit:0,balanceDelta:-69000};
- const report={...base,creditEvents:[],creditCashEvents:[note],unassignedCreditRefundEvents:[],creditNoteTotal:0,creditRefundTotal:50000,creditRefundUnassignedTotal:0,creditRetainedTotal:0,billedAfterCredits:0,collectedAfterRefunds:-50000};
+ const report={...base,creditEvents:[],creditCashEvents:[note],adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[],creditNoteTotal:0,creditRefundTotal:50000,creditRefundUnassignedTotal:0,creditRetainedTotal:0,billedAfterCredits:0,collectedAfterRefunds:-50000};
  const csv=journalServerCsv(report,'maintenant'),html=journalServerHtml(report,'maintenant');assert.match(csv,/-50,000/);assert.match(csv,/Remboursements enregistrés par ce commercial/);assert.match(html,/50,000/);
  assert.throws(()=>journalServerCsv({...report,creditCashEvents:[note,note]},'maintenant'),/incohérente/);
  assert.throws(()=>journalServerCsv({...report,creditCashEvents:[{...note,actor:{...note.actor,id:randomUUID()}}]},'maintenant'),/incohérente/);
  assert.throws(()=>journalServerCsv({...report,creditCashEvents:[],creditRefundTotal:50000},'maintenant'),/incohérents/);
  const adminNote={...note,ownerId:actor,actor:{id:'admin',role:'admin'}};
- const unassigned={...base,creditEvents:[adminNote],creditCashEvents:[],unassignedCreditRefundEvents:[adminNote],creditNoteTotal:119000,creditRefundTotal:0,creditRefundUnassignedTotal:50000,creditRetainedTotal:0,billedAfterCredits:-119000,collectedAfterRefunds:0};
+ const unassigned={...base,creditEvents:[adminNote],creditCashEvents:[],adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[adminNote],creditNoteTotal:119000,creditRefundTotal:0,creditRefundUnassignedTotal:50000,creditRetainedTotal:0,billedAfterCredits:-119000,collectedAfterRefunds:0};
  assert.match(journalServerCsv(unassigned,'maintenant'),/caisse à vérifier/);
- assert.throws(()=>journalServerCsv({...unassigned,unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0},'maintenant'),/manquant/);
- assert.throws(()=>journalServerCsv({...unassigned,unassignedCreditRefundEvents:[{...adminNote,refund:10000,retainedCredit:40000,balanceDelta:-109000}]},'maintenant'),/incohérente/);
+ assert.throws(()=>journalServerCsv({...unassigned,adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0},'maintenant'),/manquant/);
+ assert.throws(()=>journalServerCsv({...unassigned,adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[{...adminNote,refund:10000,retainedCredit:40000,balanceDelta:-109000}]},'maintenant'),/incohérente/);
 });

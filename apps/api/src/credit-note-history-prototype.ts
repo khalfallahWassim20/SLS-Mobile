@@ -40,8 +40,15 @@ export async function readPrototypeCreditHistoryInTransaction(db:PoolClient) {
    records.push({kind:'preinvoice' as const,operationId:row.operation_id,invoiceId:row.invoice_id,invoiceDay:row.invoice_day,recordedAt:command.recordedAt,recordedDay:tunisDay(command.recordedAt),clientId:row.client_id,clientName:name,ownerId:row.owner_id,actor:e.actor,version:command.expectedVersion,invoiceTotal:e.source.invoice.amount,netPaid:summarizePreInvoice(e.source.invoice.amount,e.source.receipts).prePaid,oldDebtPaid:e.oldDebtPaid,wasDeclared:e.wasDeclared,refund:e.refund,retainedCredit:e.retainedCredit,balanceDelta:e.balanceDelta});
   }
   if(records.length!==reference.saleStates.filter(s=>s.creditNote).length+reference.journalStates.filter(j=>j.creditNote).length)throw new RangeError('Historique d’avoirs incomplet.');
-  records.sort((a,b)=>b.recordedAt.localeCompare(a.recordedAt)||a.operationId.localeCompare(b.operationId));
-  return records;
+  const assignments=await db.query(`SELECT note_operation_id AS "noteOperationId",request_id AS "requestId",commercial_id AS "commercialId",refund::text AS refund,actor_id AS "actorId",assigned_at AS "assignedAt" FROM credit_refund_assignment_prototype`);
+  const byNote=new Map(records.map(record=>[record.operationId,record])),assigned=new Map<string,{requestId:string;commercialId:string|null;actorId:string;assignedAt:string}>();
+  const uuid=(s:unknown)=>typeof s==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s);
+  for(const row of assignments.rows){
+   const record=byNote.get(row.noteOperationId),date=new Date(row.assignedAt);
+   if(!record||record.actor.role!=='admin'||record.refund<=0||row.refund!==String(record.refund)||!uuid(row.requestId)||(row.commercialId!==null&&!uuid(row.commercialId))||typeof row.actorId!=='string'||!row.actorId.trim()||row.actorId.length>200||!Number.isFinite(date.getTime())||assigned.has(row.noteOperationId))throw new RangeError('Attribution de remboursement incohérente.');
+   assigned.set(row.noteOperationId,{requestId:row.requestId,commercialId:row.commercialId,actorId:row.actorId,assignedAt:date.toISOString()});
+  }
+  return records.map(record=>({...record,cashAssignment:assigned.get(record.operationId)??null})).sort((a,b)=>b.recordedAt.localeCompare(a.recordedAt)||a.operationId.localeCompare(b.operationId));
 }
 export async function readPrototypeCreditHistory(pool:Pool) {
  const db=await pool.connect();

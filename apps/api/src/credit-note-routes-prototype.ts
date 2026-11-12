@@ -6,6 +6,7 @@ import type {Pool} from 'pg';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {IdentifiedOverlap} from './identified-overlap.js';
 import {IdentifiedSyncDisabled} from './tour-sync-mode.js';
+import {assignAdminCreditRefund} from './credit-refund-assignment-prototype.js';
 import {storePrototypeCreditNote} from './credit-note-registry-prototype.js';
 import {storePrototypePreInvoiceCredit} from './pre-invoice-credit-registry-prototype.js';
 import {adminCreditCommandSchema,adminCreditReviewSchema,previewAdminCredit,assertAdminCreditReview} from './credit-note-admin-review-prototype.js';
@@ -36,6 +37,7 @@ export function prototypeCommercialCreditRoutes(pool:Pool,secret:string) {
 /** Le middleware et le nom doivent provenir de la configuration serveur fiable. */
 export function prototypeAdminCreditRoutes(pool:Pool,authenticateAdmin:RequestHandler,adminName:string) {
  const r=Router();r.use(authenticateAdmin);r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
+ r.post('/refund-assignment',async(req,res,next)=>{try{const result=await assignAdminCreditRefund(pool,req.body,adminName);res.status(result.status==='received'?201:200).json(result);}catch(e){fail(e,res,next);}});
  r.get('/sources/:clientId',async(req,res,next)=>{try{const data=await readPrototypeCreditSources(pool,req.params.clientId);if(!data){res.status(404).json({error:'Client introuvable.'});return;}res.json(data);}catch(e){fail(e,res,next);}});
  r.post('/preview',async(req,res,next)=>{try{res.json(await previewAdminCredit(pool,req.body));}catch(e){fail(e,res,next);}});
  const reviewed=z.object({command:adminCreditCommandSchema,review:adminCreditReviewSchema}).strict();

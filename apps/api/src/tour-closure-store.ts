@@ -93,7 +93,10 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
    // Bloquer plutôt que clôturer un montant commercial considéré à tort complet.
    let history:Awaited<ReturnType<typeof readPrototypeCreditHistoryInTransaction>>;
    try{history=await readPrototypeCreditHistoryInTransaction(db);}catch(e){if(e instanceof RangeError)throw new JournalConflict('Historique d’avoirs incohérent : clôture refusée.');throw e;}
-   if(history.some(h=>h.recordedDay===day&&h.actor.role==='admin'&&h.refund>0))throw new JournalConflict('Remboursement d’avoir saisi par l’administrateur : caisse non attribuée, clôture refusée.');
+   if(history.some(h=>h.recordedDay===day&&h.actor.role==='admin'&&h.refund>0&&!h.cashAssignment))throw new JournalConflict('Remboursement d’avoir saisi par l’administrateur : caisse non attribuée, clôture refusée.');
+   // L'affectation à une caisse commerciale est visible sur le serveur, mais
+   // pas encore rapprochée automatiquement sur ce téléphone : ne pas clôturer.
+   if(history.some(h=>h.recordedDay===day&&h.actor.role==='admin'&&h.refund>0&&h.cashAssignment?.commercialId===commercialId))throw new JournalConflict('Remboursement administrateur attribué à ce commercial : rapprochement du téléphone requis avant clôture.');
   }
   let next;
   try {next=transitionTourClosure(state,action,actor,new Date().toISOString(),expectedVersion);}

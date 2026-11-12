@@ -13,6 +13,7 @@ function selected(records,day,commercialId){
  const ids=new Set();
  for(const r of records){
   if(!r||!uuid(r.operationId)||ids.has(r.operationId)||!uuid(r.invoiceId)||!uuid(r.clientId)||!uuid(r.ownerId)||!['sale','preinvoice'].includes(r.kind)||typeof r.clientName!=='string'||!r.clientName.trim()||!date(r.invoiceDay)||!date(r.recordedDay)||timeDay(r.recordedAt)!==r.recordedDay||!r.actor||!['admin','commercial'].includes(r.actor.role)||typeof r.actor.id!=='string'||!r.actor.id.trim()||(r.actor.role==='commercial'&&!uuid(r.actor.id))||!Number.isSafeInteger(r.version)||r.version<1||r.version>=1000000||typeof r.wasDeclared!=='boolean'||![r.invoiceTotal,r.netPaid,r.oldDebtPaid,r.refund,r.retainedCredit].every(x=>integer(x))||!integer(r.balanceDelta,true))throw Error('Historique d’avoirs invalide.');
+  if(r.cashAssignment!=null){const a=r.cashAssignment;if(r.actor.role!=='admin'||r.refund<=0||!a||typeof a!=='object'||Object.keys(a).sort().join(',')!=='actorId,assignedAt,commercialId,requestId'||!uuid(a.requestId)||(a.commercialId!==null&&!uuid(a.commercialId))||typeof a.actorId!=='string'||!a.actorId.trim()||a.actorId.length>200||typeof a.assignedAt!=='string'||!Number.isFinite(Date.parse(a.assignedAt))||new Date(a.assignedAt).toISOString()!==a.assignedAt)throw Error('Attribution de remboursement invalide.');}
   ids.add(r.operationId);
   if(BigInt(r.refund)+BigInt(r.retainedCredit)!==BigInt(r.netPaid)||(r.kind==='sale'&&(!r.wasDeclared||r.oldDebtPaid!==0))||(!r.wasDeclared&&(r.netPaid!==0||r.kind!=='preinvoice'))||BigInt(r.balanceDelta)!==(r.wasDeclared?-BigInt(r.invoiceTotal)+BigInt(r.refund):0n))throw Error('Montants d’avoir incohérents.');
  }
@@ -20,9 +21,9 @@ function selected(records,day,commercialId){
 }
 function data(records,day,commercialId){
  const rows=selected(records,day,commercialId),sum=key=>{const v=rows.reduce((n,r)=>n+BigInt(r[key]),0n);if(v>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Total trop élevé.');return amount(Number(v));};
- return {rows:rows.map(r=>[r.clientName,r.kind==='sale'?'Vente SLS':'Facture préétablie',r.invoiceId,r.invoiceDay,r.recordedAt,r.actor.role==='admin'?'Administrateur':'Commercial',r.actor.id,amount(r.invoiceTotal),amount(r.netPaid),amount(r.refund),amount(r.retainedCredit),amount(r.oldDebtPaid),amount(r.balanceDelta),r.wasDeclared?'Oui':'Non']),count:rows.length,notes:sum('invoiceTotal'),refund:sum('refund'),retained:sum('retainedCredit')};
+ return {rows:rows.map(r=>[r.clientName,r.kind==='sale'?'Vente SLS':'Facture préétablie',r.invoiceId,r.invoiceDay,r.recordedAt,r.actor.role==='admin'?'Administrateur':'Commercial',r.actor.id,amount(r.invoiceTotal),amount(r.netPaid),amount(r.refund),amount(r.retainedCredit),amount(r.oldDebtPaid),amount(r.balanceDelta),r.wasDeclared?'Oui':'Non',r.refund===0?'Sans remboursement':r.actor.role==='commercial'?`Commercial ${r.actor.id}`:!r.cashAssignment?'Non attribuée':r.cashAssignment.commercialId?`Commercial ${r.cashAssignment.commercialId}`:'Caisse administrative',r.cashAssignment?.actorId??'',r.cashAssignment?.assignedAt??'']),count:rows.length,notes:sum('invoiceTotal'),refund:sum('refund'),retained:sum('retainedCredit')};
 }
-export const creditHeaders=['Client','Origine','Facture','Date facture','Création UTC','Acteur','Identifiant acteur','Avoir DT','Paiement facture DT','Remboursement DT','Crédit client DT','Ancienne dette réglée DT','Variation du solde DT','Facture déclarée'];
+export const creditHeaders=['Client','Origine','Facture','Date facture','Création UTC','Acteur','Identifiant acteur','Avoir DT','Paiement facture DT','Remboursement DT','Crédit client DT','Ancienne dette réglée DT','Variation du solde DT','Facture déclarée','Caisse du remboursement','Attribution par','Attribution UTC'];
 /** Appelé avec les seuls avoirs déjà filtrés par commercial et date. */
 export function creditJournalExportRows(records,day,commercialId){
  const selectedRecords=selected(records,day,commercialId);

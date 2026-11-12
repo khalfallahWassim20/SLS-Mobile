@@ -60,8 +60,8 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   await assert.rejects(readServerJournalDay(pool,day,'combined'),/avoirs existent/);
   const history=await readPrototypeCreditHistory(pool);
   assert.equal(history.length,2);
-  assert.deepEqual(history.find(x=>x.kind==='sale'),{kind:'sale',operationId:saleCommand.operationId,invoiceId:saleId,invoiceDay:day,recordedAt:saleCommand.recordedAt,recordedDay:day,clientId,clientName:'Client fictif',ownerId:c.id,actor:{id:c.id,role:'commercial'},version:1,invoiceTotal:119000,netPaid:50000,oldDebtPaid:0,wasDeclared:true,refund:50000,retainedCredit:0,balanceDelta:-69000});
-  assert.deepEqual(history.find(x=>x.kind==='preinvoice'),{kind:'preinvoice',operationId:preCommand.operationId,invoiceId,invoiceDay:day,recordedAt:preCommand.recordedAt,recordedDay:day,clientId,clientName:'Client fictif',ownerId:c.id,actor:{id:c.id,role:'commercial'},version:3,invoiceTotal:600000,netPaid:250000,oldDebtPaid:400000,wasDeclared:true,refund:0,retainedCredit:250000,balanceDelta:-600000});
+  assert.deepEqual(history.find(x=>x.kind==='sale'),{kind:'sale',operationId:saleCommand.operationId,invoiceId:saleId,invoiceDay:day,recordedAt:saleCommand.recordedAt,recordedDay:day,clientId,clientName:'Client fictif',ownerId:c.id,actor:{id:c.id,role:'commercial'},version:1,invoiceTotal:119000,netPaid:50000,oldDebtPaid:0,wasDeclared:true,refund:50000,retainedCredit:0,balanceDelta:-69000,cashAssignment:null});
+  assert.deepEqual(history.find(x=>x.kind==='preinvoice'),{kind:'preinvoice',operationId:preCommand.operationId,invoiceId,invoiceDay:day,recordedAt:preCommand.recordedAt,recordedDay:day,clientId,clientName:'Client fictif',ownerId:c.id,actor:{id:c.id,role:'commercial'},version:3,invoiceTotal:600000,netPaid:250000,oldDebtPaid:400000,wasDeclared:true,refund:0,retainedCredit:250000,balanceDelta:-600000,cashAssignment:null});
   const journal=await readPrototypeCreditJournal(pool,c.id,day);
   assert.equal(journal.totalBilled,719000);assert.equal(journal.totalCollected,700000);
   assert.equal(journal.creditNoteTotal,719000);assert.equal(journal.creditRefundTotal,50000);assert.equal(journal.creditRetainedTotal,250000);
@@ -260,6 +260,12 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   assert.equal(laterDay.billedAfterCredits,-119000);assert.equal(laterDay.collectedAfterRefunds,0);assert.equal(laterDay.creditRefundUnassignedTotal,50000);assert.equal(laterDay.unassignedCreditRefundEvents[0].actor.role,'admin');
   const {requestTourTransition}=await import('../../../apps/api/src/tour-closure-store.js');
   await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-09',expectedVersion:0},principal,true,true),/caisse non attribuée/);
+  const {assignAdminCreditRefund}=await import('../../../apps/api/src/credit-refund-assignment-prototype.js');
+  const attribution={requestId:randomUUID(),noteOperationId:adminCommand.operationId,refund:50000,commercialId:null};
+  assert.equal((await assignAdminCreditRefund(pool,attribution,'admin')).status,'received');assert.equal((await assignAdminCreditRefund(pool,attribution,'admin')).status,'duplicate');
+  await assert.rejects(assignAdminCreditRefund(pool,{...attribution,commercialId:c.id},'admin'),/déjà/);
+  const assigned=await readPrototypeCreditJournal(pool,c.id,'2026-11-09');assert.equal(assigned.creditRefundUnassignedTotal,0);assert.equal(assigned.adminCashCreditRefundEvents.length,1);assert.equal(assigned.collectedAfterRefunds,0);
+  assert.equal((await requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-09',expectedVersion:0},principal,true,true)).status,'received');
   await db.query("UPDATE pre_invoice_credit_prototype_movements SET balance_delta=1 WHERE operation_id=$1 AND kind='invoice_cancellation'",[preCommand.operationId]);
   await assert.rejects(readPrototypeCreditReference(pool),/Mouvements/);
   await assert.rejects(readPrototypeCreditHistory(pool),/Mouvements/);

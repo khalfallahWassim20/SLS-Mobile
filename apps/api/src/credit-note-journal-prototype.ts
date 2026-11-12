@@ -26,8 +26,9 @@ export async function readPrototypeCreditJournal(pool:Pool,commercialId:string,d
   // caisse est imputée au commercial qui a créé l'avoir, pas au propriétaire.
   // Un administrateur n'est pas une caisse commerciale : aucune attribution
   // ne peut être déduite de son identité, donc ces montants restent à vérifier.
-  const creditCashEvents=history.filter(h=>h.recordedDay===day&&h.refund>0&&h.actor.role==='commercial'&&h.actor.id===commercialId);
-  const unassignedCreditRefundEvents=events.filter(h=>h.refund>0&&h.actor.role==='admin');
+  const creditCashEvents=history.filter(h=>h.recordedDay===day&&h.refund>0&&((h.actor.role==='commercial'&&h.actor.id===commercialId)||(h.actor.role==='admin'&&h.cashAssignment?.commercialId===commercialId)));
+  const unassignedCreditRefundEvents=events.filter(h=>h.refund>0&&h.actor.role==='admin'&&!h.cashAssignment);
+  const adminCashCreditRefundEvents=events.filter(h=>h.refund>0&&h.actor.role==='admin'&&h.cashAssignment&&h.cashAssignment.commercialId===null);
   const billed=events.reduce((n,e)=>n+BigInt(e.invoiceTotal),0n),refund=creditCashEvents.reduce((n,e)=>n+BigInt(e.refund),0n),unassigned=unassignedCreditRefundEvents.reduce((n,e)=>n+BigInt(e.refund),0n),credit=events.reduce((n,e)=>n+BigInt(e.retainedCredit),0n);
   const rows=base.rows.map(row=>{
    const invoices=owned.filter(h=>h.invoiceDay===day&&h.clientId===row.clientId);
@@ -38,7 +39,7 @@ export async function readPrototypeCreditJournal(pool:Pool,commercialId:string,d
   if(byClient.size)throw new JournalConflict('Paiement de vente sans client dans le journal.');
   const journalCollected=safe(rows.reduce((n,row)=>n+BigInt(row.totalCollected),0n));
   const totalCollected=safe(BigInt(journalCollected)+BigInt(base.inheritedJournalTotal)+BigInt(base.globalSettlementTotal));
-  const result={...base,rows,journalCollected,totalCollected,saleRefundEvents:cash.refundEvents,saleRefundTotal:cash.refund,creditVersion:5 as const,creditEvents:events,creditCashEvents,unassignedCreditRefundEvents,creditRefundUnassignedTotal:safe(unassigned),creditNoteTotal:safe(billed),creditRefundTotal:safe(refund),creditRetainedTotal:safe(credit),billedAfterCredits:safe(BigInt(base.totalBilled)-billed),collectedAfterRefunds:safe(BigInt(totalCollected)-refund-BigInt(cash.refund))};
+  const result={...base,rows,journalCollected,totalCollected,saleRefundEvents:cash.refundEvents,saleRefundTotal:cash.refund,creditVersion:5 as const,creditEvents:events,creditCashEvents,unassignedCreditRefundEvents,adminCashCreditRefundEvents,creditRefundUnassignedTotal:safe(unassigned),creditNoteTotal:safe(billed),creditRefundTotal:safe(refund),creditRetainedTotal:safe(credit),billedAfterCredits:safe(BigInt(base.totalBilled)-billed),collectedAfterRefunds:safe(BigInt(totalCollected)-refund-BigInt(cash.refund))};
   await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
