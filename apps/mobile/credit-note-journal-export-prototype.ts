@@ -1,5 +1,6 @@
 /** Lecture atomique préparatoire d'un export v5 ; non utilisée par l'écran v3. */
 import {canonicalJson} from '@sls/domain';
+import {readConfirmedRemoteSaleRefunds} from './credit-remote-sale-confirm-prototype';
 import {readLocalSaleRefundsForJournal} from './credit-sale-refund-journal-prototype';
 import {assertImportedSaleRevision} from './credit-local-revision-audit-prototype';
 import type {DeviceIdentity} from './identified-device';
@@ -33,11 +34,13 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
  const sectors=new Map(reference.clients.map(c=>[c.id,c.sector]));
  const rows=buildJournal(day,invoices,sales,sectors),clientIds=new Set(rows.map(r=>r.clientId));
  const saleRefunds=await readLocalSaleRefundsForJournal(tx,sales,day);
+ const remoteSaleRefunds=await readConfirmedRemoteSaleRefunds(tx,identity,day,digest);
  for(const receipt of receipts.filter(r=>r.journalDate===day)){
   if(!rows.some(row=>row.clientId===receipt.clientId&&row.preInvoice?.id===receipt.preInvoiceId))throw Error('Règlement du journal sans facture : export refusé.');
   clientIds.add(receipt.clientId);
  }
  for(const {note} of credits){const src=note.source as {clientId?:string;invoice?:{clientId?:string}};const id=note.kind==='sale'?src.clientId:src.invoice?.clientId;if(!id)throw Error('Client de l’avoir indisponible.');if(tunisDay(new Date(note.command.recordedAt))===day)clientIds.add(id);}
+ for(const refund of remoteSaleRefunds)clientIds.add(refund.clientId);
  const snapshot=await loadCreditBalanceSnapshotPrototype(tx,identity,digest);
  for(const id of clientIds){const balance=snapshot.balanceFor(id);if(balance.conflict)throw Error('Solde en conflit : export refusé.');}
  const remoteSaleUpdates:NonNullable<JournalExport['remoteSaleUpdates']>=[];
@@ -69,5 +72,5 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   if(source.version!==local.version||canonicalJson(source.invoice)!==canonicalJson(invoice)||canonicalJson(source.receipts)!==canonicalJson(receipts.filter(r=>r.preInvoiceId===invoice.id))||await digest(canonicalJson(source))!==proof.hash)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
   remoteCancellations.push({kind:'preinvoice',invoiceId:invoice.id,day:tunisDay(new Date(state.creditNote.recordedAt)),source});
  }
- return {day,commercial,rows,receipts,credits,remoteCancellations,remoteSaleUpdates,saleRefunds};
+ return {day,commercial,rows,receipts,credits,remoteCancellations,remoteSaleUpdates,saleRefunds,remoteSaleRefunds};
 }

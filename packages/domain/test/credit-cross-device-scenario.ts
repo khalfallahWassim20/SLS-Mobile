@@ -514,6 +514,23 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    assert.equal(isolated.prepare('SELECT acknowledged FROM credit_remote_sale_confirm_prototype WHERE operation_id=?').get(remoteEvent.operationId)?.acknowledged,2);
    assert.equal(isolated.prepare('SELECT count(*) AS n FROM credit_remote_sale_draft_prototype').get()?.n,0);
    assert.deepEqual(await isolatedTransaction(()=>readPrototypeCreditBalance(isolatedTx,identity,client2,digest)),{balance:0,conflict:false});
+   // L'appareil auteur enregistre une sortie de 2,400 DT, même si la vente
+   // d'origine est sur un autre téléphone. Ne pas inventer un encaissement.
+   const actorJournal=await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest));
+   assert.equal(actorJournal.remoteSaleRefunds?.length,1);assert.equal(actorJournal.remoteSaleRefunds?.[0].refund,2400);
+   assert.equal(describeCreditJournalPrototype(actorJournal).totals.collectedAfterLocalRefunds,-2400);
+   assert.match(journalCsv(actorJournal),/REMBOURSEMENTS SUR VENTES D’AUTRES APPAREILS/);assert.match(journalCsv(actorJournal),/2,400/);
+   assert.deepEqual((await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,'2026-11-08','Deuxième',digest))).remoteSaleRefunds,[]);
+   // Une proposition de remboursement abandonnée est exclue ; un accusé
+   // d'abandon altéré bloque le journal au lieu d'être considéré comme reçu.
+   isolated.exec('SAVEPOINT abandoned_refund');const fakeAbandon=randomUUID();
+   isolated.prepare(`INSERT INTO credit_remote_sale_confirm_prototype(operation_id,invoice_id,client_id,commercial_id,server_origin,recorded_at,request,original,revised,payload,acknowledged)
+    SELECT ?,invoice_id,client_id,commercial_id,server_origin,recorded_at,json_set(request,'$.operationId',?),original,revised,json_set(payload,'$.operationId',?),2 FROM credit_remote_sale_confirm_prototype WHERE operation_id=?`).run(fakeAbandon,fakeAbandon,fakeAbandon,remoteEvent.operationId);
+   isolated.prepare('INSERT INTO credit_remote_sale_abandoned_prototype VALUES(?,?,?)').run(fakeAbandon,JSON.stringify({status:'abandoned',operationId:fakeAbandon,saleId:otherSaleId,version:2}),'2026-11-07T14:00:00.000Z');
+   assert.equal((await readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest)).remoteSaleRefunds?.length,1);
+   isolated.prepare('UPDATE credit_remote_sale_abandoned_prototype SET server_receipt=? WHERE operation_id=?').run('{}',fakeAbandon);
+   await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Archive d’abandon incohérente/);
+   isolated.exec('ROLLBACK TO abandoned_refund; RELEASE abandoned_refund');
    // La preuve de la version reçue libère les soldes et permet une nouvelle
    // révision de la même facture, tout en conservant l'historique de la première.
    const refreshedSources=await get(`credit-sources/${client2}`);await isolatedTransaction(()=>saveCreditSourcesPrototype(isolatedTx,identity,identity,client2,refreshedSources,digest));
@@ -697,7 +714,10 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const recoveredArchive=await isolatedTransaction(()=>readRecoveredRemoteEditsPrototype(isolatedTx,identity,client2,digest));assert.equal(recoveredArchive.length,2);
   assert.equal(recoveredArchive[0].operationId,nextReceiptDraft.operationId);assert.equal(recoveredArchive[0].referenceVersion,5);
   assert.equal(recoveredArchive[1].operationId,receiptDraft.operationId);assert.equal(recoveredArchive[1].refund,2400);assert.equal(recoveredArchive[1].referenceVersion,3);
+  const recoveredJournal=await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest));
+  assert.equal(recoveredJournal.remoteSaleRefunds?.length,2);assert.equal(describeCreditJournalPrototype(recoveredJournal).remoteSaleRefundTotal,4800);
   isolated.exec('SAVEPOINT bad_recovery');isolated.prepare('UPDATE credit_remote_sale_receipt_prototype SET receipt=? WHERE operation_id=?').run('{}',receiptDraft.operationId);
+  await assert.rejects(readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest),/Preuve de révision incohérente/);
   await assert.rejects(readRecoveredRemoteEditsPrototype(isolatedTx,identity,client2,digest),/incohérente/);isolated.exec('ROLLBACK TO bad_recovery; RELEASE bad_recovery');
 
   // La vente locale de B a été révisée par A : diagnostiquer sans écraser

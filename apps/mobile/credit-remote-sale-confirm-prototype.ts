@@ -1,6 +1,7 @@
 /** Circuit isolé de confirmation des révisions distantes. Non raccordé à
  * l'application ou à sa synchronisation : les écritures, soldes et files sont
  * séparés. Chaque fonction SQLite exige une transaction exclusive. */
+import {tunisDay} from './journal';
 import {canonicalJson,calculateInvoice,revisePayment} from '@sls/domain';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
@@ -225,6 +226,41 @@ export async function readRecoveredRemoteEditsPrototype(tx:Tx,identity:DeviceIde
   const time=new Date(receipt?.confirmedAt??'');
   if(row.acknowledged!==2||!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).sort().join(',')!=='commercialId,event,status'||r.status!=='received'||r.commercialId!==identity.commercialId||canonicalJson(r.event)!==canonicalJson({...event,recordedAt:row.recordedAt})||!Number.isSafeInteger(receipt?.referenceVersion)||receipt!.referenceVersion<event.version||!Number.isFinite(time.getTime())||time.toISOString()!==receipt?.confirmedAt||await digest(canonicalJson(original))!==request.key.hash)throw Error('Preuve de révision incohérente.');
   result.push({operationId:row.operationId,invoiceId:row.invoiceId,recordedAt:row.recordedAt,confirmedAt:receipt.confirmedAt,referenceVersion:receipt.referenceVersion,original:validateRemoteSaleSourcePrototype(original),revised:validateRemoteSaleSourcePrototype(revised),refund:request.preview.refund as number,retainedCredit:request.preview.credit as number});
+ }
+ return result;
+}
+
+/** Remboursements de modifications de factures d'un autre appareil effectuées
+ * sur ce téléphone et confirmées. Une demande abandonnée n'est jamais un
+ * remboursement ; une réponse perdue reste en attente tant qu'elle n'a pas
+ * été prouvée. L'appelant maintient la transaction exclusive de l'export. */
+export async function readConfirmedRemoteSaleRefunds(tx:Tx,identity:DeviceIdentity,day:string,digest:(text:string)=>Promise<string>){
+ await bound(tx,identity);if(!validDay(day))throw Error('Date invalide.');
+ const rows=await tx.getAllAsync<Row>(`SELECT ${columns} FROM credit_remote_sale_confirm_prototype WHERE acknowledged=2 ORDER BY rowid`);
+ const result:{operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[]=[];
+ for(const row of rows){
+  const {request,original,revised,event}=parse(row,identity),at=new Date(row.recordedAt);
+  if(!Number.isFinite(at.getTime())||!Number.isSafeInteger(event.refund)||event.refund<0||await digest(canonicalJson(original))!==request.key.hash)throw Error('Révision distante incohérente : journal refusé.');
+  const abandon=await tx.getFirstAsync<{value:string;confirmedAt:string}>('SELECT server_receipt AS value,confirmed_at AS confirmedAt FROM credit_remote_sale_abandoned_prototype WHERE operation_id=?',row.operationId);
+  const received=await tx.getFirstAsync<{value:string;referenceVersion:number;confirmedAt:string}>('SELECT receipt AS value,reference_version AS referenceVersion,confirmed_at AS confirmedAt FROM credit_remote_sale_receipt_prototype WHERE operation_id=?',row.operationId);
+  if(abandon&&received)throw Error('Preuves de révision contradictoires.');
+  if(abandon){
+   let a:Record<string,unknown>;try{a=JSON.parse(abandon.value);}catch{throw Error('Archive d’abandon incohérente.');}
+   const time=new Date(abandon.confirmedAt);
+   if(!a||typeof a!=='object'||Array.isArray(a)||Object.keys(a).sort().join(',')!=='operationId,saleId,status,version'||a.status!=='abandoned'||a.operationId!==row.operationId||a.saleId!==row.invoiceId||a.version!==event.version||!Number.isFinite(time.getTime())||time.toISOString()!==abandon.confirmedAt)throw Error('Archive d’abandon incohérente.');
+   continue;
+  }
+  if(received){
+   let proof:Record<string,unknown>;try{proof=JSON.parse(received.value);}catch{throw Error('Preuve de révision incohérente.');}
+   const time=new Date(received.confirmedAt);
+   if(!proof||typeof proof!=='object'||Array.isArray(proof)||Object.keys(proof).sort().join(',')!=='commercialId,event,status'||proof.status!=='received'||proof.commercialId!==identity.commercialId||canonicalJson(proof.event)!==canonicalJson({...event,recordedAt:row.recordedAt})||!Number.isSafeInteger(received.referenceVersion)||received.referenceVersion<event.version||!Number.isFinite(time.getTime())||time.toISOString()!==received.confirmedAt)throw Error('Preuve de révision incohérente.');
+  }
+  if(event.refund>0&&tunisDay(at)===day){
+   const overlap=await tx.getFirstAsync<{n:number}>("SELECT EXISTS(SELECT 1 FROM sales WHERE json_valid(payload) AND json_extract(payload,'$.syncSaleId')=?) AS n",row.invoiceId);
+   if(!overlap||overlap.n)throw Error('Vente distante également présente sur ce téléphone : rapprochement nécessaire.');
+   if(typeof revised.clientName!=='string'||!revised.clientName.trim())throw Error('Client de révision distante invalide.');
+   result.push({operationId:row.operationId,invoiceId:row.invoiceId,clientId:row.clientId,clientName:revised.clientName,recordedAt:row.recordedAt,refund:event.refund});
+  }
  }
  return result;
 }

@@ -29,3 +29,13 @@ test('journal mobile v5 : remboursement local, dates tunisiennes, exports et gar
   await assert.rejects(readLocalSaleRefundsForJournal(tx,[sale],'2026-11-08'),/incohérent/);
  }finally{db.close();}
 });
+
+test('vente d’un autre téléphone : sortie de caisse distincte, sans vendre deux fois',()=>{
+ const clientId=randomUUID(),invoiceId=randomUUID(),remote={operationId:randomUUID(),invoiceId,clientId,clientName:'<Client>',recordedAt:'2026-11-08T09:00:00.000Z',refund:2400};
+ const report={day:'2026-11-08',commercial:'Test',rows:[],receipts:[],credits:[],remoteSaleRefunds:[remote]};
+ const model=describeCreditJournalPrototype(report);assert.equal(model.remoteSaleRefundTotal,2400);assert.equal(model.totals.collectedGross,0);assert.equal(model.totals.collectedAfterLocalRefunds,-2400);
+ assert.match(journalCsv(report),/REMBOURSEMENTS SUR VENTES D’AUTRES APPAREILS/);assert.match(journalCsv(report),/2,400/);assert.match(journalHtml(report),/&lt;Client&gt;/);
+ assert.throws(()=>journalCsv({...report,remoteSaleRefunds:[remote,remote]}),/invalide/);
+ assert.throws(()=>journalCsv({...report,remoteSaleRefunds:[{...remote,recordedAt:'2026-11-09T09:00:00.000Z'}]}),/invalide/);
+ assert.throws(()=>journalCsv({...report,credits:undefined}),/Avoirs locaux indisponibles/);
+});
