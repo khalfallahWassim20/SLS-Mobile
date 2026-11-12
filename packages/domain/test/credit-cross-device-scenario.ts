@@ -343,7 +343,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
      saveFinalReference:(id,verified,value)=>transaction(async()=>{guard();await saveAndVerifyFinalCreditReference(tx,id,verified,value,digest);guard();})}),
     tour:{
      getAttempt:(id,date,guard)=>transaction(async()=>{guard();const value=await findTourCloseAttempt(tx,id.commercialId,date);guard();return value;}),
-     prepare:(id,date,version,guard)=>transaction(async()=>{guard();const value=await preparePrototypeClose(tx,id,date,version,randomUUID);guard();return value;}),
+     prepare:(id,date,version,guard)=>transaction(async()=>{guard();const value=await prepareVerifiedPrototypeClose(tx,id,date,version,randomUUID,digest);guard();return value;}),
      acknowledge:(id,date,response,guard)=>transaction(async()=>{guard();await acknowledgeTourClose(tx,id.commercialId,date,response);if(expireCloseAck){expireCloseAck=false;clock=expiry;}guard();}),
      observe:(id,date,response,guard)=>transaction(async()=>{guard();await observeVerifiedTourState(tx,id.commercialId,date,response);guard();})
     }
@@ -415,7 +415,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const attempt=await transaction(()=>findTourCloseAttempt(tx,identity.commercialId,closedDay));assert.equal(attempt?.status,'closing');
   await assert.rejects(transaction(()=>assertLocalTourWritable(tx,identity.commercialId,closedDay)),/Clôture en attente/);
   const waiting=randomUUID();mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(waiting,saleId,1,'{}');
-  await assert.rejects(controller.closeDay(closedDay),/opération est en attente/);mobile.prepare('DELETE FROM sales_outbox WHERE operation_id=?').run(waiting);
+  await assert.rejects(controller.closeDay(closedDay),/opération.*en attente/i);mobile.prepare('DELETE FROM sales_outbox WHERE operation_id=?').run(waiting);
   expireCloseAck=true;await assert.rejects(controller.closeDay(closedDay),/expirée/);
   assert.equal((await transaction(()=>findTourCloseAttempt(tx,identity.commercialId,closedDay)))?.status,'closing');
   controller=makeController();assert.deepEqual(await controller.closeDay(closedDay),{status:'closed',version:1});

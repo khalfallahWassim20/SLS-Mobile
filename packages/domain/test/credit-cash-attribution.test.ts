@@ -1,3 +1,4 @@
+import {matchingCashProof} from './cash-close-fixture.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -80,10 +81,11 @@ test('avoirs vente et préétablie : sorties chez l’auteur, dette ancienne con
   assert.equal((await abandonTourClose(pool,abandoned,actor)).status,'abandoned');
   await assert.rejects(requestTourTransition(pool,old,actor,true,true),/abandonnée/);
   const proof=[{noteOperationId:command.operationId,assignmentId:assignment.requestId,refund:50000}];
-  const close={requestId:randomUUID(),day:old.day,expectedVersion:0,adminRefundProof:proof};
+  const close={requestId:randomUUID(),day:old.day,expectedVersion:0,adminRefundProof:proof,cashProof:await matchingCashProof(pool,b.id,old.day)};
   assert.equal((await requestTourTransition(pool,close,actor,true,true)).status,'received');
   assert.equal((await requestTourTransition(pool,close,actor,true,true)).status,'duplicate');
   await assert.rejects(requestTourTransition(pool,{...close,adminRefundProof:[]},actor,true,true),/déjà utilisé/);
+  await assert.rejects(requestTourTransition(pool,{...close,cashProof:'0'.repeat(64)},actor,true,true),/déjà utilisé/);
   assert.equal((await abandonTourClose(pool,{requestId:close.requestId,day:close.day,expectedVersion:0},actor)).status,'already-received');
   await db.query('UPDATE credit_refund_assignment_prototype SET refund=1 WHERE request_id=$1',[assignment.requestId]);
   await assert.rejects(readPrototypeCreditJournal(pool,b.id,'2026-11-09'),/Attribution de remboursement incohérente/);

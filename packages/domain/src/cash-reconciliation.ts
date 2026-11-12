@@ -31,3 +31,25 @@ export function compareCashReconciliation(local:unknown,server:unknown,commercia
  for(const item of serverById.values())add('server',item);
  return {matches:onlyLocal===0&&changed===0&&serverById.size===0,onlyLocal,onlyServer:serverById.size,changed,differences};
 }
+
+/** Représentation immuable et ordonnée des deux captures, liée à l'identité
+ * et à la journée. À hacher avant l'envoi ; ce n'est pas une preuve physique. */
+const saleCommon={operationId:id,saleId:id,clientId:id,recordedAt:at};
+const saleCash=z.object({version:z.literal(5),commercialId:id,day:z.string(),
+ initialEvents:z.array(z.object({...saleCommon,paid:amount}).strict()).max(200),
+ refundEvents:z.array(z.object({...saleCommon,refund:amount.positive()}).strict()).max(40000),
+ saleStates:z.array(z.object({saleId:id,clientId:id,version:z.number().int().positive().max(1000000),total:amount,paid:amount}).strict()).max(200)}).strict();
+export function cashClosureCanonical(sales:unknown,journal:unknown,commercialId:string,day:string):string {
+ const parsed=saleCash.safeParse(sales);if(!parsed.success||parsed.data.commercialId!==commercialId||parsed.data.day!==day)throw Error('Preuve de ventes invalide.');
+ const salesSeen=new Set<string>(),tunis=(s:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(s));
+ const order=<T extends {operationId:string}>(xs:T[])=>xs.sort((a,b)=>a.operationId<b.operationId?-1:a.operationId>b.operationId?1:0);
+ const initial=order(parsed.data.initialEvents.map(e=>{if(salesSeen.has(e.operationId)||tunis(e.recordedAt)!==day)throw Error('Événement de vente invalide ou dupliqué.');salesSeen.add(e.operationId);return {...e,recordedAt:new Date(e.recordedAt).toISOString()};}));
+ const refunds=order(parsed.data.refundEvents.map(e=>{if(salesSeen.has(e.operationId)||tunis(e.recordedAt)!==day)throw Error('Événement de vente invalide ou dupliqué.');salesSeen.add(e.operationId);return {...e,recordedAt:new Date(e.recordedAt).toISOString()};}));
+ const saleIds=new Set(initial.map(e=>e.saleId)),statesSeen=new Set<string>();
+ if(saleIds.size!==initial.length)throw Error('Vente initiale dupliquée.');
+ const saleStates=parsed.data.saleStates.map(s=>{if(statesSeen.has(s.saleId)||!saleIds.has(s.saleId))throw Error('État de vente incohérent.');statesSeen.add(s.saleId);return s;}).sort((a,b)=>a.saleId<b.saleId?-1:a.saleId>b.saleId?1:0);
+ if(saleStates.length!==saleIds.size)throw Error('État de vente incomplet.');
+ const journalEvents=validateCashReconciliation(journal,commercialId,day);
+ for(const e of journalEvents)if(salesSeen.has(e.operationId))throw Error('Identifiant de mouvement dupliqué.');
+ return canonicalJson({protocol:'sls-cash-close-v1',commercialId,day,initial,refunds,saleStates,journalEvents:order(journalEvents)});
+}

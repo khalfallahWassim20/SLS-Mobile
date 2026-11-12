@@ -1,3 +1,4 @@
+import {matchingCashProof} from './cash-close-fixture.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
@@ -147,7 +148,7 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   const result=validatePrototypeCreditReference(await (await get('/new/reference')).json());
   assert.ok(!result.eligibleSaleProofs.some(p=>p.saleId===saleId));assert.ok(!result.eligibleJournalIds.includes(invoice.id));
   assert.equal(result.clients.find(x=>x.id===clientId)?.serverBalance,'290000');assert.equal(result.saleStates.find(s=>s.saleId===saleId)?.cancelled,true);assert.ok(result.journalStates.find(j=>j.id===invoice.id)?.creditNote);
-  assert.equal((await post('/new/close',{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0})).status,201);
+  assert.equal((await post('/new/close',{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0,cashProof:await matchingCashProof(pool,c.id,'2026-11-08')})).status,201);
   const reopen={requestId:randomUUID(),day:'2026-11-08',expectedVersion:1};
   assert.equal((await post(`/admin/${c.id}/reopen`,reopen)).status,401);
   assert.equal((await post(`/admin/${c.id}/reopen`,reopen,{...headers,Authorization:'Bearer admin-test','X-SLS-Reference-Version':'4'})).status,409);

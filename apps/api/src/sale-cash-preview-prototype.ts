@@ -19,7 +19,7 @@ export async function readSaleCashPreview(db:PoolClient,commercialId:string,day:
  let received=0n,refund=0n;
  const initialEvents:{operationId:string;saleId:string;clientId:string;recordedAt:string;paid:number}[]=[];
  const refundEvents:{operationId:string;saleId:string;version:number;clientId:string;clientName:string;recordedAt:string;refund:number}[]=[];
- const entries:{saleId:string;clientId:string;clientName:string;saleDay:string;initialPaid:number;receivedHere:number;refundedHere:number}[]=[];
+ const entries:{saleId:string;clientId:string;clientName:string;saleDay:string;version:number;total:number;paid:number;initialPaid:number;receivedHere:number;refundedHere:number}[]=[];
  for(const row of relevant.rows){
   const events=await db.query(`SELECT operation_id AS "operationId",sale_id AS "saleId",version,client_id AS "clientId",commercial_id AS "actorId",journal_date::text AS "saleDay",event_date::text AS "eventDay",payload,payload_hash AS hash
    FROM identified_sale_events WHERE sale_id=$1 ORDER BY version LIMIT 201`,[row.saleId]);
@@ -41,7 +41,7 @@ export async function readSaleCashPreview(db:PoolClient,commercialId:string,day:
   const here=owner===commercialId&&saleDay===day?initialPaid:0;
   if(owner===commercialId&&saleDay===day)initialEvents.push({operationId:firstOperation,saleId:row.saleId,clientId:client,recordedAt:firstAt,paid:initialPaid});
   received+=BigInt(here);refund+=refundHere;
-  entries.push({saleId:row.saleId as string,clientId:client,clientName:previous.sale.clientName,saleDay,initialPaid,receivedHere:here,refundedHere:safe(refundHere)});
+  entries.push({saleId:row.saleId as string,clientId:client,clientName:previous.sale.clientName,saleDay,version:previous.version,total:previous.sale.total,paid:previous.sale.paid,initialPaid,receivedHere:here,refundedHere:safe(refundHere)});
  }
  return {available:true as const,entries,initialEvents,refundEvents,received:safe(received),refund:safe(refund),net:safe(received-refund)};
 }

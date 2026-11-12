@@ -162,3 +162,4 @@ export type { CreditJournalState } from './pre-invoice-credit-reconciliation.ts'
 export { reconcileSaleCredits } from './sale-credit-reconciliation.ts';
 export {validateCashReconciliation,compareCashReconciliation} from './cash-reconciliation.ts';
 export type {CashReconciliationEntry} from './cash-reconciliation.ts';
+export {cashClosureCanonical} from './cash-reconciliation.ts';

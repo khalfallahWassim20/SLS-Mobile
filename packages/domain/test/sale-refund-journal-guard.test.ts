@@ -1,3 +1,4 @@
+import {matchingCashProof} from './cash-close-fixture.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -41,11 +42,11 @@ test('clôture v5 : remboursement reçu bloque une nouvelle clôture sans empêc
   await setCommercialCredentials(pool,'admin',a.id,{login:'refund.test',password:'mot de passe fictif'});
   const secret='secret pour essai fictif 123456789',session=await loginCommercial(pool,secret,{login:'refund.test',password:'mot de passe fictif'});assert.ok(session);
   const principal={kind:'commercial' as const,secret,token:session.token},day='2026-11-08',requestId=randomUUID();
-  const first=await requestTourTransition(pool,{requestId,day,expectedVersion:0},principal,true,true);assert.equal(first.status,'received');
+  const cashProof=await matchingCashProof(pool,a.id,day);const first=await requestTourTransition(pool,{requestId,day,expectedVersion:0,cashProof},principal,true,true);assert.equal(first.status,'received');
   const client=randomUUID(),sale=randomUUID();await db.query('INSERT INTO clients(id,name) VALUES($1,$2)',[client,'Fictif']);
   const payload={sale:{createdAt:'2026-11-08T09:00:00.000Z',clientId:client,clientName:'Fictif',total:1000,paid:1000,remaining:0},refund:0};
   for(const [version,refund] of [[1,0],[2,500]])await db.query(`INSERT INTO identified_sale_events(operation_id,sale_id,version,client_id,commercial_id,journal_date,event_date,payload,payload_hash) VALUES($1,$2,$3,$4,$5,$6::date,$7::date,$8::jsonb,'test')`,[randomUUID(),sale,version,client,a.id,day,version===1?day:'2026-11-09',JSON.stringify({...payload,refund})]);
-  assert.equal((await requestTourTransition(pool,{requestId,day,expectedVersion:0},principal,true,true)).status,'duplicate');
+  assert.equal((await requestTourTransition(pool,{requestId,day,expectedVersion:0,cashProof},principal,true,true)).status,'duplicate');
   await requestTourTransition(pool,{requestId:randomUUID(),day,expectedVersion:1},{kind:'admin',actorId:'admin',commercialId:a.id},true,true);
   await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day,expectedVersion:2},principal,true,true),/remboursement/i);
   const status=await db.query('SELECT status,version FROM tour_closures WHERE commercial_id=$1 AND journal_date=$2::date',[a.id,day]);assert.deepEqual(status.rows[0],{status:'open',version:2});
@@ -90,7 +91,7 @@ test('même commercial et même journée : paiement initial, remboursement disti
   const {readSaleRefundDiagnostic}=await import('../../../apps/api/src/sale-refund-diagnostic-prototype.js');const preview=(await readSaleRefundDiagnostic(pool,a.id,day)).saleCashPreview;
   assert.equal(preview.available,true);if(preview.available){assert.equal(preview.received,50000);assert.equal(preview.refund,38100);assert.equal(preview.net,11900);}
   // L'aperçu exclut explicitement le remboursement séparé de l'avoir.
-  assert.equal((await requestTourTransition(pool,{requestId:randomUUID(),day,expectedVersion:0},principal,true,true)).status,'received');
+  assert.equal((await requestTourTransition(pool,{requestId:randomUUID(),day,expectedVersion:0,cashProof:await matchingCashProof(pool,a.id,day)},principal,true,true)).status,'received');
   await assert.rejects(storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:3,recordedAt:`${day}T11:00:00.000Z`,sale:{...revised,syncVersion:3},refund:0},auth),/clôtur|avoir|annulée/i);
  }finally{await db.close();}
 });

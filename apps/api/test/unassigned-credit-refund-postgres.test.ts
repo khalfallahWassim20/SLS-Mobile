@@ -1,3 +1,4 @@
+import {matchingCashProof} from '../../../packages/domain/test/cash-close-fixture.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -28,7 +29,8 @@ test('PostgreSQL : clôture d’un autre commercial contre remboursement admin n
     const receipt={id:randomUUID(),preInvoiceId:invoiceId,clientId,journalDate:day,createdAt:`${day}T10:00:00.000Z`,prePaid:250000,oldDebtPaid:400000,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1000000};await storeJournalSnapshot(pool,{operationId:randomUUID(),version:2,invoice,receipts:[receipt]},'identified',auth);}
    const command={operationId:randomUUID(),invoiceId,expectedVersion:sale?1:2,recordedAt:`${day}T11:00:00.000Z`,choice:'refund' as const},requestId=randomUUID();
    const credit=()=>sale?storePrototypeCreditNote(pool!,command,admin):storePrototypePreInvoiceCredit(pool!,command,admin);
-   const close=()=>requestTourTransition(pool!,{requestId,day,expectedVersion:0},principal,true,true);
+   const cashProof=await matchingCashProof(pool,b.id,day);
+   const close=()=>requestTourTransition(pool!,{requestId,day,expectedVersion:0,cashProof},principal,true,true);
    const results=await Promise.allSettled(i%4<2?[credit(),close()]:[close(),credit()]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1,JSON.stringify(results));
    const status=await pool.query('SELECT status FROM tour_closures WHERE commercial_id=$1 AND journal_date=$2::date',[b.id,day]);
    const received=await pool.query('SELECT count(*)::int AS n FROM credit_note_prototype_operation_ids WHERE operation_id=$1',[command.operationId]);

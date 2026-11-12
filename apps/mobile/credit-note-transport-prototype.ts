@@ -139,7 +139,25 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
    let attempt=await tour().getAttempt(identity,day,check);check();
    if(attempt?.status==='closed')throw Error('Journée déjà clôturée.');
    if(!attempt){const state=await readDay(day);if(state.status!=='open')throw Error('Journée déjà clôturée.');attempt=await tour().prepare(identity,day,state.version,check);}
-   else attempt=await tour().prepare(identity,day,attempt.expectedVersion,check);
+   else {
+    const prior=attempt;
+    try{attempt=await tour().prepare(identity,day,prior.expectedVersion,check);}
+    catch(error){
+     if(!tour().discard)throw error;
+     // La vérification locale peut échouer après une réponse perdue. D'abord
+     // demander au serveur si l'UUID est reçu ou réservé, jamais l'effacer seul.
+     const response=await request('close/abandon','POST',JSON.stringify({requestId:prior.requestId,day,expectedVersion:prior.expectedVersion}));const body=await response.json().catch(()=>null);check();
+     if(!response.ok)throw Error('Vérification de clôture non confirmée : demande conservée.');
+     const r=object(body);
+     if(r&&Object.keys(r).sort().join(',')==='commercialId,day,expectedVersion,requestId,status'&&r.status==='already-received'&&r.requestId===prior.requestId&&r.commercialId===identity.commercialId&&r.day===day&&r.expectedVersion===prior.expectedVersion){
+      await sendPreparedTourClose(prior,b=>request('close','POST',JSON.stringify(b)),b=>tour().acknowledge(identity,day,b,check));check();
+      throw Error('La clôture avait déjà été reçue par le serveur. Son accusé est conservé ; les opérations locales nécessitent encore un rapprochement.');
+     }
+     await tour().discard!(identity,day,prior,body,check);check();
+     const detail=error instanceof Error?error.message:'Vérification locale impossible.';
+     throw Error(`${detail} La demande de clôture a été abandonnée sans perte ; synchronisez et vérifiez avant de recommencer.`);
+    }
+   }
    let conflict=false;
    try{check();await sendPreparedTourClose(attempt,async body=>{const result=await request('close','POST',JSON.stringify(body));return {...result,json:async()=>{const value=await result.json();if(result.status===409)conflict=true;return value;}};},body=>tour().acknowledge(identity,day,body,check));check();}
    catch(error){

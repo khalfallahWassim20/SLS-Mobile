@@ -81,13 +81,15 @@ test('état serveur vérifié sur un autre téléphone : blocage et réouverture
   const {db,tx}=setup();try{
    const a=await prepareTourClose(tx,id,day,0,()=>request),proof=[{noteOperationId:'a1000000-0000-4000-8000-000000000003',assignmentId:'a1000000-0000-4000-8000-000000000004',refund:50000}];
    db.prepare('INSERT INTO tour_close_admin_refund_proofs VALUES(?,?)').run(request,JSON.stringify(proof));
-   const stored=await findTourCloseAttempt(tx,id,day);assert.deepEqual(stored?.adminRefundProof,proof);
-   let body:unknown;await assert.rejects(sendPreparedTourClose(stored!,async b=>{body=b;throw Error('coupure');},async()=>{}),/coupure/);assert.deepEqual((body as any).adminRefundProof,proof);
+   db.prepare('INSERT INTO tour_close_cash_proofs VALUES(?,?)').run(request,'a'.repeat(64));
+   const stored=await findTourCloseAttempt(tx,id,day);assert.deepEqual(stored?.adminRefundProof,proof);assert.equal(stored?.cashProof,'a'.repeat(64));
+   let body:unknown;await assert.rejects(sendPreparedTourClose(stored!,async b=>{body=b;throw Error('coupure');},async()=>{}),/coupure/);assert.deepEqual((body as any).adminRefundProof,proof);assert.equal((body as any).cashProof,'a'.repeat(64));
    const response={status:'abandoned',requestId:request,commercialId:id,day,expectedVersion:0};
+   await assert.rejects(acknowledgeAbandonedTourClose(tx,id,day,{...stored!,cashProof:'b'.repeat(64)},response),/modifiée/);
    await assert.rejects(acknowledgeAbandonedTourClose(tx,id,day,stored!,{...response,status:'already-received'}),/déjà reçue/);
    await assert.rejects(acknowledgeAbandonedTourClose(tx,id,day,stored!,{...response,requestId:'autre'}),/invalide/);
    assert.equal((await findTourCloseAttempt(tx,id,day))?.requestId,a.requestId);
    await acknowledgeAbandonedTourClose(tx,id,day,stored!,response);assert.equal(await findTourCloseAttempt(tx,id,day),null);
-   assert.equal(db.prepare('SELECT count(*) AS n FROM tour_close_admin_refund_proofs').get()?.n,0);
+   assert.equal(db.prepare('SELECT count(*) AS n FROM tour_close_admin_refund_proofs').get()?.n,0);assert.equal(db.prepare('SELECT count(*) AS n FROM tour_close_cash_proofs').get()?.n,0);
   }finally{db.close();}
  });

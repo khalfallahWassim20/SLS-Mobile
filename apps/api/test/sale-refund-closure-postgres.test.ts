@@ -1,3 +1,4 @@
+import {matchingCashProof} from '../../../packages/domain/test/cash-close-fixture.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -22,7 +23,8 @@ test('PostgreSQL : remboursement et clôture concurrents ne peuvent être accept
    const sale={createdAt:at,clientId,clientName:'Fictif',syncSaleId:saleId,syncVersion:1,lines:[line],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
    await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0},auth);
    const revision={operationId:randomUUID(),saleId,version:2,recordedAt:`${refundDay}T10:00:00.000Z`,sale:{...sale,syncVersion:2,lines:[{...line,unitPrice:10000}],total:11900,paid:11900,remaining:0},refund:38100};
-   const close=()=>requestTourTransition(pool!,{requestId:randomUUID(),day,expectedVersion:0},principal,true,true),edit=()=>storeIdentifiedSale(pool!,revision,auth);
+   const cashProof=await matchingCashProof(pool,commercial.id,day);
+   const close=()=>requestTourTransition(pool!,{requestId:randomUUID(),day,expectedVersion:0,cashProof},principal,true,true),edit=()=>storeIdentifiedSale(pool!,revision,auth);
    const results=await Promise.allSettled(i%2?[edit(),close()]:[close(),edit()]);assert.equal(results.filter(r=>r.status==='fulfilled').length,1,JSON.stringify(results));
    const status=await pool.query('SELECT status FROM tour_closures WHERE commercial_id=$1 AND journal_date=$2::date',[commercial.id,day]);
    const received=await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1 AND version=2',[saleId]);
@@ -47,7 +49,8 @@ test('PostgreSQL : remboursement intercommercial et clôtures concurrentes reste
    await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0},authA);
    const edit={operationId:randomUUID(),saleId,version:2,recordedAt:`${refundDay}T10:00:00.000Z`,sale:{...sale,syncVersion:2,lines:[{...line,unitPrice:10000}],total:11900,paid:11900,remaining:0},refund:38100};
    const ownerClose=i%2===0,targetDay=ownerClose?day:refundDay,targetId=ownerClose?a.id:b.id,token=ownerClose?sa.token:sb.token,requestId=randomUUID();
-   const close=()=>requestTourTransition(pool!,{requestId,day:targetDay,expectedVersion:0},{kind:'commercial',secret,token},true,true),revision=()=>storeIdentifiedSale(pool!,edit,authB);
+   const cashProof=await matchingCashProof(pool,targetId,targetDay);
+   const close=()=>requestTourTransition(pool!,{requestId,day:targetDay,expectedVersion:0,cashProof},{kind:'commercial',secret,token},true,true),revision=()=>storeIdentifiedSale(pool!,edit,authB);
    const outcomes=await Promise.allSettled(i%4<2?[revision(),close()]:[close(),revision()]);
    assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1,JSON.stringify(outcomes));
    const status=await pool.query('SELECT status FROM tour_closures WHERE commercial_id=$1 AND journal_date=$2::date',[targetId,targetDay]);

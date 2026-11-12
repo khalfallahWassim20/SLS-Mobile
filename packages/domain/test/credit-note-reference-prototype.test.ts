@@ -1,3 +1,4 @@
+import {matchingCashProof} from './cash-close-fixture.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID,createHash} from 'node:crypto';
@@ -265,7 +266,7 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   assert.equal((await assignAdminCreditRefund(pool,attribution,'admin')).status,'received');assert.equal((await assignAdminCreditRefund(pool,attribution,'admin')).status,'duplicate');
   await assert.rejects(assignAdminCreditRefund(pool,{...attribution,commercialId:c.id},'admin'),/déjà/);
   const assigned=await readPrototypeCreditJournal(pool,c.id,'2026-11-09');assert.equal(assigned.creditRefundUnassignedTotal,0);assert.equal(assigned.adminCashCreditRefundEvents.length,1);assert.equal(assigned.collectedAfterRefunds,0);
-  assert.equal((await requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-09',expectedVersion:0},principal,true,true)).status,'received');
+  await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-09',expectedVersion:0,cashProof:await matchingCashProof(pool,c.id,'2026-11-09')},principal,true,true),/rapprochement du facturé/);
   await db.query("UPDATE pre_invoice_credit_prototype_movements SET balance_delta=1 WHERE operation_id=$1 AND kind='invoice_cancellation'",[preCommand.operationId]);
   await assert.rejects(readPrototypeCreditReference(pool),/Mouvements/);
   await assert.rejects(readPrototypeCreditHistory(pool),/Mouvements/);
