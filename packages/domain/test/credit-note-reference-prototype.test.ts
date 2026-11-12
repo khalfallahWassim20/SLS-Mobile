@@ -257,7 +257,9 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
   const originalDay=await readPrototypeCreditJournal(pool,c.id,day),laterDay=await readPrototypeCreditJournal(pool,c.id,'2026-11-09');
   assert.equal(originalDay.rows.find(r=>r.clientId===otherClient)?.cancelledSaleCount,1);
   assert.equal(laterDay.creditEvents.length,1);assert.equal(laterDay.creditEvents[0].actor.role,'admin');
-  assert.equal(laterDay.billedAfterCredits,-119000);assert.equal(laterDay.collectedAfterRefunds,-50000);
+  assert.equal(laterDay.billedAfterCredits,-119000);assert.equal(laterDay.collectedAfterRefunds,0);assert.equal(laterDay.creditRefundUnassignedTotal,50000);assert.equal(laterDay.unassignedCreditRefundEvents[0].actor.role,'admin');
+  const {requestTourTransition}=await import('../../../apps/api/src/tour-closure-store.js');
+  await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-09',expectedVersion:0},principal,true,true),/caisse non attribuée/);
   await db.query("UPDATE pre_invoice_credit_prototype_movements SET balance_delta=1 WHERE operation_id=$1 AND kind='invoice_cancellation'",[preCommand.operationId]);
   await assert.rejects(readPrototypeCreditReference(pool),/Mouvements/);
   await assert.rejects(readPrototypeCreditHistory(pool),/Mouvements/);

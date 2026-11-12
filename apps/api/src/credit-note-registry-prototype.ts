@@ -9,6 +9,7 @@ import {verifyCommercialSession} from './commercial-session.js';
 import {JournalAuthenticationError,JournalConflict} from './journal-store.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous} from './identified-overlap.js';
 import {assertIdentifiedMode,lockSyncModeExclusive} from './tour-sync-mode.js';
+import {assertNoClosedDayForUnassignedCreditRefund} from './unassigned-credit-refund-guard-prototype.js';
 import {lockCreditNoteSale} from './credit-note-sale-lock.js';
 
 export const creditNotePrototypeSchema=`CREATE TABLE IF NOT EXISTS credit_note_prototype_operation_ids (operation_id uuid PRIMARY KEY);
@@ -63,6 +64,7 @@ export async function storePrototypeCreditNote(pool:Pool,raw:unknown,principal:P
   if(prior.rows.length)throw new JournalConflict('Facture déjà annulée.');
   if(reviewGuard){if(actor.role!=='admin')throw new JournalAuthenticationError('Administrateur requis.');await reviewGuard(db,command,source.clientId);}
   const result=prepareFullCreditNote({actor,command,source:{invoiceId:source.invoiceId,version:source.version,total:source.total,netPaid:source.netPaid,cancelled:false},daysOpen:true,previous:null});
+  if(actor.role==='admin'&&result.event.refund>0)await assertNoClosedDayForUnassignedCreditRefund(db,command.recordedAt);
   await db.query('INSERT INTO credit_note_prototype_operation_ids(operation_id) VALUES($1)',[command.operationId]);
   await db.query('INSERT INTO credit_note_prototype_events(operation_id,invoice_id,event) VALUES($1,$2,$3::jsonb)',[command.operationId,command.invoiceId,JSON.stringify(result.event)]);
   // Ces mouvements ne sont pas raccordés aux soldes actifs. Leur somme est

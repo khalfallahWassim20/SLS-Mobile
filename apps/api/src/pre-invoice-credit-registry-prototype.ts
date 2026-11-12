@@ -6,6 +6,7 @@ import {calculatePreInvoiceCancellation,canonicalJson,type CreditNoteActor,type 
 import {verifyCommercialSession} from './commercial-session.js';
 import {assertIdentifiedMode,lockSyncModeExclusive} from './tour-sync-mode.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
+import {assertNoClosedDayForUnassignedCreditRefund} from './unassigned-credit-refund-guard-prototype.js';
 import {lockTourClosure} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {parseJournalSnapshot,validateJournalTransition,type JournalSnapshot} from './journal-protocol.js';
@@ -90,6 +91,7 @@ export async function storePrototypePreInvoiceCredit(pool:Pool,raw:unknown,princ
   if(!Number.isFinite(lastDate)||Date.parse(command.recordedAt)<lastDate)throw new JournalConflict('Date de l’avoir antérieure à la facture ou à un paiement.');
   if(reviewGuard){if(actor.role!=='admin')throw new JournalAuthenticationError('Administrateur requis.');await reviewGuard(db,command,meta.client_id);}
   const calculated=calculatePreInvoiceCancellation({balance:0,invoiceTotal:snapshot.invoice.amount,receipts:snapshot.receipts,alreadyCancelled:false,choice:command.choice??undefined});
+  if(actor.role==='admin'&&calculated.refund>0)await assertNoClosedDayForUnassignedCreditRefund(db,command.recordedAt);
   const event={command,actor,source:snapshot,clientId:meta.client_id,ownerId:meta.commercial_id,...calculated};
   await db.query('INSERT INTO credit_note_prototype_operation_ids(operation_id) VALUES($1)',[command.operationId]);
   await db.query('INSERT INTO pre_invoice_credit_prototype_events(operation_id,invoice_id,event) VALUES($1,$2,$3::jsonb)',[command.operationId,command.invoiceId,JSON.stringify(event)]);

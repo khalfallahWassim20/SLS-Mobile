@@ -362,6 +362,13 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'sale',saleId,saleProof,undefined,true)),/rapprochement/);
   await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'journal',invoiceId,undefined,journalProof,true)),/rapprochement/);
   assert.match(journalCsv(await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest))),/synchronisé/);
+  // Factures du premier commercial, avoirs créés par le deuxième :
+  // l'annulation reste au propriétaire mais la sortie de caisse revient à l'auteur.
+  const ownerDay=await (await fetch(`${origin}/v5/day/${day}/details`,{headers:headers(a.token)})).json();
+  const actorDay=await (await fetch(`${origin}/v5/day/${day}/details`,{headers:headers(b.token)})).json();
+  assert.equal(ownerDay.creditNoteTotal,719000);assert.equal(ownerDay.creditRefundTotal,0);assert.equal(ownerDay.creditEvents.length,2);
+  assert.equal(actorDay.creditNoteTotal,0);assert.equal(actorDay.creditRefundTotal,50000);assert.equal(actorDay.creditCashEvents[0].operationId,saleCommand.operationId);assert.equal(actorDay.collectedAfterRefunds,-50000);
+  assert.equal(ownerDay.rows[0].oldDebtPaid,400000);assert.equal(ownerDay.unassignedCreditRefundEvents.length,0);
   for(const [kind,command] of [['sale',saleCommand],['preinvoice',preCommand]] as const){
    const received=await post(b.token,'credit-notes-abandon',{kind,command});assert.equal(received.status,200);assert.equal((await received.json()).status,'already-received');
    assert.equal((await post(a.token,'credit-notes-abandon',{kind,command})).status,409);

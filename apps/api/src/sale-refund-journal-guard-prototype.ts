@@ -5,7 +5,7 @@ import {JournalConflict} from './journal-store.js';
  * commerciaux. Le journal serveur et le journal mobile présentent désormais
  * les paiements initiaux et les sorties séparément, mais leur concordance n'est
  * pas encore attestée au moment de la clôture (plusieurs téléphones peuvent
- * partager une identité et les avoirs distants suivent encore le propriétaire).
+ * partager une identité et les autres mouvements restent à rapprocher).
  * Ne pas déduire de cette garde que les journaux actuels utilisent les anciens
  * paiements nets. À appeler sous le verrou de la journée et dans la même
  * transaction que la transition. */

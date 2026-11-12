@@ -35,7 +35,7 @@ test('espace v5 assemblé : serveur HTTP, soldes, avoir, journal et exports',asy
   const after=await loadCreditAdminSnapshot(request);assert.equal(after.balances[0].balance,'1000000');assert.equal(after.sales[0].cancelled,true);assert.equal(after.sales[0].creditNote.refund,50000);
   const history=await loadCreditAdminSaleHistory(request,after.sales[0]);assert.equal(history.cancelled,true);assert.equal(history.versions[0].sale.total,119000);assert.equal(history.creditNote.refund,50000);
   await assert.rejects(loadCreditAdminSaleHistory(request,before.sales[0]),/actualisez/);
-  const journal=await loadCreditAdminJournal(request,rep.id,day);assert.equal(journal.creditEvents.length,1);assert.equal(journal.creditNoteTotal,119000);assert.equal(journal.creditRefundTotal,50000);
+  const journal=await loadCreditAdminJournal(request,rep.id,day);assert.equal(journal.creditEvents.length,1);assert.equal(journal.creditNoteTotal,119000);assert.equal(journal.creditRefundTotal,0);assert.equal(journal.creditRefundUnassignedTotal,50000);
   const invoice={id:randomUUID(),clientId,clientName:'Client fictif',journalDate:day,createdAt:now,sector:'',amount:600000};
   assert.equal((await postMobile('journal',{operationId:randomUUID(),version:1,invoice,receipts:[]})).status,201);
   const receipt={id:randomUUID(),preInvoiceId:invoice.id,clientId,journalDate:day,createdAt:now,prePaid:250000,oldDebtPaid:400000,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1000000};
@@ -46,7 +46,7 @@ test('espace v5 assemblé : serveur HTTP, soldes, avoir, journal et exports',asy
   assert.equal((await request('identified-tour-actions/credit-notes/reviewed/preinvoices',{method:'POST',headers:header,body:JSON.stringify({command:preCommand,review:preReview})})).status,'received');
   assert.equal((await loadCreditAdminSnapshot(request)).balances[0].balance,'350000');
   const both=await loadCreditAdminJournal(request,rep.id,day);assert.equal(both.creditEvents.length,2);assert.equal(both.creditNoteTotal,719000);assert.equal(both.creditRetainedTotal,250000);assert.equal(both.rows[0].oldDebtPaid,400000);assert.equal(both.rows[0].preInvoiceCancelled,true);
-  const csv=await exportCreditAdminJournal(request,rep.id,day,'csv',()=>new Date('2026-11-09T12:00:00.000Z'));assert.match(csv.content,/119,000/);assert.match(csv.content,/50,000/);assert.match(csv.content,/Avoirs créés ce jour/);
+  const csv=await exportCreditAdminJournal(request,rep.id,day,'csv',()=>new Date('2026-11-09T12:00:00.000Z'));assert.match(csv.content,/119,000/);assert.match(csv.content,/50,000/);assert.match(csv.content,/Avoirs des factures du commercial/);
   assert.match(csv.content,/600,000/);assert.match(csv.content,/400,000/);assert.match(csv.content,/250,000/);
   const pdf=await exportCreditAdminJournal(request,rep.id,day,'pdf',()=>new Date('2026-11-09T12:00:00.000Z'));assert.match(pdf.content,/système principal/);assert.match(pdf.name,/\.html$/);
   assert.ok(calls.every(x=>x.options.headers?.['X-SLS-Reference-Version']==='5'));assert.ok(!calls.some(x=>x.path.startsWith('demo-')));
