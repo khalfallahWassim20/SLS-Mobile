@@ -1,13 +1,14 @@
 import type {PoolClient} from 'pg';
 import {JournalConflict} from './journal-store.js';
 
-/** Les ventes sont actuellement projetées à leur dernière version dans la
- * journée du créateur. Un remboursement ultérieur ne peut donc pas être
- * interprété comme un mouvement de caisse de cette journée ou de son auteur.
- * Un remboursement du créateur le jour même est déjà inclus dans le paiement
- * net de la vente : ne pas le retrancher une seconde fois. Les autres cas
- * restent bloqués plutôt que de publier des totaux trompeurs.
- * À appeler dans le même instantané que la lecture du journal. */
+/** Barrière de clôture provisoire pour les remboursements entre jours ou
+ * commerciaux. Le journal serveur et le journal mobile présentent désormais
+ * les paiements initiaux et les sorties séparément, mais leur concordance n'est
+ * pas encore attestée au moment de la clôture (plusieurs téléphones peuvent
+ * partager une identité et les avoirs distants suivent encore le propriétaire).
+ * Ne pas déduire de cette garde que les journaux actuels utilisent les anciens
+ * paiements nets. À appeler sous le verrou de la journée et dans la même
+ * transaction que la transition. */
 export async function assertSaleRefundJournalSafe(db:PoolClient,commercialId:string,day:string):Promise<void> {
  const result=await db.query(`SELECT 1 FROM identified_sale_events revision
   JOIN identified_sale_events origin ON origin.sale_id=revision.sale_id AND origin.version=1

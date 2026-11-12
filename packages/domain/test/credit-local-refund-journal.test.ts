@@ -25,6 +25,13 @@ test('flux mobile v5 : paiement initial, remboursement sur deux jours et origine
   const later={...report,day:'2026-11-09',rows:[],saleRefunds:next.refunds,initialSalePayments:[]};
   assert.equal(describeCreditJournalPrototype(later).totals.collectedAfterLocalRefunds,-38100);assert.match(journalCsv(later),/-38,100/);assert.match(journalHtml(later),/&lt;Client&gt;/);
   assert.throws(()=>journalCsv({...later,saleRefunds:[next.refunds[0],next.refunds[0]]}),/invalide/);
+  // Une date partagée entre plusieurs marqueurs ne prouve pas quelle opération
+  // correspond à la révision : ne jamais attribuer une sortie par supposition.
+  db.exec('SAVEPOINT ambiguous');db.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(randomUUID(),'sale',saleId,identity.commercialId,at);
+  await assert.rejects(readLocalSaleCashLedger(tx,identity,[sale],'2026-11-09'),/ambiguë/);db.exec('ROLLBACK TO ambiguous; RELEASE ambiguous');
+  // Une date illisible ne doit pas faire disparaître un remboursement du jour.
+  db.exec('SAVEPOINT bad_date');db.prepare('UPDATE sale_revisions SET created_at=?').run('date invalide');
+  await assert.rejects(readLocalSaleCashLedger(tx,identity,[sale],'2026-11-09'),/illisible/);db.exec('ROLLBACK TO bad_date; RELEASE bad_date');
   // La même version importée est visible dans l'historique mais ne constitue
   // pas une sortie sur le téléphone créateur.
   const {id:_id,...source}=sale,remoteOp=randomUUID(),remoteActor=randomUUID(),event={operationId:remoteOp,saleId,version:2,recordedAt:at,sale:source,refund:38100};
