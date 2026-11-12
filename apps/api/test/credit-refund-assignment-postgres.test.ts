@@ -28,6 +28,9 @@ test('PostgreSQL : attribution concurrente, reprise et protection de caisse',asy
    const left={requestId:randomUUID(),noteOperationId:command.operationId,refund:50000,commercialId:a.id},right={...left,requestId:randomUUID(),commercialId:b.id};
    const outcomes=await Promise.allSettled([assignAdminCreditRefund(pool,left,'admin'),assignAdminCreditRefund(pool,right,'admin')]);assert.equal(outcomes.filter(r=>r.status==='fulfilled').length,1);
    const winner=outcomes[0].status==='fulfilled'?left:right,loser=winner===left?right:left;assert.equal((await assignAdminCreditRefund(pool,winner,'admin')).status,'duplicate');await assert.rejects(assignAdminCreditRefund(pool,loser,'admin'),/déjà/);
+   // Même lorsque la sortie a été attribuée à une autre caisse, le propriétaire
+   // ne peut pas clôturer tant que son téléphone ne projette pas cet avoir.
+   await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day,expectedVersion:0,adminRefundProof:[],cashProof:await matchingCashProof(pool,owner.id,day)},{kind:'commercial',secret,token:so.token},true,true),/rapprochement du facturé/);
    const report=await readPrototypeCreditJournal(pool,winner.commercialId,day);assert.equal(report.creditRefundTotal,50000);assert.equal(report.creditCashEvents[0].cashAssignment?.requestId,winner.requestId);
    const token=winner.commercialId===a.id?sa.token:sb.token;await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day,expectedVersion:0},{kind:'commercial',secret,token},true,true),/rapprochement du téléphone/);
    const principal={kind:'commercial' as const,secret,token};

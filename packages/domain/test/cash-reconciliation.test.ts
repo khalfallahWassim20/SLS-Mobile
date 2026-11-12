@@ -16,3 +16,20 @@ test('comparaison journal : identité, doublons, contenu et non seulement les to
  assert.throws(()=>compareCashReconciliation(local,{...local,events:[{...receipt,prePaid:-1}]},commercialId,day),/invalide/);
  assert.throws(()=>compareCashReconciliation(local,local,commercialId,'2026-02-30'),/Date/);
 });
+
+test('preuve de clôture : ordre stable et changements détectés même à totaux égaux',async()=>{
+ const {cashClosureCanonical}=await import('../src/cash-reconciliation.js');
+ const commercialId=randomUUID(),day='2026-11-08',clientId=randomUUID(),invoiceId=randomUUID();
+ const invoice={kind:'invoice' as const,operationId:randomUUID(),clientId,recordedAt:'2026-11-08T08:00:00.000Z',invoiceId,amount:600000};
+ const receipt={kind:'receipt' as const,operationId:randomUUID(),clientId,recordedAt:'2026-11-08T09:00:00.000Z',invoiceId,receiptId:randomUUID(),prePaid:250000,oldDebtPaid:400000,creditFull:false,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+ const sales={version:5,commercialId,day,initialEvents:[],refundEvents:[],saleStates:[]};
+ const journal={version:5,commercialId,day,events:[invoice,receipt]};
+ const canonical=cashClosureCanonical(sales,journal,commercialId,day);
+ assert.equal(canonical,cashClosureCanonical(sales,{...journal,events:[{...receipt,recordedAt:'2026-11-08T09:00:00Z'},invoice]},commercialId,day));
+ assert.notEqual(canonical,cashClosureCanonical(sales,{...journal,events:[invoice,{...receipt,prePaid:300000,oldDebtPaid:350000}]},commercialId,day));
+ assert.throws(()=>cashClosureCanonical(sales,{...journal,events:[invoice,invoice]},commercialId,day),/dupliqué/);
+ assert.throws(()=>cashClosureCanonical(sales,{...journal,events:[{...invoice,recordedAt:'2026-11-07T10:00:00.000Z'}]},commercialId,day),/journée|date/i);
+ // La journée suit Tunis (UTC+1), pas la date UTC.
+ assert.doesNotThrow(()=>cashClosureCanonical(sales,{...journal,events:[{...invoice,recordedAt:'2026-11-07T23:00:00.000Z'}]},commercialId,day));
+ assert.throws(()=>cashClosureCanonical(sales,{...journal,events:[{...invoice,recordedAt:'2026-11-08T23:00:00.000Z'}]},commercialId,day),/journée/);
+});

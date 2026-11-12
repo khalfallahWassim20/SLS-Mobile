@@ -50,6 +50,9 @@ export function cashClosureCanonical(sales:unknown,journal:unknown,commercialId:
  const saleStates=parsed.data.saleStates.map(s=>{if(statesSeen.has(s.saleId)||!saleIds.has(s.saleId))throw Error('État de vente incohérent.');statesSeen.add(s.saleId);return s;}).sort((a,b)=>a.saleId<b.saleId?-1:a.saleId>b.saleId?1:0);
  if(saleStates.length!==saleIds.size)throw Error('État de vente incomplet.');
  const journalEvents=validateCashReconciliation(journal,commercialId,day);
- for(const e of journalEvents)if(salesSeen.has(e.operationId))throw Error('Identifiant de mouvement dupliqué.');
+ for(const e of journalEvents){
+  if(tunis(e.recordedAt)!==day)throw Error('Événement de journal hors de la journée de clôture.');
+  if(salesSeen.has(e.operationId))throw Error('Identifiant de mouvement dupliqué.');
+ }
  return canonicalJson({protocol:'sls-cash-close-v1',commercialId,day,initial,refunds,saleStates,journalEvents:order(journalEvents)});
 }
