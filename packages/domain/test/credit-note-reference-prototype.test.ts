@@ -86,8 +86,8 @@ test('projection intégrée isolée : soldes, crédits, factures et refus en cas
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');
    await assert.rejects(savePrototypeCreditReference(tx,identity,{...identity,serverOrigin:'https://other.test'},result),/Session/);
    const previousSale={...result.saleStates[0],version:1,total:'119000',paid:'50000',cancelled:false,creditNote:null};
-   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleStates:[previousSale],saleProofs:[]}),/périmée/);
-   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalStates:[{...result.journalStates[0],creditNote:null}]}),/périmée/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleStates:[previousSale],saleProofs:[]}),/périmée|Propriétaire/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalStates:[{...result.journalStates[0],creditNote:null}]}),/périmée|Propriétaire/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,saleProofs:[{...result.saleProofs[0],hash:'0'.repeat(64)}]}),/Preuve/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...result,journalProofs:result.journalProofs.map(p=>p.id===invoiceId?{...p,hash:'0'.repeat(64)}:p)}),/Preuve de préétablie/);
    assert.equal((await readPrototypeCreditReferenceCache(tx,identity))?.clients[0].serverBalance,'350000');

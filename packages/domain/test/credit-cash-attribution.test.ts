@@ -53,6 +53,13 @@ test('avoirs vente et préétablie : sorties chez l’auteur, dette ancienne con
   const {readPrototypeCreditReference}=await import('../../../apps/api/src/credit-note-reference-prototype.js');
   const {validatePrototypeCreditReference}=await import('../../../apps/mobile/credit-note-reference-prototype.js');
   const reference=await readPrototypeCreditReference(pool),validated=validatePrototypeCreditReference(reference);
+  assert.equal(validated.creditOwners?.length,4);
+  assert.equal(validated.creditOwners?.find(x=>x.operationId===command.operationId)?.ownerId,a.id);
+  assert.equal(validated.creditOwners?.find(x=>x.operationId===preCommand.operationId)?.ownerId,a.id);
+  assert.throws(()=>validatePrototypeCreditReference({...reference,creditOwners:reference.creditOwners.slice(1)}),/incomplets/);
+  assert.throws(()=>validatePrototypeCreditReference({...reference,creditOwners:[...reference.creditOwners,reference.creditOwners[0]]}),/incohérent/);
+  assert.throws(()=>validatePrototypeCreditReference({...reference,creditOwners:reference.creditOwners.map((x,i)=>i?x:{...x,ownerId:'invalid'})}),/incohérent/);
+  assert.equal(validatePrototypeCreditReference({...reference,creditOwners:undefined}).creditOwners,null);
   assert.deepEqual(new Map(validated.cashAssignments?.map(x=>[x.noteOperationId,[x.commercialId,x.refund]])),new Map([[command.operationId,[b.id,50000]],[preCommand.operationId,[null,250000]]]));
   assert.throws(()=>validatePrototypeCreditReference({...reference,cashAssignments:[{...reference.cashAssignments[0],refund:1}]}),/Attribution/);
   assert.throws(()=>validatePrototypeCreditReference({...reference,cashAssignments:[reference.cashAssignments[0],reference.cashAssignments[0]]}),/Attribution/);
@@ -64,6 +71,9 @@ test('avoirs vente et préétablie : sorties chez l’auteur, dette ancienne con
    cache.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(b.id,identity.serverOrigin);
    const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>cache.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{cache.prepare(sql).run(...args)}};
    await savePrototypeCreditReference(tx,identity,identity,reference);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...reference,creditOwners:null}),/Propriétaires/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...reference,creditOwners:reference.creditOwners.map((x,i)=>i?x:{...x,ownerId:b.id})}),/Propriétaire/);
+
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...reference,cashAssignments:[]}),/Attribution/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...reference,cashAssignments:[{...reference.cashAssignments[0],commercialId:null}]}),/Attribution/);
    await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...reference,cashAssignments:null}),/Attributions/);

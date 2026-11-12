@@ -128,7 +128,17 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    if(!event||event.actor?.role!=='admin'||!Number.isSafeInteger(event.refund)||event.refund<=0||r.refund!==String(event.refund)||!z.string().uuid().safeParse(r.requestId).success||(r.commercialId!==null&&!z.string().uuid().safeParse(r.commercialId).success)||typeof r.actorId!=='string'||!r.actorId.trim()||r.actorId.length>200||!Number.isFinite(date.getTime())||assignmentIds.has(r.noteOperationId))throw new RangeError('Attribution de remboursement incohérente.');
    assignmentIds.add(r.noteOperationId);return {noteOperationId:r.noteOperationId as string,requestId:r.requestId as string,commercialId:r.commercialId as string|null,refund:event.refund as number,actorId:r.actorId as string,assignedAt:date.toISOString()};
   });
-  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,eligibleSaleProofs,eligibleJournalIds,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs,cashAssignments};
+  // Propriétaire de la facture d’origine, distinct de l’auteur de l’avoir.
+  // Un propriétaire historique absent reste inconnu et ne doit pas servir à
+  // débloquer une clôture. La liste couvre exactement les avoirs vérifiés.
+  const ownerRows=await db.query(`SELECT n.operation_id,first.commercial_id AS owner_id
+   FROM credit_note_prototype_events n LEFT JOIN LATERAL
+   (SELECT commercial_id FROM identified_sale_events WHERE sale_id=n.invoice_id ORDER BY version LIMIT 1) first ON true
+   UNION ALL SELECT n.operation_id,i.commercial_id AS owner_id
+   FROM pre_invoice_credit_prototype_events n LEFT JOIN identified_journal_invoices i ON i.id=n.invoice_id`);
+  if(ownerRows.rows.length!==noteIds.size||new Set(ownerRows.rows.map(r=>r.operation_id)).size!==noteIds.size||ownerRows.rows.some(r=>!noteIds.has(r.operation_id)))throw new RangeError('Propriétaires des avoirs incomplets.');
+  const creditOwners=ownerRows.rows.map(r=>({operationId:r.operation_id,ownerId:r.owner_id as string|null})).sort((a,b)=>a.operationId.localeCompare(b.operationId));
+  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,eligibleSaleProofs,eligibleJournalIds,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs,cashAssignments,creditOwners};
 }
 /** En v5 les inactifs sont conservés pour le rapprochement, jamais pour la
  * sélection de nouveaux clients. La différence active/inactive est explicite. */

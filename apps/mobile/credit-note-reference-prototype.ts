@@ -76,9 +76,22 @@ export function validatePrototypeCreditReference(value:unknown) {
    ids.add(a.noteOperationId);requests.add(a.requestId);return {noteOperationId:a.noteOperationId,requestId:a.requestId,commercialId:a.commercialId as string|null,refund:a.refund as number,actorId:a.actorId,assignedAt:a.assignedAt};
   });
  }
+ // L'absence du champ correspond à un ancien cache : elle ne prouve aucun
+ // propriétaire. La liste récente doit couvrir chaque avoir exactement une fois.
+ let creditOwners:null|{operationId:string;ownerId:string|null}[]=null;
+ if(raw.creditOwners!==undefined&&raw.creditOwners!==null){
+  if(!Array.isArray(raw.creditOwners))throw Error('Propriétaires des avoirs invalides.');
+  const ownersSeen=new Set<string>();
+  creditOwners=raw.creditOwners.map(value=>{
+   const item=obj(value);
+   if(!item||Object.keys(item).sort().join(',')!=='operationId,ownerId'||!uuid(item.operationId)||!seen.has(item.operationId)||(item.ownerId!==null&&!uuid(item.ownerId))||ownersSeen.has(item.operationId))throw Error('Propriétaire d’avoir incohérent.');
+   ownersSeen.add(item.operationId);return {operationId:item.operationId,ownerId:item.ownerId as string|null};
+  });
+  if(ownersSeen.size!==seen.size)throw Error('Propriétaires des avoirs incomplets.');
+ }
  // Vérifie aussi les identifiants de reçus et d'avoirs entre préétablies.
  reconcilePreInvoiceCredits(0,[],journals);
- return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,eligibleSaleProofs,eligibleJournalIds,journalStates:journals,cashAssignments};
+ return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,eligibleSaleProofs,eligibleJournalIds,journalStates:journals,cashAssignments,creditOwners};
 }
 
 /** Seule cette liste est destinée au choix d'un client pour une nouvelle
