@@ -1,3 +1,4 @@
+import {readLocalSaleCashComparison,compareSaleCashEvents} from '../../../apps/mobile/credit-sale-cash-compare-prototype.js';
 import {readPendingCreditAbandonPrototype,resolveCreditAbandonPrototype} from '../../../apps/mobile/credit-note-abandon-prototype.js';
 import {readAbandonedCreditNotesPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
@@ -520,6 +521,22 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    const actorJournal=await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,otherDay,'Deuxième',digest));
    assert.equal(actorJournal.remoteSaleRefunds?.length,1);assert.equal(actorJournal.remoteSaleRefunds?.[0].refund,2400);
    assert.equal(describeCreditJournalPrototype(actorJournal).totals.collectedAfterLocalRefunds,-2400);
+   const cashUrl=`${origin}/v5/day/${otherDay}/sale-cash`;
+   assert.equal((await fetch(cashUrl)).status,401);
+   assert.equal((await fetch(cashUrl,{headers:{Authorization:`Bearer ${b.token}`}})).status,409);
+   const serverCashResponse=await fetch(cashUrl,{headers:headers(b.token)});assert.equal(serverCashResponse.status,200);assert.equal(serverCashResponse.headers.get('cache-control'),'no-store');
+   const serverCash=await serverCashResponse.json(),localCash=await isolatedTransaction(()=>readLocalSaleCashComparison(isolatedTx,identity,otherDay,digest));
+   assert.deepEqual(compareSaleCashEvents(localCash,serverCash,identity,otherDay),{matches:true,onlyLocal:0,onlyServer:0,changed:0});
+   assert.equal(localCash.refundEvents[0].operationId,remoteEvent.operationId);
+   const cashTransport=createCreditTransportPrototype(checkSession,identity,{now:()=>checkNow,request:(url,opts)=>fetch(url.replace(`${identity.serverOrigin}/api/mobile/identified/`,`${origin}/v5/`),opts),cacheReference:async()=>{},cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),saleCash:()=>isolatedTransaction(()=>readLocalSaleCashComparison(isolatedTx,identity,otherDay,digest))});
+   assert.equal((await cashTransport.compareSaleCash(otherDay)).matches,true);
+   // Une vente sur un deuxième téléphone du même commercial apparaît côté
+   // serveur mais ne peut pas être considérée comme une caisse locale.
+   const secondPhoneId=randomUUID(),secondPhoneOp=randomUUID(),secondPhoneSale={...offlineSale,syncSaleId:secondPhoneId};
+   assert.equal((await post(b.token,'sales',{operationId:secondPhoneOp,saleId:secondPhoneId,version:1,recordedAt:otherAt,sale:secondPhoneSale,refund:0})).status,201);
+   const otherCash=await (await fetch(cashUrl,{headers:headers(b.token)})).json();
+   assert.deepEqual(compareSaleCashEvents(localCash,otherCash,identity,otherDay),{matches:false,onlyLocal:0,onlyServer:1,changed:0});
+   assert.equal((await cashTransport.compareSaleCash(otherDay)).onlyServer,1);
    assert.match(journalCsv(actorJournal),/REMBOURSEMENTS SUR VENTES D’AUTRES APPAREILS/);assert.match(journalCsv(actorJournal),/2,400/);
    assert.deepEqual((await isolatedTransaction(()=>readCreditJournalExportPrototype(isolatedTx,identity,'2026-11-08','Deuxième',digest))).remoteSaleRefunds,[]);
    // Une proposition de remboursement abandonnée est exclue ; un accusé

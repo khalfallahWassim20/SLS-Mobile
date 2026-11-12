@@ -8,6 +8,7 @@ import type {comparePendingRemoteEditPrototype} from './credit-remote-sale-confi
 import type {IdentifiedEntry} from './identified-upload';
 import type {DeviceIdentity} from './identified-device';
 import type {Note} from './credit-note-offline-prototype';
+import {compareSaleCashEvents} from './credit-sale-cash-compare-prototype';
 import {sendPreparedTourClose,type Attempt} from './tour-close-queue';
 
 type Response={ok:boolean;status:number;json:()=>Promise<unknown>};
@@ -28,6 +29,7 @@ type Dependencies={
   read:(identity:DeviceIdentity,guard:()=>void)=>Promise<{entry:IdentifiedEntry;event:unknown}>;
   resolve:(identity:DeviceIdentity,verified:DeviceIdentity,entry:IdentifiedEntry,response:unknown,reference:unknown,guard:()=>void)=>Promise<void>;
  };
+ saleCash?: (identity:DeviceIdentity,day:string,guard:()=>void)=>Promise<unknown>;
  tour?:{
   getAttempt:(identity:DeviceIdentity,day:string,guard:()=>void)=>Promise<Attempt|null>;
   prepare:(identity:DeviceIdentity,day:string,version:number,guard:()=>void)=>Promise<Attempt>;
@@ -120,6 +122,10 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
    const reference=await fetchReference();check();await io.remoteAbandon.resolve(identity,identity,candidate.entry,body,reference,check);check();return 'abandoned' as const;
   }),
   synchronize:()=>exclusive(async()=>{check();const result=await io.synchronize(identity,identity,transport,check);check();return result;}),
+  compareSaleCash:(day:string)=>exclusive(async()=>{
+   if(!validDay(day)||!io.saleCash)throw Error('Comparaison de caisse indisponible.');
+   const server=await read(`day/${day}/sale-cash`);check();const local=await io.saleCash(identity,day,check);check();return compareSaleCashEvents(local,server,identity,day);
+  }),
   refreshDay:(day:string)=>exclusive(()=>readDay(day)),
   closeDay:(day:string)=>exclusive(async()=>{
    if(!validDay(day))throw Error('Date de tournée invalide.');check();

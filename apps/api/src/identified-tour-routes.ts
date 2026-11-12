@@ -17,9 +17,11 @@ import {IdentifiedOverlap} from './identified-overlap.js';
 import {CreditProtocolUpgradeRequired} from './credit-note-active-guards.js';
 import {readPrototypeCreditReference} from './credit-note-reference-prototype.js';
 import {readPrototypeCreditJournal} from './credit-note-journal-prototype.js';
+import {readSaleCashPreview} from './sale-cash-preview-prototype.js';
+import {journalDateSchema} from './journal-protocol.js';
 import {readPrototypeCreditSources} from './credit-note-sources-prototype.js';
 import {prototypeCommercialCreditRoutes,prototypeAdminCreditRoutes} from './credit-note-routes-prototype.js';
-import {IdentifiedSyncDisabled,assertIdentifiedMode,readSyncMode} from './tour-sync-mode.js';
+import {IdentifiedSyncDisabled,assertIdentifiedMode,readSyncMode,lockSyncMode} from './tour-sync-mode.js';
 
 const input=z.object({requestId:z.string().uuid(),day:z.string(),expectedVersion:z.number().int().min(0)}).strict();
 const bearer=(value:string|undefined)=>value?.match(/^Bearer (.+)$/)?.[1]??'';
@@ -62,6 +64,17 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
   const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
   if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
   const data=await readPrototypeCreditSources(pool,req.params.clientId);if(!data){res.status(404).json({error:'Client introuvable.'});return;}res.json(data);
+ }catch(e){errorHandler(e,res,next);}});
+ // Comparaison informative des seules ventes ; ne valide ni ne clôture la caisse.
+ if(options.allowCreditProtocol===true)r.get('/day/:day/sale-cash',async(req,res,next)=>{try{
+  const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
+  if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
+  const day=journalDateSchema.parse(req.params.day),db=await pool.connect();
+  try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
+   const cash=await readSaleCashPreview(db,actor.id,day);await db.query('COMMIT');
+   if(!cash.available){res.status(409).json({error:cash.reason});return;}
+   res.json({version:5,commercialId:actor.id,day,initialEvents:cash.initialEvents,refundEvents:cash.refundEvents.map(({operationId,saleId,clientId,recordedAt,refund})=>({operationId,saleId,clientId,recordedAt,refund}))});
+  }catch(e){await db.query('ROLLBACK');throw e;}finally{db.release();}
  }catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day/details',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}const {closureEvents:_adminHistory,...details}=supportsCredit(req)?await readPrototypeCreditJournal(pool,actor.id,req.params.day):await readIdentifiedJournalDay(pool,actor.id,req.params.day,enforceMode);res.json(details);}catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}if(enforceMode)assertIdentifiedMode(await readSyncMode(pool));res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});

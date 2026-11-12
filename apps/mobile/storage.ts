@@ -1,3 +1,4 @@
+import {readLocalSaleCashComparison} from './credit-sale-cash-compare-prototype';
 import {readPendingCreditAbandonPrototype,resolveCreditAbandonPrototype} from './credit-note-abandon-prototype';
 import {reconcileLocalSalePrototype} from './local-sale-reconcile-prototype';
 import {prepareVerifiedPrototypeClose} from './credit-note-verified-close-prototype';
@@ -448,6 +449,7 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
   cacheReference:cacheCreditReferencePrototype,cacheSources:cacheCreditSourcesPrototype,
   bindReference:async(id,verified,value,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(tx=>bindAndCacheCreditReferencePrototype(tx,id,verified,value,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data),guard));},
   synchronize:synchronizeCreditPrototype,
+  saleCash:async(id,day,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof readLocalSaleCashComparison>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);result=await readLocalSaleCashComparison(tx,id,day,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   localSaleReconcile:async(id,verified,localId,saleId,response,fingerprint,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof reconcileLocalSalePrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await reconcileLocalSalePrototype(tx,id,verified,localId,saleId,response,fingerprint,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   localSaleInspect:async(id,verified,localId,saleId,response,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof inspectLocalSaleHistoryPrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await inspectLocalSaleHistoryPrototype(tx,id,verified,localId,saleId,response,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   remoteRecover:async(id,verified,operationId,response,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof recoverReceivedRemoteEditPrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await recoverReceivedRemoteEditPrototype(tx,id,verified,operationId,response,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
