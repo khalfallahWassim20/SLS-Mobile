@@ -6,6 +6,22 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       credit_limit bigint NOT NULL DEFAULT 0 CHECK (credit_limit >= 0), active boolean NOT NULL DEFAULT true,
       created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
     );
+    -- Le statut est versionné même si une modification provient d'un autre
+    -- point d'entrée SQL : une réponse réseau ancienne ne doit pas réactiver
+    -- silencieusement un client désactivé sur un téléphone.
+    ALTER TABLE clients ADD COLUMN IF NOT EXISTS status_revision bigint NOT NULL DEFAULT 1 CHECK (status_revision > 0);
+    CREATE OR REPLACE FUNCTION sls_client_status_revision() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN
+      IF NEW.active IS DISTINCT FROM OLD.active THEN
+        NEW.status_revision := OLD.status_revision + 1;
+      ELSE
+        NEW.status_revision := OLD.status_revision;
+      END IF;
+      RETURN NEW;
+    END $$;
+    DROP TRIGGER IF EXISTS sls_client_status_revision_trigger ON clients;
+    CREATE TRIGGER sls_client_status_revision_trigger BEFORE UPDATE ON clients
+      FOR EACH ROW EXECUTE FUNCTION sls_client_status_revision();
     CREATE TABLE IF NOT EXISTS commercials (
       id uuid PRIMARY KEY, name text NOT NULL CHECK (length(trim(name)) BETWEEN 1 AND 200),
       active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(),
@@ -40,6 +56,9 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       expected_version integer NOT NULL CHECK(expected_version>=0), result_version integer NOT NULL CHECK(result_version>0),
       occurred_at timestamptz NOT NULL
     );
+    ALTER TABLE tour_closure_requests ADD COLUMN IF NOT EXISTS admin_refund_proof jsonb;
+    ALTER TABLE tour_closure_requests ADD COLUMN IF NOT EXISTS cash_proof text;
+    CREATE TABLE IF NOT EXISTS tour_close_abandoned_requests (request_id uuid PRIMARY KEY, commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL, expected_version integer NOT NULL CHECK(expected_version>=0), abandoned_at timestamptz NOT NULL DEFAULT now());
     -- Préparation d'une bascule exclusive ; aucun endpoint ne permet encore de changer ce mode.
     CREATE TABLE IF NOT EXISTS tour_sync_mode (
       id integer PRIMARY KEY CHECK(id=1), mode text NOT NULL CHECK(mode IN ('legacy','identified'))
@@ -122,10 +141,48 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       journal_date date NOT NULL, payload jsonb NOT NULL, payload_hash text NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(sale_id,version)
     );
+    -- Réservations d'UUID pour les révisions distantes explicitement abandonnées.
+    CREATE TABLE IF NOT EXISTS remote_sale_abandon_prototype (
+      operation_id uuid PRIMARY KEY, sale_id uuid NOT NULL, version integer NOT NULL CHECK(version>1),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), payload jsonb NOT NULL, payload_hash text NOT NULL,
+      abandoned_at timestamptz NOT NULL DEFAULT now()
+    );
     ALTER TABLE identified_sale_events ADD COLUMN IF NOT EXISTS event_date date;
     CREATE INDEX IF NOT EXISTS identified_sale_events_latest_idx ON identified_sale_events(sale_id,version DESC);
     CREATE TABLE IF NOT EXISTS identified_settlements (
       operation_id uuid PRIMARY KEY, client_id uuid NOT NULL REFERENCES clients(id),
       commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
       payload jsonb NOT NULL, payload_hash text NOT NULL, received_at timestamptz NOT NULL DEFAULT now()
+    );
+    -- Réservées aux tests : routes et soldes d'avoir non activés.
+    CREATE TABLE IF NOT EXISTS credit_note_prototype_operation_ids (operation_id uuid PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS credit_refund_assignment_prototype (
+      note_operation_id uuid PRIMARY KEY REFERENCES credit_note_prototype_operation_ids(operation_id),
+      request_id uuid NOT NULL UNIQUE, commercial_id uuid REFERENCES commercials(id),
+      refund bigint NOT NULL CHECK(refund>0), actor_id text NOT NULL CHECK(length(trim(actor_id)) BETWEEN 1 AND 200),
+      assigned_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS credit_note_abandon_prototype (
+      operation_id uuid PRIMARY KEY REFERENCES credit_note_prototype_operation_ids(operation_id),
+      kind text NOT NULL CHECK(kind IN ('sale','preinvoice')), invoice_id uuid NOT NULL,
+      commercial_id uuid NOT NULL REFERENCES commercials(id), command jsonb NOT NULL,
+      abandoned_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS credit_note_prototype_events (
+      operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE, event jsonb NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS credit_note_prototype_movements (
+      operation_id uuid NOT NULL REFERENCES credit_note_prototype_events(operation_id),
+      kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')), balance_delta bigint NOT NULL,
+      PRIMARY KEY(operation_id,kind)
+    );
+    CREATE TABLE IF NOT EXISTS pre_invoice_credit_prototype_events (
+      operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE, event jsonb NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS pre_invoice_credit_prototype_movements (
+      operation_id uuid NOT NULL REFERENCES pre_invoice_credit_prototype_events(operation_id),
+      kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')), balance_delta bigint NOT NULL,
+      PRIMARY KEY(operation_id,kind)
     );`;

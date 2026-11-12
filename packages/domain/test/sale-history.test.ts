@@ -10,7 +10,7 @@ import {saleHistoryRoutes} from '../../../apps/api/src/sale-history.js';
 test('historique admin : authentification, anciennes et nouvelles versions, remboursement',async()=>{
  const db=new PGlite();
  try {
-  await db.exec(schemaSql);const pool={query:(sql:string,params?:unknown[])=>db.query(sql,params)} as unknown as Pool;
+  await db.exec(schemaSql);const conn={query:(sql:string,params?:unknown[])=>db.query(sql,params),release:()=>{}};const pool={query:conn.query,connect:async()=>conn} as unknown as Pool;
   const client=randomUUID(),commercial=randomUUID(),sale=randomUUID();
   await db.query('INSERT INTO clients(id,name) VALUES($1,$2)',[client,'Client']);
   await db.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[commercial,'Commercial']);

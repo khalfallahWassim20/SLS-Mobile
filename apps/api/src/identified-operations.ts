@@ -8,14 +8,15 @@ import {lockTourClosure} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
+import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 
 const uuid=z.string().uuid(), money=z.number().int().safe().nonnegative();
-const saleSchema=z.object({createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().min(1).max(200),syncSaleId:uuid,syncVersion:z.number().int().min(1).max(1000000),
+export const saleSchema=z.object({createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().min(1).max(200),syncSaleId:uuid,syncVersion:z.number().int().min(1).max(1000000),
  lines:z.array(z.object({name:z.string().min(1).max(200),code:z.string().min(1).max(100),quantity:z.number().int().min(1).max(1000000),unitPrice:money,discount:z.number().int().min(0).max(10000),vat:z.number().int().min(0).max(10000)}).strict()).min(1).max(200),
  total:money,paid:money,remaining:money,paymentMode:z.enum(['Espèces','Chèque','Virement','Crédit']),chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100)}).strict();
-const saleEventSchema=z.object({operationId:uuid,saleId:uuid,version:z.number().int().min(1).max(1000000),recordedAt:z.string().datetime(),sale:saleSchema,refund:money}).strict();
-const settlementSchema=z.object({operationId:uuid,settlement:z.object({syncOperationId:uuid,createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().trim().min(1).max(200),amount:money.positive(),mode:z.enum(['Espèces','Chèque','Virement']),chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100)}).strict()}).strict();
-type Session={token:string;secret:string;enforceMode?:boolean};
+export const saleEventSchema=z.object({operationId:uuid,saleId:uuid,version:z.number().int().min(1).max(1000000),recordedAt:z.string().datetime(),sale:saleSchema,refund:money}).strict();
+export const settlementSchema=z.object({operationId:uuid,settlement:z.object({syncOperationId:uuid,createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().trim().min(1).max(200),amount:money.positive(),mode:z.enum(['Espèces','Chèque','Virement']),chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100)}).strict()}).strict();
+type Session={token:string;secret:string;enforceMode?:boolean;creditAware?:boolean};
 function tunisDay(iso:string):string {
  const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(iso));
  const get=(name:string)=>parts.find(p=>p.type===name)?.value;
@@ -30,7 +31,7 @@ async function clientExists(db:PoolClient,id:string) {
  if (!(await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL',[id])).rows.length) throw new JournalConflict('Client introuvable.');
 }
 /** L'identité provient exclusivement de la session. Les anciennes opérations ne sont jamais réattribuées. */
-export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Session):Promise<'received'|'duplicate'> {
+export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Session,testGuard?:(db:PoolClient,event:{operationId:string;saleId:string;version:number})=>Promise<void>):Promise<'received'|'duplicate'> {
  const event=saleEventSchema.parse(input),sale=event.sale;
  if(event.saleId!==sale.syncSaleId || event.version!==sale.syncVersion) throw new RangeError('Identifiants de vente incohérents.');
  const recordedMs=Date.parse(event.recordedAt),createdMs=Date.parse(sale.createdAt);
@@ -44,6 +45,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   const actor=await verifyCommercialSession(db,session.secret,session.token,true);
   if(!actor) throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
   await lockIdentifiedOperation(db,event.operationId);
+  await assertCreditOperationAvailable(db,event.operationId);
   await assertOperationUnambiguous(db,event.operationId,'sale');
   // La vente est verrouillée avant la lecture de son propriétaire initial.
   // Un verrou sur l'opération et un sur la vente assurent l'idempotence et l'ordre des versions.
@@ -54,6 +56,10 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    await db.query('COMMIT');return 'duplicate';
   }
+  if(session.enforceMode&&!session.creditAware)await assertOldCreditProtocolSafe(db);
+  await assertInvoiceNotCredited(db,'sale',event.saleId);
+  // Crochet uniquement pour les tests du registre d’avoir non exposé.
+  if(testGuard)await testGuard(db,event);
   const legacy=await db.query('SELECT version,payload,client_id FROM demo_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1',[event.saleId]);
   const last=await db.query('SELECT version,payload,commercial_id,journal_date::text AS journal_date FROM identified_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1',[event.saleId]);
   const first=await db.query('SELECT version,commercial_id,journal_date::text AS journal_date FROM identified_sale_events WHERE sale_id=$1 ORDER BY version ASC LIMIT 1',[event.saleId]);
@@ -86,6 +92,7 @@ export async function storeIdentifiedSettlement(pool:Pool,input:unknown,session:
   const actor=await verifyCommercialSession(db,session.secret,session.token,true);
   if(!actor) throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
   await lockIdentifiedOperation(db,event.operationId);
+  await assertCreditOperationAvailable(db,event.operationId);
   await assertOperationUnambiguous(db,event.operationId,'settlement');
   const closure=await lockTourClosure(db,actor.id,day);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['identified-settlement',event.operationId]);
@@ -94,6 +101,7 @@ export async function storeIdentifiedSettlement(pool:Pool,input:unknown,session:
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    await db.query('COMMIT');return 'duplicate';
   }
+  if(session.enforceMode&&!session.creditAware)await assertOldCreditProtocolSafe(db);
   assertOpen(closure);await clientExists(db,p.clientId);
   await db.query('INSERT INTO identified_settlements(operation_id,client_id,commercial_id,journal_date,payload,payload_hash) VALUES($1,$2,$3,$4::date,$5::jsonb,$6)',[event.operationId,p.clientId,actor.id,day,payload,hash]);
   await db.query('COMMIT');return 'received';

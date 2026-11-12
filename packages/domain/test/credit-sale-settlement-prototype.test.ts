@@ -1,0 +1,37 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {prepareCreditSale,prepareCreditSettlement,type CreditPayment,type CreditCartLine} from '../../../apps/mobile/credit-sale-settlement-prototype.js';
+import {saleSchema} from '../../../apps/api/src/identified-operations.js';
+const identity={commercialId:randomUUID(),serverOrigin:'https://sls.example.test'},id=randomUUID(),saleId=randomUUID(),time='2026-11-10T10:00:00.000Z';
+const client={id,name:'Client fictif',sector:'Tunis',active:true,limit:0,serverBalance:1000000,balance:950000,conflict:false,saleBlocked:false,blockReason:null,canSettle:true} as const;
+const context={identity,expectedBalance:950000};
+const article={id:randomUUID(),name:'Huile fictive',code:'ART-1',barcode:'',saleTtc:'119000',vatRate:1900,unitsPerCarton:12};
+const payment:CreditPayment={mode:'Espèces',paid:'50',chequeNumber:'',chequeBank:'',chequeDue:''};
+const cart:CreditCartLine[]=[{article,quantity:2,discount:1000}];
+test('vente v5 : prix TTC unitaire, TVA, remise et paiement partiel',()=>{
+ const sale=prepareCreditSale(client,context,cart,payment,time);
+ assert.equal(sale.lines[0].unitPrice,100000);assert.equal(sale.lines[0].quantity,2);assert.equal(sale.total,214200);assert.equal(sale.paid,50000);assert.equal(sale.remaining,164200);
+ assert.equal(saleSchema.safeParse({...sale,syncSaleId:saleId,syncVersion:1}).success,true);
+ const credit=prepareCreditSale(client,context,cart,{...payment,mode:'Crédit',paid:'sans objet'},time);assert.equal(credit.paid,0);assert.equal(credit.remaining,214200);
+ assert.throws(()=>prepareCreditSale(client,{...context,expectedBalance:949999},cart,payment,time),/contexte/);
+ assert.throws(()=>prepareCreditSale({...client,conflict:true},context,cart,payment,time),/contexte/);
+ assert.throws(()=>prepareCreditSale({...client,active:false},context,cart,payment,time),/bloquée/);
+ assert.throws(()=>prepareCreditSale({...client,limit:950000},context,cart,payment,time),/bloquée/);
+ assert.throws(()=>prepareCreditSale(client,context,[],payment,time),/articles/);
+ assert.throws(()=>prepareCreditSale(client,context,[cart[0],cart[0]],payment,time),/Article/);
+ assert.throws(()=>prepareCreditSale(client,context,[{...cart[0],quantity:1.5}],payment,time),/quantité/);
+ assert.throws(()=>prepareCreditSale(client,context,[{...cart[0],discount:10001}],payment,time),/remise/);
+ assert.throws(()=>prepareCreditSale(client,context,cart,{...payment,paid:'300'},time),/dépasser/);
+ assert.throws(()=>prepareCreditSale(client,context,cart,{...payment,mode:'Chèque'},time),/chèque/);
+ assert.throws(()=>prepareCreditSale(client,context,cart,payment,'2026-02-30'),/Date/);
+});
+test('règlement v5 : plafonné à la dette, chèque complet et contexte conservé',()=>{
+ const settlement=prepareCreditSettlement(client,context,{...payment,mode:'Chèque',chequeNumber:' 123 ',chequeBank:' Banque ',chequeDue:' 2026-12-01 '},time);
+ assert.equal(settlement.amount,50000);assert.equal(settlement.chequeNumber,'123');assert.equal(settlement.chequeBank,'Banque');assert.equal(settlement.chequeDue,'2026-12-01');
+ assert.throws(()=>prepareCreditSettlement(client,context,{...payment,paid:'950,001'},time),/dépasser/);
+ assert.throws(()=>prepareCreditSettlement(client,context,{...payment,paid:'0'},time),/invalide/);
+ assert.throws(()=>prepareCreditSettlement(client,context,{...payment,mode:'Crédit'},time),/Choisissez/);
+ assert.throws(()=>prepareCreditSettlement({...client,balance:-1}, {...context,expectedBalance:-1},payment,time),/dette/);
+ assert.throws(()=>prepareCreditSettlement(client,{...context,expectedBalance:1},payment,time),/contexte/);
+});

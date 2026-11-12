@@ -19,6 +19,7 @@ import {identifiedCommercialRoutes,identifiedAdminRoutes} from './identified-tou
 import {lockSyncMode,assertLegacyMode,LegacySyncDisabled,readSyncMode} from './tour-sync-mode.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
 import {activateIdentifiedTours,TourActivationConflict} from './tour-activation.js';
+import {CreditProtocolUpgradeRequired,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -165,9 +166,11 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
 });
 // Routes individuelles protégées par session commerciale et garde de mode transactionnelle.
 // Tant que la transition n'est pas autorisée, elles refusent toute écriture.
-app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret));
+// Explicitement réservé à une base fictive isolée : jamais activé par défaut.
+const creditV5TestOnly=process.env.SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
+app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly}));
 app.use('/api', auth);
-app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username));
+app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username,{allowCreditProtocol:creditV5TestOnly}));
 app.get('/api/tour-sync-mode',async(_req,res)=>{res.set('Cache-Control','no-store').json({mode:await readSyncMode(pool)});});
 app.post('/api/tour-sync-mode/activate',async(req,res,next)=>{
  try {const data=z.object({confirmation:z.string()}).strict().parse(req.body);res.json(await activateIdentifiedTours(pool,username,data.confirmation));}
@@ -175,7 +178,7 @@ app.post('/api/tour-sync-mode/activate',async(req,res,next)=>{
 });
 
 // Vue admin en lecture seule : l'espace expérimental ne reflète pas le journal mobile actuel.
-app.use('/api/identified-tour', identifiedAdminReadRoutes(pool));
+app.use('/api/identified-tour', identifiedAdminReadRoutes(pool,{allowCreditProtocol:creditV5TestOnly}));
 // Endpoint réservé aux essais administrateur : désactivé par défaut, hors soldes et hors synchronisation mobile.
 app.use('/api/experimental/journal',async(_req,res,next)=>{if(await readSyncMode(pool)!=='legacy'){res.status(409).json({error:'Journal expérimental désactivé après transition.'});return;}next();}, experimentalJournalRoutes(pool, process.env.JOURNAL_EXPERIMENTAL === '1'));
 const text = (max: number) => z.string().trim().max(max);
@@ -234,9 +237,15 @@ app.get('/api/demo-settlements', async (_req,res) => {
 });
 app.use('/api/demo-sales',saleHistoryRoutes(pool));
 app.get('/api/demo-sales', async (_req, res) => {
- const mode=await readSyncMode(pool);
- const r = await pool.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM (SELECT sale_id,version,payload,received_at FROM demo_sale_events ${mode==='identified'?'UNION ALL SELECT sale_id,version,payload,received_at FROM identified_sale_events':''}) sales ORDER BY sale_id,version DESC`);
- res.json(r.rows);
+ const db=await pool.connect();
+ try {
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+  const mode=(await db.query('SELECT mode FROM tour_sync_mode WHERE id=1')).rows[0]?.mode;
+  if(mode!=='legacy'&&mode!=='identified')throw Error('Mode de synchronisation indisponible.');
+  if(mode==='identified')await assertOldCreditProtocolSafe(db);
+  const r = await db.query(`SELECT DISTINCT ON (sale_id) sale_id AS "saleId",version,payload->'sale' AS sale,received_at AS "receivedAt" FROM (SELECT sale_id,version,payload,received_at FROM demo_sale_events ${mode==='identified'?'UNION ALL SELECT sale_id,version,payload,received_at FROM identified_sale_events':''}) sales ORDER BY sale_id,version DESC`);
+  await db.query('COMMIT');res.set('Cache-Control','no-store').json(r.rows);
+ } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 });
 app.get('/api/overview', async (_req, res) => {
   const r = await pool.query(`SELECT
@@ -254,5 +263,5 @@ app.post('/api/clients', async (req, res) => { const c = clientSchema.parse(req.
 app.put('/api/clients/:id', async (req, res) => { const id = uuid.parse(req.params.id), c = clientSchema.parse(req.body); const r = await changeWithAudit('clients','modification',id,`UPDATE clients SET name=$2,sector=$3,address=$4,tax_id=$5,phone=$6,opening_balance=$7,credit_limit=$8,active=$9,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING ${clientFields}`, [id,c.name,c.sector,c.address,c.taxId,c.phone,c.openingBalance,c.creditLimit,c.active],clientFields); if (!r) { res.status(404).json({error:'Client introuvable.'}); return; } res.json(r); });
 app.post('/api/articles', async (req, res) => { const a = articleSchema.parse(req.body), id = randomUUID(); const r = await changeWithAudit('articles','création',id,`INSERT INTO articles(id,code,name,barcode,purchase_ttc,sale_ttc,vat_rate,units_per_carton,active) VALUES($1,'ART-' || lpad(nextval('article_code_seq')::text, 6, '0'),$2,$3,$4,$5,$6,$7,$8) RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); res.status(201).json(r); });
 app.put('/api/articles/:id', async (req, res) => { const id = uuid.parse(req.params.id), a = articleSchema.parse(req.body); const r = await changeWithAudit('articles','modification',id,`UPDATE articles SET name=$2,barcode=$3,purchase_ttc=$4,sale_ttc=$5,vat_rate=$6,units_per_carton=$7,active=$8,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); if (!r) { res.status(404).json({error:'Article introuvable.'}); return; } res.json(r); });
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof LegacySyncDisabled) { res.status(409).json({error:err.message}); return; } if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof CreditProtocolUpgradeRequired) { res.status(409).json({error:err.message,code:'CREDIT_PROTOCOL_UPGRADE_REQUIRED'}); return; } if (err instanceof LegacySyncDisabled) { res.status(409).json({error:err.message}); return; } if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
 app.listen(Number(process.env.PORT || 3001), process.env.API_HOST || '127.0.0.1', () => console.log('API de développement prête sur le port ' + (process.env.PORT || 3001)));

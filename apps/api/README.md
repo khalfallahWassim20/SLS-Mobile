@@ -29,3 +29,26 @@ L'instantané mobile v2 contient le solde de démonstration reçu par le serveur
 ## Fiches de commerciaux (démonstration)
 
 Après `npm run migrate`, l'administration peut créer, modifier ou désactiver des fiches de commerciaux fictifs. Les mutations sont tracées dans le journal d'audit. Ces fiches ne sont pas des comptes : elles ne donnent aucun accès mobile et ne sont pas encore associées aux ventes ou aux journaux. La désactivation ne révoque pas le jeton mobile partagé ; la clôture et la réouverture ne sont pas encore disponibles.
+
+## Import de la liste des articles CSV
+
+L'import est effectué **sur le serveur**, jamais dans le téléphone ; le prix d'achat n'est pas transmis dans la référence mobile. Le fichier d'origine n'est pas ajouté au dépôt : conserver une copie en lieu sûr et ne pas la publier. L'application reste un prototype non sécurisé pour la production ; l'import réel ne constitue pas une mise en production.
+
+Format reconnu : export CSV UTF-8 « Liste des Produits », colonnes `Code a barre`, `Libellé`, `P.AU Htva`, avec prix HT en dinars à trois décimales. La virgule dans `1,646.387 dt` est interprétée comme séparateur de milliers. Les deux lignes techniques exactes `Commentaire` et `USING FOR LABELS` à zéro sont exclues. Un code interne distinct est créé pour chaque article ; un code-barres absent reste vide et peut être renseigné dans l'administration.
+
+Calcul retenu : **achat TTC = achat HT × 1,19**, arrondi au millime ; puis **vente TTC = achat TTC × 1,20**, arrondi au millime. Ainsi 46,310 DT HT → 55,109 DT d'achat TTC → 66,131 DT de vente TTC. La marge de 20 % est appliquée à l'achat TTC, non à l'achat HT. Tous les articles sont enregistrés avec TVA 19 % ; le fichier ne contient pas de quantité par carton, donc celle-ci vaut provisoirement 1 et doit être corrigée si nécessaire. Faire confirmer les taux, les prix et la règle d'arrondi avant utilisation commerciale.
+
+Après sauvegarde de la base et vérification de la destination de `DATABASE_URL`, depuis la racine du projet et avec les dépendances installées (`npm ci`) :
+
+```powershell
+npm run migrate
+npm run import:articles -- "C:\chemin\vers\ETAT_Liste_des_Produits.csv"
+```
+
+La deuxième commande affiche un aperçu sans écriture. Pour importer réellement, définir `DATABASE_URL` vers la base choisie dans l'environnement du terminal, puis lancer :
+
+```powershell
+npm run import:articles -- "C:\chemin\vers\ETAT_Liste_des_Produits.csv" IMPORTER_LES_ARTICLES
+```
+
+Ne pas partager l'URL de connexion si elle contient un mot de passe. L'import est transactionnel : si un code-barres du fichier existe déjà, ou si une ligne est invalide, **aucun article n'est ajouté**. Le même fichier est reconnu lors d'une répétition et n'est pas réimporté ; les fiches existantes ne sont jamais modifiées ni supprimées. Un fichier modifié n'est pas considéré identique et une collision bloque l'ensemble. Le journal d'audit conserve une trace des créations. Après import, actualiser la référence sur chaque téléphone connecté. Les comptes, clients, ventes et clôtures ne sont pas supprimés.

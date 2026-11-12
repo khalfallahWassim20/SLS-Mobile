@@ -2,6 +2,9 @@
 type Kind='sale'|'settlement'|'journal';
 export type IdentifiedEntry={operationId:string;kind:Kind;entityId:string;commercialId:string;recordedAt:string;payload:string};
 type Response={ok:boolean;status:number;json:()=>Promise<unknown>};
+export class OperationConflictSyncError extends Error {
+ constructor(message:string){super(message);}
+}
 export class ClosedDaySyncError extends Error {
  constructor(readonly day:string,readonly commercialId:string) {super('Journée clôturée : opération conservée en attente.');}
 }
@@ -42,7 +45,9 @@ export async function uploadIdentifiedOperations(entries:IdentifiedEntry[],ident
     const date=new Date(`${body.day}T00:00:00.000Z`);
     if(Number.isFinite(date.getTime()) && date.toISOString().slice(0,10)===body.day)throw new ClosedDaySyncError(body.day,body.commercialId);
    }
-   throw Error(typeof body?.error==='string'&&body.error?body.error.slice(0,300):`Erreur de synchronisation (${response.status}).`);
+   const message=typeof body?.error==='string'&&body.error?body.error.slice(0,300):`Erreur de synchronisation (${response.status}).`;
+   if(response.status===409)throw new OperationConflictSyncError(message);
+   throw Error(message);
   }
   if(!body||(body.status!=='received'&&body.status!=='duplicate')||body.operationId!==request.entry.operationId)throw Error('Accusé invalide : opération conservée.');
   await acknowledge(request.entry.operationId,request.entry.kind);count++;

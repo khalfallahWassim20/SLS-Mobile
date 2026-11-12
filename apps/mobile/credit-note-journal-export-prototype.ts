@@ -1,0 +1,106 @@
+import {projectOwnedCredits} from './credit-owned-reference-prototype';
+/** Lecture atomique préparatoire d'un export v5 ; non utilisée par l'écran v3. */
+import {canonicalJson} from '@sls/domain';
+import {readConfirmedRemoteSaleRefunds} from './credit-remote-sale-confirm-prototype';
+import {readLocalSaleCashLedger} from './credit-sale-refund-journal-prototype';
+import {assertImportedSaleRevision} from './credit-local-revision-audit-prototype';
+import type {DeviceIdentity} from './identified-device';
+import type {SavedSale,TourPreInvoice,TourJournalReceipt} from './storage';
+import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
+import {readAllOfflineCreditPrototype} from './credit-note-offline-prototype';
+import {loadCreditBalanceSnapshotPrototype} from './credit-note-balance-storage-prototype';
+import {buildJournal,tunisDay} from './journal';
+import type {JournalExport} from './journal-export';
+
+type Bind=string|number|null;
+type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
+function value<T>(raw:string):T {try {const value=JSON.parse(raw);if(!value||typeof value!=='object'||Array.isArray(value))throw Error();return value as T;}catch{throw Error('Données locales illisibles : export refusé.');}}
+/** L'appelant doit maintenir une transaction exclusive jusqu'à la fin ; les
+ * références et mouvements changés pendant l'export ne sont pas mélangés.
+ * Les annulations reçues d'un autre appareil sont signalées uniquement si
+ * leur source complète et leur version correspondent aux preuves serveur. */
+export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIdentity,day:string,commercial:string,digest:(text:string)=>Promise<string>):Promise<JournalExport>{
+ const parsed=new Date(`${day}T00:00:00.000Z`);
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==day||typeof commercial!=='string'||!commercial.trim()||commercial.length>200)throw Error('Date ou commercial invalide.');
+ const pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n');
+ if(!pending||pending.n)throw Error('Journal indisponible pendant une modification distante en attente.');
+ const reference=await readPrototypeCreditReferenceCache(tx,identity);if(!reference)throw Error('Référence d’avoirs indisponible.');
+ const credits=await readAllOfflineCreditPrototype(tx,identity);
+ const allOwnedCredits=reference.creditOwners===null?[]:projectOwnedCredits(reference,identity.commercialId,day);
+ const remoteOwnedCredits=allOwnedCredits.filter(e=>!credits.some(c=>c.note.command.operationId===e.operationId));
+
+ const adminCreditRefunds:NonNullable<JournalExport['adminCreditRefunds']>=[];
+ for(const assignment of reference.cashAssignments??[]){
+  if(assignment.commercialId!==identity.commercialId)continue;
+  const sale=reference.saleStates.find(s=>s.creditNote?.command.operationId===assignment.noteOperationId);
+  const pre=reference.journalStates.find(j=>j.creditNote?.operationId===assignment.noteOperationId);
+  const source=sale??pre,recordedAt=sale?.creditNote?.command.recordedAt??pre?.creditNote?.recordedAt;
+  if(!source||!recordedAt)throw Error('Attribution de remboursement incohérente.');
+  if(tunisDay(new Date(recordedAt))!==day)continue;
+  const client=reference.clients.find(c=>c.id===source.clientId);if(!client)throw Error('Client du remboursement indisponible.');
+  adminCreditRefunds.push({noteOperationId:assignment.noteOperationId,assignmentId:assignment.requestId,invoiceId:sale?sale.saleId:pre!.id,kind:sale?'sale':'preinvoice',clientId:source.clientId,clientName:client.name,recordedAt,assignedAt:assignment.assignedAt,refund:assignment.refund});
+ }
+ const saleRows=await tx.getAllAsync<{id:number;payload:string}>('SELECT id,payload FROM sales ORDER BY id DESC');
+ const sales=saleRows.map(row=>({...value<Omit<SavedSale,'id'>>(row.payload),id:row.id}));
+ const invoiceRows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid');
+ const invoices=invoiceRows.map(row=>value<TourPreInvoice>(row.payload));
+ const receiptRows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_journal_receipts ORDER BY rowid');
+ const receipts=receiptRows.map(row=>value<TourJournalReceipt>(row.payload));
+ const ownedLocalCreditOperationIds:string[]=[];
+ for(const {note,pending} of credits){
+  const owner=reference.creditOwners?.find(x=>x.operationId===note.command.operationId);
+  if(owner){if(owner.ownerId===identity.commercialId)ownedLocalCreditOperationIds.push(note.command.operationId);continue;}
+  if(!pending)continue;
+  // En attente : seule une facture créée sur cet appareil avec une origine
+  // identifiée permet l'imputation provisoire. Le serveur reste arbitre.
+  const sale=note.kind==='sale'?sales.find(s=>s.syncSaleId===note.command.invoiceId):undefined;
+  const pre=note.kind==='preinvoice'?invoices.find(i=>i.id===note.command.invoiceId):undefined;
+  if(!sale&&!pre)continue;
+  const at=sale?.createdAt??pre!.createdAt;
+  const marker=await tx.getFirstAsync<{n:number}>(`SELECT count(*) AS n FROM identified_local_operations WHERE commercial_id=? AND operation_kind=? AND entity_id=? AND recorded_at=?`,identity.commercialId,sale?'sale':'journal',note.command.invoiceId,at);
+  if(marker?.n===1)ownedLocalCreditOperationIds.push(note.command.operationId);
+ }
+
+ const sectors=new Map(reference.clients.map(c=>[c.id,c.sector]));
+ const rows=buildJournal(day,invoices,sales,sectors),clientIds=new Set(rows.map(r=>r.clientId));
+ const cash=await readLocalSaleCashLedger(tx,identity,sales,day);
+ const saleRefunds=cash.refunds;
+ const remoteSaleRefunds=await readConfirmedRemoteSaleRefunds(tx,identity,day,digest);
+ for(const receipt of receipts.filter(r=>r.journalDate===day)){
+  if(!rows.some(row=>row.clientId===receipt.clientId&&row.preInvoice?.id===receipt.preInvoiceId))throw Error('Règlement du journal sans facture : export refusé.');
+  clientIds.add(receipt.clientId);
+ }
+ for(const {note} of credits){const src=note.source as {clientId?:string;invoice?:{clientId?:string}};const id=note.kind==='sale'?src.clientId:src.invoice?.clientId;if(!id)throw Error('Client de l’avoir indisponible.');if(tunisDay(new Date(note.command.recordedAt))===day)clientIds.add(id);}
+ for(const refund of [...saleRefunds,...remoteSaleRefunds,...adminCreditRefunds,...remoteOwnedCredits])clientIds.add(refund.clientId);
+ const snapshot=await loadCreditBalanceSnapshotPrototype(tx,identity,digest);
+ for(const id of clientIds){const balance=snapshot.balanceFor(id);if(balance.conflict)throw Error('Solde en conflit : export refusé.');}
+ const remoteSaleUpdates:NonNullable<JournalExport['remoteSaleUpdates']>=[];
+ for(const sale of sales.filter(s=>tunisDay(new Date(s.createdAt))===day&&s.syncSaleId)){
+  const revisions=await tx.getAllAsync<{operationId:string;saleId:string;actor:string;event:string;createdAt:string;previous:string;current:string;refund:number}>(`SELECT m.operation_id AS operationId,m.sale_id AS saleId,m.commercial_id AS actor,m.event,r.created_at AS createdAt,r.previous_payload AS previous,r.new_payload AS current,r.refund FROM credit_local_sale_reconcile_prototype m JOIN sale_revisions r ON r.id=m.revision_id WHERE r.sale_id=? ORDER BY r.id`,sale.id);
+  for(const item of revisions){
+   assertImportedSaleRevision({operationId:item.operationId,saleId:item.saleId,actor:item.actor,event:value<unknown>(item.event),createdAt:item.createdAt,previous:value<SavedSale>(item.previous),current:value<SavedSale>(item.current),refund:item.refund},sale.id,sale.syncSaleId!,sale.clientId);
+  }
+  if(revisions.length)remoteSaleUpdates.push({saleId:sale.syncSaleId!,day:tunisDay(new Date(revisions[revisions.length-1].createdAt))});
+ }
+ const remoteCancellations:NonNullable<JournalExport['remoteCancellations']>=[];
+ for(const row of rows){
+  for(const sale of row.sales){
+   const state=reference.saleStates.find(s=>s.saleId===sale.syncSaleId);
+   if(!state?.creditNote||credits.some(c=>c.note.kind==='sale'&&c.note.command.invoiceId===sale.syncSaleId))continue;
+   const proof=reference.saleProofs.find(p=>p.saleId===sale.syncSaleId),pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM sales_outbox WHERE sale_id=?) AS n',sale.syncSaleId!);
+   const {id:_id,...source}=sale;
+   if(!proof||!pending||pending.n||state.clientId!==sale.clientId||proof.version!==sale.syncVersion||await digest(canonicalJson(source))!==proof.hash)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
+   remoteCancellations.push({kind:'sale',invoiceId:state.saleId,day:tunisDay(new Date(state.creditNote.command.recordedAt)),source});
+  }
+  const invoice=row.preInvoice;if(!invoice)continue;
+  const state=reference.journalStates.find(j=>j.id===invoice.id);
+  if(!state?.creditNote||credits.some(c=>c.note.kind==='preinvoice'&&c.note.command.invoiceId===invoice.id))continue;
+  const proof=reference.journalProofs.find(p=>p.id===invoice.id),pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM journal_sync_outbox WHERE invoice_id=?) AS n',invoice.id);
+  const local=await tx.getFirstAsync<{version:number;payload:string}>('SELECT version,payload FROM journal_sync_state WHERE invoice_id=?',invoice.id);
+  if(!proof||!pending||pending.n||!local||state.clientId!==invoice.clientId||proof.version!==local.version)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
+  const source=value<{version:number;invoice:unknown;receipts:unknown}>(local.payload);
+  if(source.version!==local.version||canonicalJson(source.invoice)!==canonicalJson(invoice)||canonicalJson(source.receipts)!==canonicalJson(receipts.filter(r=>r.preInvoiceId===invoice.id))||await digest(canonicalJson(source))!==proof.hash)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
+  remoteCancellations.push({kind:'preinvoice',invoiceId:invoice.id,day:tunisDay(new Date(state.creditNote.recordedAt)),source});
+ }
+ return {day,commercial,rows,receipts,credits,ownedLocalCreditOperationIds,remoteOwnedCredits,creditOwnersKnown:reference.creditOwners!==null,remoteCancellations,remoteSaleUpdates,saleRefunds,remoteSaleRefunds,initialSalePayments:cash.initialPayments,adminCreditRefunds,adminRefundAssignmentsKnown:reference.cashAssignments!==null};
+}
