@@ -7,7 +7,7 @@ import {canonicalJson,prepareFullCreditNote,calculatePreInvoiceCancellation} fro
 import {tunisDay} from './journal';
 
 /** Instantané local, distinct du journal consolidé reçu sur le serveur. */
-export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteOwnedCredits?:OwnedCredit[]; creditOwnersKnown?:boolean; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[]; initialSalePayments?:InitialSalePayment[]; adminRefundAssignmentsKnown?:boolean; adminCreditRefunds?:{noteOperationId:string;assignmentId:string;invoiceId:string;kind:'sale'|'preinvoice';clientId:string;clientName:string;recordedAt:string;assignedAt:string;refund:number}[]; remoteSaleRefunds?: {operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[] };
+export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteOwnedCredits?:OwnedCredit[]; ownedLocalCreditOperationIds?:string[]; creditOwnersKnown?:boolean; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[]; initialSalePayments?:InitialSalePayment[]; adminRefundAssignmentsKnown?:boolean; adminCreditRefunds?:{noteOperationId:string;assignmentId:string;invoiceId:string;kind:'sale'|'preinvoice';clientId:string;clientName:string;recordedAt:string;assignedAt:string;refund:number}[]; remoteSaleRefunds?: {operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[] };
 const amount = (value: number) => {
  if (!Number.isSafeInteger(value)) throw new Error('Montant invalide dans le journal.');
  const n = BigInt(value), abs = n < 0n ? -n : n;
@@ -61,6 +61,8 @@ function lines(data: JournalExport): string[][] {
   if(!['sale','preinvoice'].includes(entry.kind)||typeof entry.invoiceId!=='string'||!entry.invoiceId||!/^\d{4}-\d{2}-\d{2}$/.test(entry.day)||!Number.isFinite(parsed.getTime())||parsed.toISOString().slice(0,10)!==entry.day||!entry.source||typeof entry.source!=='object'||Array.isArray(entry.source)||byInvoice.has(key)||remoteByInvoice.has(key))throw Error('Annulation distante invalide.');
   remoteByInvoice.set(key,entry);
  }
+ const localOwned=data.ownedLocalCreditOperationIds===undefined?null:new Set(data.ownedLocalCreditOperationIds);
+ if(localOwned&&(localOwned.size!==data.ownedLocalCreditOperationIds!.length||[...localOwned].some(id=>!allEvents.some(e=>e.note.command.operationId===id))))throw Error('Origine des avoirs locaux invalide.');
  const ownedIds=new Set<string>();
  for(const e of data.remoteOwnedCredits??[]){
   const uuid=(v:unknown)=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
@@ -77,7 +79,7 @@ function lines(data: JournalExport): string[][] {
  const rows: string[][] = [
   ['Journal de tournée — instantané local (données fictives)'],
   ['Date',data.day,'Commercial',data.commercial],
-  ['Périmètre','Opérations présentes sur ce téléphone et remboursements administrateur attribués reçus à la dernière synchronisation ; les autres opérations ne sont pas incluses.'],
+  ['Périmètre','Opérations présentes sur ce téléphone, avoirs sur les factures du commercial et remboursements administrateur attribués reçus à la dernière synchronisation ; les autres opérations ne sont pas incluses.'],
   ['Client','Secteur','Type','Référence locale / date','Montant facture DT','Paiement facture DT','Ancienne dette réglée DT','Mode','Total client DT'],
  ];
  for(const r of data.rows){
@@ -143,9 +145,10 @@ function lines(data: JournalExport): string[][] {
   const events=allEvents.filter(e=>e.day===data.day);
   rows.push(['AVOIRS CRÉÉS CE JOUR — distincts des factures d’origine']);
   for(const e of events){
-   total+=BigInt(e.invoiceTotal);refund+=BigInt(e.note.refund);
-   rows.push([e.name,'',e.note.kind==='sale'?'Avoir vente':'Avoir facture préétablie',`${e.note.command.invoiceId} · facture du ${e.invoiceDay} · ${e.pending?'en attente':'synchronisé'}`,amount(-e.invoiceTotal),amount(e.note.refund),'',e.note.retainedCredit?`Crédit conservé ${amount(e.note.retainedCredit)} DT`:'','']);
+   if(!localOwned||localOwned.has(e.note.command.operationId))total+=BigInt(e.invoiceTotal);refund+=BigInt(e.note.refund);
+   rows.push([e.name,'',e.note.kind==='sale'?'Avoir vente':'Avoir facture préétablie',`${e.note.command.invoiceId} · facture du ${e.invoiceDay} · ${e.pending?'en attente':'synchronisé'}${localOwned&&!localOwned.has(e.note.command.operationId)?' · facture hors facturé de ce commercial ou propriété à confirmer':''}`,(!localOwned||localOwned.has(e.note.command.operationId))?amount(-e.invoiceTotal):'',amount(e.note.refund),'',e.note.retainedCredit?`Crédit conservé ${amount(e.note.retainedCredit)} DT`:'','']);
   }
+  for(const e of data.remoteOwnedCredits??[])total+=BigInt(e.invoiceTotal);
   const billed=sum(data.rows.map(r=>r.total)),gross=sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>initial?.get(s.id)??s.paid))]);
   const asSafe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw Error('Total trop élevé');return Number(n);};
   rows.push(['TOTAL AVOIRS DU JOUR','','','',amount(asSafe(total))]);
@@ -158,11 +161,11 @@ function lines(data: JournalExport): string[][] {
  if(data.creditOwnersKnown===false)rows.push(['Attention','Propriétaires des avoirs indisponibles dans cette ancienne référence : synchronisez.']);
  if(data.remoteOwnedCredits?.length){
   rows.push(['AVOIRS ENREGISTRÉS AILLEURS SUR LES FACTURES DE CE COMMERCIAL — INFORMATION SERVEUR']);
-  for(const e of data.remoteOwnedCredits)rows.push([e.clientName,'',e.kind==='sale'?'Avoir distant — vente':'Avoir distant — préétablie',`${e.invoiceId} · ${e.actorRole==='admin'?'administrateur':'autre commercial'}${e.invoiceDay?` · facture du ${e.invoiceDay}`:''}`,amount(e.invoiceTotal),amount(e.refund),'',e.retainedCredit?`Crédit conservé ${amount(e.retainedCredit)} DT`:'']);
-  rows.push(['Attention','Ces avoirs reçus du serveur ne sont pas encore intégrés dans les totaux locaux ci-dessus. Leur remboursement appartient à la caisse de son auteur ou à la caisse attribuée, pas automatiquement à celle du propriétaire.']);
+  for(const e of data.remoteOwnedCredits)rows.push([e.clientName,'',e.kind==='sale'?'Avoir distant — vente':'Avoir distant — préétablie',`${e.invoiceId} · ${e.actorRole==='admin'?'administrateur':'autre appareil ou commercial'}${e.invoiceDay?` · facture du ${e.invoiceDay}`:''}`,amount(e.invoiceTotal),amount(e.refund),'',e.retainedCredit?`Crédit conservé ${amount(e.retainedCredit)} DT`:'']);
+  rows.push(['Attention','Ces avoirs reçus du serveur sont déduits du facturé à la date de création de l’avoir. Leur remboursement appartient à la caisse de son auteur ou à la caisse attribuée, pas automatiquement à celle du propriétaire.']);
  }
  if(updates.size)rows.push(['Modifications enregistrées ailleurs','Les ventes indiquées ont été actualisées depuis un autre appareil. Les remboursements effectués ailleurs ne sont pas déduits de la caisse de ce téléphone.']);
- if(remoteByInvoice.size)rows.push(['Annulations enregistrées ailleurs','Les factures sont signalées comme annulées. Les avoirs enregistrés ailleurs ne sont pas ajoutés au facturé de ce téléphone ; seuls les remboursements administrateur attribués à ce commercial sont déduits ci-dessus. Consultez le journal serveur.']);
+ if(remoteByInvoice.size)rows.push(['Annulations enregistrées ailleurs','Les factures sont signalées comme annulées. Les avoirs reçus sur les factures de ce commercial sont déduits à leur date de création ; seuls les remboursements attribués à cette caisse sont déduits de l’encaissé. Consultez le journal serveur.']);
  rows.push(['NOMBRE DE CLIENTS',String(data.rows.length)]);
  rows.push(['Note','Le total facturé ne représente pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.']);
  return rows;
@@ -170,5 +173,5 @@ function lines(data: JournalExport): string[][] {
 export function journalCsv(data: JournalExport): string { return '\uFEFF'+lines(data).map(r=>r.map(cell).join(';')).join('\r\n')+'\r\n'; }
 export function journalHtml(data: JournalExport): string {
  const dataRows=lines(data);
- return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;color:#193c35;font-size:10px}h1{font-size:22px}p{font-size:11px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #b7c9bf;padding:5px;text-align:left;overflow-wrap:anywhere}th{background:#d8eee2}tr{page-break-inside:avoid}</style></head><body><h1>Journal de tournée — instantané local</h1><p>Date : ${escapeHtml(data.day)} · Commercial : ${escapeHtml(data.commercial)}</p><p>Données fictives. Opérations présentes sur ce téléphone et remboursements administrateur attribués reçus à la dernière synchronisation. Les autres opérations ne sont pas incluses. Le total facturé n’est pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.</p><table><thead><tr>${dataRows[3].map(x=>`<th>${escapeHtml(x)}</th>`).join('')}</tr></thead><tbody>${dataRows.slice(4,-1).map(r=>`<tr>${r.map(x=>`<td>${escapeHtml(x)}</td>`).join('')}</tr>`).join('')}</tbody></table></body></html>`;
+ return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;color:#193c35;font-size:10px}h1{font-size:22px}p{font-size:11px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #b7c9bf;padding:5px;text-align:left;overflow-wrap:anywhere}th{background:#d8eee2}tr{page-break-inside:avoid}</style></head><body><h1>Journal de tournée — instantané local</h1><p>Date : ${escapeHtml(data.day)} · Commercial : ${escapeHtml(data.commercial)}</p><p>Données fictives. Opérations présentes sur ce téléphone, avoirs sur les factures du commercial et remboursements administrateur attribués reçus à la dernière synchronisation. Les autres opérations ne sont pas incluses. Le total facturé n’est pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.</p><table><thead><tr>${dataRows[3].map(x=>`<th>${escapeHtml(x)}</th>`).join('')}</tr></thead><tbody>${dataRows.slice(4,-1).map(r=>`<tr>${r.map(x=>`<td>${escapeHtml(x)}</td>`).join('')}</tr>`).join('')}</tbody></table></body></html>`;
 }

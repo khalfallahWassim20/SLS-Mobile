@@ -18,11 +18,11 @@ export function describeCreditJournalPrototype(data:JournalExport) {
   sales:row.sales.map(s=>({...s,cancellation:s.syncSaleId?marks.get(`sale:${s.syncSaleId}`)??null:null,remoteUpdateDay:s.syncSaleId?updates.get(s.syncSaleId)??null:null}))}));
  const events=data.credits.filter(x=>tunisDay(new Date(x.note.command.recordedAt))===data.day).map(({note,pending})=>{
   const source=note.source as Record<string,any>,invoice=note.kind==='sale'?source:source.invoice;
-  return {operationId:note.command.operationId,kind:note.kind,invoiceId:note.command.invoiceId,clientName:invoice.clientName,invoiceTotal:note.kind==='sale'?invoice.total:invoice.amount,refund:note.refund,retainedCredit:note.retainedCredit,pending};
+  return {operationId:note.command.operationId,kind:note.kind,invoiceId:note.command.invoiceId,clientName:invoice.clientName,invoiceTotal:note.kind==='sale'?invoice.total:invoice.amount,refund:note.refund,retainedCredit:note.retainedCredit,pending,owned:data.ownedLocalCreditOperationIds===undefined||data.ownedLocalCreditOperationIds.includes(note.command.operationId)};
  });
  const initial=initialSalePaymentMap(data);
  const receipts=data.receipts.filter(r=>r.journalDate===data.day&&rows.some(row=>row.clientId===r.clientId));
- const billed=rows.reduce((a,row)=>a+BigInt(row.grossTotal),0n),prePaid=receipts.reduce((a,r)=>a+BigInt(r.prePaid),0n),oldDebtPaid=receipts.reduce((a,r)=>a+BigInt(r.oldDebtPaid),0n),salePaid=rows.reduce((a,row)=>a+row.sales.reduce((n,s)=>n+BigInt(initial?.get(s.id)??s.paid),0n),0n),credits=events.reduce((a,e)=>a+BigInt(e.invoiceTotal),0n),refunds=events.reduce((a,e)=>a+BigInt(e.refund),0n),retained=events.reduce((a,e)=>a+BigInt(e.retainedCredit),0n);
+ const billed=rows.reduce((a,row)=>a+BigInt(row.grossTotal),0n),prePaid=receipts.reduce((a,r)=>a+BigInt(r.prePaid),0n),oldDebtPaid=receipts.reduce((a,r)=>a+BigInt(r.oldDebtPaid),0n),salePaid=rows.reduce((a,row)=>a+row.sales.reduce((n,s)=>n+BigInt(initial?.get(s.id)??s.paid),0n),0n),credits=events.reduce((a,e)=>a+(e.owned?BigInt(e.invoiceTotal):0n),0n)+(data.remoteOwnedCredits??[]).reduce((a,e)=>a+BigInt(e.invoiceTotal),0n),refunds=events.reduce((a,e)=>a+BigInt(e.refund),0n),retained=events.reduce((a,e)=>a+(e.owned?BigInt(e.retainedCredit):0n),0n)+(data.remoteOwnedCredits??[]).reduce((a,e)=>a+BigInt(e.retainedCredit),0n);
  const remoteSaleRefunds=data.remoteSaleRefunds??[],remoteSaleRefundTotal=safe(remoteSaleRefunds.reduce((n,r)=>n+BigInt(r.refund),0n));
  const adminCreditRefunds=data.adminCreditRefunds??[],adminCreditRefundTotal=safe(adminCreditRefunds.reduce((n,r)=>n+BigInt(r.refund),0n));
  const saleRefunds=data.saleRefunds??[],saleRefundTotal=safe(saleRefunds.reduce((n,r)=>n+BigInt(r.refund),0n));

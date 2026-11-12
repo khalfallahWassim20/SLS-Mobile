@@ -34,6 +34,7 @@ export async function readJournalCashReconciliation(db:PoolClient,commercialId:s
  }
  const history=await readPrototypeCreditHistoryInTransaction(db);
  for(const h of history.filter(h=>h.recordedDay===day)){
+  if(h.ownerId===commercialId)events.push({kind:'owner-credit',operationId:h.operationId,clientId:h.clientId,recordedAt:h.recordedAt,invoiceId:h.invoiceId,invoiceKind:h.kind,invoiceTotal:h.invoiceTotal,refund:h.refund,retainedCredit:h.retainedCredit});
   if(h.actor.role==='commercial'&&h.actor.id===commercialId)events.push({kind:'credit',operationId:h.operationId,clientId:h.clientId,recordedAt:h.recordedAt,invoiceId:h.invoiceId,invoiceKind:h.kind,invoiceTotal:h.invoiceTotal,refund:h.refund,retainedCredit:h.retainedCredit});
   if(h.actor.role==='admin'&&h.refund>0&&h.cashAssignment?.commercialId===commercialId)events.push({kind:'admin-refund',operationId:h.operationId,clientId:h.clientId,recordedAt:h.recordedAt,invoiceId:h.invoiceId,invoiceKind:h.kind,assignmentId:h.cashAssignment.requestId,refund:h.refund});
  }

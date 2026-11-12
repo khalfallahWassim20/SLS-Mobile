@@ -33,3 +33,16 @@ test('preuve de clôture : ordre stable et changements détectés même à totau
  assert.doesNotThrow(()=>cashClosureCanonical(sales,{...journal,events:[{...invoice,recordedAt:'2026-11-07T23:00:00.000Z'}]},commercialId,day));
  assert.throws(()=>cashClosureCanonical(sales,{...journal,events:[{...invoice,recordedAt:'2026-11-08T23:00:00.000Z'}]},commercialId,day),/journée/);
 });
+
+test('preuve : avoir propriétaire et remboursement coexistent avec le même UUID sans doublement',async()=>{
+ const {cashClosureCanonical}=await import('../src/cash-reconciliation.js');
+ const commercialId=randomUUID(),day='2026-11-08',operationId=randomUUID(),invoiceId=randomUUID(),clientId=randomUUID(),recordedAt='2026-11-08T10:00:00.000Z';
+ const owned={kind:'owner-credit' as const,operationId,invoiceId,clientId,recordedAt,invoiceKind:'preinvoice' as const,invoiceTotal:600000,refund:250000,retainedCredit:0};
+ const admin={kind:'admin-refund' as const,operationId,invoiceId,clientId,recordedAt,invoiceKind:'preinvoice' as const,assignmentId:randomUUID(),refund:250000};
+ const local={version:5,commercialId,day,events:[owned,admin]},sales={version:5,commercialId,day,initialEvents:[],refundEvents:[],saleStates:[]};
+ assert.equal(compareCashReconciliation(local,{...local,events:[admin,owned]},commercialId,day).matches,true);
+ assert.equal(cashClosureCanonical(sales,local,commercialId,day),cashClosureCanonical(sales,{...local,events:[admin,owned]},commercialId,day));
+ assert.equal(compareCashReconciliation(local,{...local,events:[admin]},commercialId,day).onlyLocal,1);
+ assert.equal(compareCashReconciliation(local,{...local,events:[admin,{...owned,invoiceTotal:1}]},commercialId,day).changed,1);
+ assert.throws(()=>cashClosureCanonical(sales,{...local,events:[owned,owned]},commercialId,day),/dupliqué/);
+});

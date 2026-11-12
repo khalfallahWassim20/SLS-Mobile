@@ -103,9 +103,6 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
    let history:Awaited<ReturnType<typeof readPrototypeCreditHistoryInTransaction>>;
    try{history=await readPrototypeCreditHistoryInTransaction(db);}catch(e){if(e instanceof RangeError)throw new JournalConflict('Historique d’avoirs incohérent : clôture refusée.');throw e;}
    if(history.some(h=>h.recordedDay===day&&h.actor.role==='admin'&&h.refund>0&&!h.cashAssignment))throw new JournalConflict('Remboursement d’avoir saisi par l’administrateur : caisse non attribuée, clôture refusée.');
-   // Les avoirs créés ailleurs ne sont pas encore déduits du facturé sur le
-   // téléphone propriétaire. Refuser une clôture qui le présenterait complet.
-   if(history.some(h=>h.ownerId===commercialId&&h.recordedDay===day&&(h.actor.role!=='commercial'||h.actor.id!==commercialId)))throw new JournalConflict('Avoir créé ailleurs sur une facture de ce commercial : rapprochement du facturé requis avant clôture.');
    // La liste a été figée avec le journal du téléphone. Le verrou global de
    // mode empêche qu'une attribution ou un avoir passe entre ce contrôle et
    // la clôture ; une liste absente ou périmée ne lève jamais la garde.

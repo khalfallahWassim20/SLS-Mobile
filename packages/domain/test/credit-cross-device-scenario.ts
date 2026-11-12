@@ -309,16 +309,16 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   }
   const preparedView=await transaction(()=>readCreditClientsPrototype(tx,identity,digest));assert.equal(preparedView.clients[0].balance,350000);assert.equal(preparedView.pendingCredits,2);assert.equal(preparedView.pendingOperations,0);
   const exportBefore=await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest));
-  const workspace=await transaction(()=>readCreditMobileWorkspacePrototype(tx,identity,day,'Deuxième',digest));assert.equal(workspace.clients.clients[0].balance,350000);assert.equal(workspace.clients.pendingCredits,2);assert.equal(workspace.view.totals.creditNotes,719000);
-  const exportModel=describeCreditJournalPrototype(exportBefore);assert.equal(exportModel.totals.creditNotes,719000);assert.equal(exportModel.totals.refunds,50000);assert.equal(exportModel.totals.retainedCredit,250000);assert.equal(exportModel.totals.billedAfterLocalCredits,-719000);
+  const workspace=await transaction(()=>readCreditMobileWorkspacePrototype(tx,identity,day,'Deuxième',digest));assert.equal(workspace.clients.clients[0].balance,350000);assert.equal(workspace.clients.pendingCredits,2);assert.equal(workspace.view.totals.creditNotes,0);
+  const exportModel=describeCreditJournalPrototype(exportBefore);assert.equal(exportModel.totals.creditNotes,0);assert.equal(exportModel.totals.refunds,50000);assert.equal(exportModel.totals.retainedCredit,0);assert.equal(exportModel.totals.billedAfterLocalCredits,0);
   // Les exports proviennent de la même capture que le modèle et ne nécessitent
   // aucun réseau ; PDF et CSV restent disponibles en attente de synchronisation.
   const writes:{uri:string;content:string;encoding:string}[]=[],shares:string[]=[];
   const shareIO={cacheDirectory:'file:///cache/',available:async()=>true,write:async(uri:string,content:string,encoding:'utf8'|'base64')=>{writes.push({uri,content,encoding});},print:async(html:string)=>{assert.match(html,/Avoir/);return {base64:'UEZG'};},share:async(uri:string)=>{shares.push(uri);},now:()=>1};
   await shareCreditJournalPrototype(workspace.journal,'csv',shareIO);await shareCreditJournalPrototype(workspace.journal,'pdf',shareIO);
-  assert.equal(writes.length,2);assert.match(writes[0].content,/719,000/);assert.equal(writes[1].encoding,'base64');assert.equal(shares.length,2);
+  assert.equal(writes.length,2);assert.match(writes[0].content,/50,000/);assert.equal(writes[1].encoding,'base64');assert.equal(shares.length,2);
   await assert.rejects(shareCreditJournalPrototype({...workspace.journal,credits:undefined},'csv',shareIO),/v5 invalide/);
-  const exportCsv=journalCsv(exportBefore);assert.match(exportCsv,/AVOIRS CRÉÉS CE JOUR/);assert.match(exportCsv,/en attente/);assert.match(exportCsv,/719,000/);assert.match(exportCsv,/'-719,000/);assert.match(exportCsv,/50,000/);assert.match(exportCsv,/250,000/);
+  const exportCsv=journalCsv(exportBefore);assert.match(exportCsv,/AVOIRS CRÉÉS CE JOUR/);assert.match(exportCsv,/en attente/);assert.match(exportCsv,/facture hors facturé/);assert.match(exportCsv,/50,000/);assert.match(exportCsv,/250,000/);
   await assert.rejects(transaction(()=>readCreditJournalExportPrototype(tx,identity,'2026-02-30','Deuxième',digest)),/Date ou commercial invalide/);
   let lose=true;
   const io={readOperations:()=>transaction(()=>readIdentifiedOutbox(tx,identity)),acknowledgeOperation:(entry:Awaited<ReturnType<typeof readIdentifiedOutbox>>[number])=>transaction(()=>acknowledgeIdentifiedOutbox(tx,identity,entry)),
@@ -393,7 +393,26 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   const preSource=sources.items.find((x:{kind:string})=>x.kind==='preinvoice').source;
   mobile.prepare('INSERT INTO journal_sync_state(invoice_id,version,payload) VALUES(?,?,?)').run(invoiceId,2,JSON.stringify(preSource));
   const remoteExport=await readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest),remoteCsv=journalCsv(remoteExport);
-  assert.equal(remoteExport.remoteCancellations?.length,2);const remoteModel=describeCreditJournalPrototype(remoteExport);assert.equal(remoteModel.hasRemoteCancellations,true);assert.equal(remoteModel.rows[0].preInvoice?.cancellation?.origin,'remote');assert.equal(remoteModel.rows[0].sales[0].cancellation?.origin,'remote');assert.equal(remoteModel.totals.creditNotes,0);assert.equal(remoteModel.totals.oldDebtPaid,400000);assert.match(remoteCsv,/Vente supplémentaire — annulée par avoir/);assert.match(remoteCsv,/Facture préétablie — annulée par avoir/);assert.match(remoteCsv,/enregistré ailleurs/);assert.match(remoteCsv,/Les avoirs enregistrés ailleurs ne sont pas ajoutés au facturé/);assert.match(remoteCsv,/400,000/);
+  assert.equal(remoteExport.remoteCancellations?.length,2);const remoteModel=describeCreditJournalPrototype(remoteExport);assert.equal(remoteModel.hasRemoteCancellations,true);assert.equal(remoteModel.rows[0].preInvoice?.cancellation?.origin,'remote');assert.equal(remoteModel.rows[0].sales[0].cancellation?.origin,'remote');assert.equal(remoteModel.totals.creditNotes,0);assert.equal(remoteModel.totals.oldDebtPaid,400000);assert.match(remoteCsv,/Vente supplémentaire — annulée par avoir/);assert.match(remoteCsv,/Facture préétablie — annulée par avoir/);assert.match(remoteCsv,/enregistré ailleurs/);assert.match(remoteCsv,/Les avoirs reçus sur les factures/);assert.match(remoteCsv,/400,000/);
+  // Même capture, maintenant associée au vrai propriétaire : la preuve
+  // SQLite doit être identique à la reconstruction serveur, sans compter
+  // les remboursements de l'autre commercial dans sa caisse.
+  mobile.exec('SAVEPOINT owner_check');
+  mobile.prepare('UPDATE identified_device SET commercial_id=? WHERE id=1').run(first.id);
+  mobile.prepare('UPDATE credit_reference_prototype_cache SET commercial_id=? WHERE id=1').run(first.id);
+  mobile.prepare("DELETE FROM identified_local_operations WHERE operation_kind='sale' AND entity_id=?").run(saleId);
+  for(const [operation,kind,entity,recorded] of [[salesOp,'sale',saleId,at],[invoiceOp,'journal',invoiceId,at],[receiptOp,'journal',invoiceId,receipt.createdAt]])mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(operation,first.id,kind,entity,recorded);
+  const ownerIdentity={...identity,commercialId:first.id};
+  const ownerExport=await readCreditJournalExportPrototype(tx,ownerIdentity,day,'Premier',digest),ownerView=describeCreditJournalPrototype(ownerExport);
+  assert.equal(ownerView.remoteOwnedCredits.length,2);assert.equal(ownerView.totals.creditNotes,719000);assert.equal(ownerView.totals.billedAfterLocalCredits,0);assert.equal(ownerView.totals.collectedAfterLocalRefunds,700000);
+  const ownerCash=await readLocalJournalCashReconciliation(tx,ownerIdentity,day,digest);
+  assert.equal(ownerCash.events.filter(e=>e.kind==='owner-credit').length,2);
+  const serverOwnerCash=await (await fetch(`${origin}/v5/day/${day}/journal-cash`,{headers:headers(a.token)})).json();
+  assert.equal(compareCashReconciliation(ownerCash,serverOwnerCash,first.id,day).matches,true);
+  const attemptOwner=await prepareVerifiedPrototypeClose(tx,ownerIdentity,day,0,randomUUID,digest);
+  const {matchingCashProof}=await import('./cash-close-fixture.js');
+  assert.equal(attemptOwner.cashProof,await matchingCashProof(pool,first.id,day));
+  mobile.exec('ROLLBACK TO owner_check; RELEASE owner_check');
   // Une écriture locale en attente ou une source modifiée ne doit pas être
   // considérée comme la facture annulée vérifiée.
   mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,1,'{}');

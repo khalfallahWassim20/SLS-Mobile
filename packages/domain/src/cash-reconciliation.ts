@@ -10,6 +10,7 @@ const entry=z.discriminatedUnion('kind',[
  z.object({...common,kind:z.literal('receipt'),invoiceId:id,receiptId:id,prePaid:amount,oldDebtPaid:amount,creditFull:z.boolean(),...cheque}).strict(),
  z.object({...common,kind:z.literal('settlement'),amount:amount.positive(),...cheque}).strict(),
  z.object({...common,kind:z.literal('credit'),invoiceId:id,invoiceKind:z.enum(['sale','preinvoice']),invoiceTotal:amount,refund:amount,retainedCredit:amount}).strict(),
+ z.object({...common,kind:z.literal('owner-credit'),invoiceId:id,invoiceKind:z.enum(['sale','preinvoice']),invoiceTotal:amount,refund:amount,retainedCredit:amount}).strict(),
  z.object({...common,kind:z.literal('admin-refund'),invoiceId:id,invoiceKind:z.enum(['sale','preinvoice']),assignmentId:id,refund:amount.positive()}).strict()
 ]);
 const payload=z.object({version:z.literal(5),commercialId:id,day:z.string(),events:z.array(entry).max(20000)}).strict();
@@ -18,16 +19,18 @@ export function validateCashReconciliation(value:unknown,commercialId:string,day
  const date=new Date(`${day}T00:00:00.000Z`);if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==day)throw Error('Date de comparaison invalide.');
  const result=payload.safeParse(value);if(!result.success||result.data.commercialId!==commercialId||result.data.day!==day)throw Error('Comparaison des encaissements invalide ou identité différente.');
  const seen=new Set<string>();return result.data.events.map(e=>{
-  if(seen.has(e.operationId))throw Error('Événement de caisse dupliqué.');seen.add(e.operationId);
+  const key=e.kind==='owner-credit'?`owner:${e.operationId}`:e.operationId;
+  if(seen.has(key))throw Error('Événement de caisse dupliqué.');seen.add(key);
   if('mode' in e&&e.mode==='Chèque'&&(e.kind==='settlement'||e.prePaid+e.oldDebtPaid>0)&&(!e.chequeNumber.trim()||!e.chequeBank.trim()||!e.chequeDue.trim()))throw Error('Chèque incomplet.');
   return {...e,recordedAt:new Date(e.recordedAt).toISOString()};
  });
 }
 export function compareCashReconciliation(local:unknown,server:unknown,commercialId:string,day:string){
- const left=validateCashReconciliation(local,commercialId,day),right=validateCashReconciliation(server,commercialId,day),serverById=new Map(right.map(e=>[e.operationId,e]));
+ const key=(e:CashReconciliationEntry)=>e.kind==='owner-credit'?`owner:${e.operationId}`:e.operationId;
+ const left=validateCashReconciliation(local,commercialId,day),right=validateCashReconciliation(server,commercialId,day),serverById=new Map(right.map(e=>[key(e),e]));
  const differences:{status:'local'|'server'|'changed';kind:CashReconciliationEntry['kind'];operationId:string}[]=[];
  const add=(status:'local'|'server'|'changed',item:CashReconciliationEntry)=>{if(differences.length<8)differences.push({status,kind:item.kind,operationId:item.operationId});};
- let onlyLocal=0,changed=0;for(const item of left){const other=serverById.get(item.operationId);if(!other){onlyLocal++;add('local',item);continue;}serverById.delete(item.operationId);if(canonicalJson(item)!==canonicalJson(other)){changed++;add('changed',item);}}
+ let onlyLocal=0,changed=0;for(const item of left){const other=serverById.get(key(item));if(!other){onlyLocal++;add('local',item);continue;}serverById.delete(key(item));if(canonicalJson(item)!==canonicalJson(other)){changed++;add('changed',item);}}
  for(const item of serverById.values())add('server',item);
  return {matches:onlyLocal===0&&changed===0&&serverById.size===0,onlyLocal,onlyServer:serverById.size,changed,differences};
 }
@@ -54,5 +57,5 @@ export function cashClosureCanonical(sales:unknown,journal:unknown,commercialId:
   if(tunis(e.recordedAt)!==day)throw Error('Événement de journal hors de la journée de clôture.');
   if(salesSeen.has(e.operationId))throw Error('Identifiant de mouvement dupliqué.');
  }
- return canonicalJson({protocol:'sls-cash-close-v1',commercialId,day,initial,refunds,saleStates,journalEvents:order(journalEvents)});
+ return canonicalJson({protocol:'sls-cash-close-v1',commercialId,day,initial,refunds,saleStates,journalEvents:journalEvents.sort((a,b)=>a.operationId<b.operationId?-1:a.operationId>b.operationId?1:a.kind<b.kind?-1:a.kind>b.kind?1:0)});
 }

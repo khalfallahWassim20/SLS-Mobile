@@ -9,6 +9,7 @@ type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
 export async function readLocalJournalCashReconciliation(tx:Tx,identity:DeviceIdentity,day:string,digest:(text:string)=>Promise<string>){
  const journal=await readCreditJournalExportPrototype(tx,identity,day,'Comparaison',digest);journalCsv(journal);
+ if(!journal.creditOwnersKnown)throw Error('Propriétaires des avoirs indisponibles : synchronisez.');
  if(!journal.adminRefundAssignmentsKnown)throw Error('Attributions administrateur indisponibles : synchronisez.');
  const events:CashReconciliationEntry[]=[];
  async function operation(invoiceId:string,recordedAt:string){
@@ -30,7 +31,9 @@ export async function readLocalJournalCashReconciliation(tx:Tx,identity:DeviceId
  for(const {note} of journal.credits??[]){if(tunisDay(new Date(note.command.recordedAt))!==day)continue;
   const source=note.source as Record<string,any>,invoice=note.kind==='sale'?source:source.invoice;
   events.push({kind:'credit',operationId:note.command.operationId,clientId:invoice.clientId,recordedAt:note.command.recordedAt,invoiceId:note.command.invoiceId,invoiceKind:note.kind,invoiceTotal:note.kind==='sale'?invoice.total:invoice.amount,refund:note.refund,retainedCredit:note.retainedCredit});
+  if(journal.ownedLocalCreditOperationIds?.includes(note.command.operationId))events.push({kind:'owner-credit',operationId:note.command.operationId,clientId:invoice.clientId,recordedAt:note.command.recordedAt,invoiceId:note.command.invoiceId,invoiceKind:note.kind,invoiceTotal:note.kind==='sale'?invoice.total:invoice.amount,refund:note.refund,retainedCredit:note.retainedCredit});
  }
+ for(const p of journal.remoteOwnedCredits??[])events.push({kind:'owner-credit',operationId:p.operationId,clientId:p.clientId,recordedAt:p.recordedAt,invoiceId:p.invoiceId,invoiceKind:p.kind,invoiceTotal:p.invoiceTotal,refund:p.refund,retainedCredit:p.retainedCredit});
  for(const p of journal.adminCreditRefunds??[])events.push({kind:'admin-refund',operationId:p.noteOperationId,clientId:p.clientId,recordedAt:p.recordedAt,invoiceId:p.invoiceId,invoiceKind:p.kind,assignmentId:p.assignmentId,refund:p.refund});
  const result={version:5 as const,commercialId:identity.commercialId,day,events};validateCashReconciliation(result,identity.commercialId,day);return result;
 }
