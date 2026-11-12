@@ -10,14 +10,14 @@ export function CreditJournalViewPrototype({model,onCredit,onPayment,onExport,bu
  const t=model.totals;
  return <View style={styles.container}>
   <Text style={styles.title}>Journal du {model.day}</Text>
-  <Text style={styles.notice}>Instantané de ce téléphone, pas un chiffre d’affaires consolidé. Les factures d’origine et les paiements restent dans l’historique.</Text>
+  <Text style={styles.notice}>Instantané de ce téléphone et des remboursements administrateur attribués reçus à la dernière synchronisation, pas un chiffre d’affaires consolidé. Les factures d’origine et les paiements restent dans l’historique.</Text>
   <View style={styles.card}>
    <Text style={styles.heading}>Totaux du téléphone</Text>
    <Text>Facturé brut : {money(t.billedGross)}</Text><Text>Facture préétablie payée : {money(t.prePaid)}</Text><Text>Ancienne dette réglée : {money(t.oldDebtPaid)}</Text><Text>Encaissé avant remboursements : {money(t.collectedGross)}</Text>
    <Text>Avoirs créés sur ce téléphone : {money(t.creditNotes)}</Text><Text>Remboursements d’avoirs : {money(t.refunds)}</Text><Text>Crédit client conservé : {money(t.retainedCredit)}</Text>
    <Text>Facturé moins avoirs locaux : {money(t.billedAfterLocalCredits)}</Text><Text>Encaissé après remboursements de ventes et avoirs : {money(t.collectedAfterLocalRefunds)}</Text>
   </View>
-  {model.hasRemoteCancellations&&<Text style={styles.notice}>Des factures ont été annulées ailleurs. Ces avoirs et remboursements ne sont pas ajoutés aux totaux de ce téléphone : consultez le journal serveur.</Text>}
+  {model.hasRemoteCancellations&&<Text style={styles.notice}>Des factures ont été annulées ailleurs. Ces avoirs ne sont pas ajoutés au facturé de ce téléphone. Les remboursements administrateur attribués à ce commercial sont indiqués séparément : consultez aussi le journal serveur.</Text>}
   {model.rows.map(row=><View key={row.clientId} style={styles.card}>
    <Text style={styles.heading}>{row.clientName}</Text><Text>Facturé brut : {money(row.grossTotal)}</Text>
    {row.preInvoice&&<View><Text>Préétablie : {money(row.preInvoice.amount)}</Text>{row.preInvoice.cancellation&&<Text style={styles.warning}>{mark(row.preInvoice.cancellation)}</Text>}</View>}
@@ -25,6 +25,8 @@ export function CreditJournalViewPrototype({model,onCredit,onPayment,onExport,bu
    {row.preInvoice&&!row.preInvoice.cancellation&&<TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>onPayment(row.clientId,row.preInvoice!.id)}><Text style={styles.link}>Paiement du journal</Text></TouchableOpacity>}
    <TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>onCredit(row.clientId)}><Text style={styles.link}>Préparer un avoir</Text></TouchableOpacity>
   </View>)}
+  {!model.adminRefundAssignmentsKnown&&<Text style={styles.warning}>Attributions administrateur indisponibles dans cette ancienne référence : synchronisez pour actualiser.</Text>}
+  {model.adminCreditRefunds.length>0&&<View style={styles.card}><Text style={styles.heading}>Remboursements administrateur attribués à ce commercial</Text><Text style={styles.notice}>Reçus lors de la dernière synchronisation et déduits de la caisse. Vérifiez le versement physique ; une nouvelle attribution peut rester inconnue hors ligne.</Text>{model.adminCreditRefunds.map(r=><Text key={r.noteOperationId}>{r.clientName} · {r.kind==='sale'?'vente':'préétablie'} {r.invoiceId} · {money(r.refund)}</Text>)}<Text>Total : {money(model.adminCreditRefundTotal)}</Text></View>}
   {model.saleRefunds.length>0&&<View style={styles.card}><Text style={styles.heading}>Remboursements de modifications</Text><Text style={styles.notice}>Ces remboursements du jour sont déduits du paiement initial. Le versement physique reste à vérifier.</Text>{model.saleRefunds.map(r=><Text key={r.revisionId}>{r.clientName} · vente {r.saleId} · {r.recordedAt} · {money(r.refund)}</Text>)}<Text>Total : {money(model.saleRefundTotal)}</Text></View>}
   {model.remoteSaleRefunds.length>0&&<View style={styles.card}><Text style={styles.heading}>Remboursements sur ventes d’autres appareils</Text><Text style={styles.notice}>Ces sorties ont été enregistrées sur ce téléphone et sont déduites de son encaissé. Le versement physique reste à vérifier.</Text>{model.remoteSaleRefunds.map(r=><Text key={r.operationId}>{r.clientName} · vente {r.invoiceId} · {r.recordedAt} · {money(r.refund)}</Text>)}<Text>Total : {money(model.remoteSaleRefundTotal)}</Text></View>}
   {model.events.length>0&&<View style={styles.card}><Text style={styles.heading}>Avoirs créés ce jour</Text>{model.events.map(e=><View key={e.operationId}><Text>{e.clientName} · {e.kind==='sale'?'vente':'préétablie'} · {money(e.invoiceTotal)}</Text><Text>Remboursé {money(e.refund)} · Crédit {money(e.retainedCredit)} · {e.pending?'en attente':'synchronisé'}</Text>{e.kind==='preinvoice'&&<Text style={styles.warning}>Correction séparée nécessaire dans le système principal.</Text>}</View>)}</View>}

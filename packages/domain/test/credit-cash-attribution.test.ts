@@ -41,12 +41,39 @@ test('avoirs vente et préétablie : sorties chez l’auteur, dette ancienne con
   await assert.rejects(assignAdminCreditRefund(pool,{requestId:randomUUID(),noteOperationId:command.operationId,refund:49999,commercialId:b.id},'admin'),/montant modifié/);
   const assignment={requestId:randomUUID(),noteOperationId:command.operationId,refund:50000,commercialId:b.id};
   assert.equal((await assignAdminCreditRefund(pool,assignment,'admin')).status,'received');assert.equal((await assignAdminCreditRefund(pool,assignment,'admin')).status,'duplicate');
+  const extraInvoice={...invoice,id:randomUUID(),journalDate:'2026-11-07',createdAt:'2026-11-07T09:00:00.000Z'};
+  await storeJournalSnapshot(pool,{operationId:randomUUID(),version:1,invoice:extraInvoice,receipts:[]},'identified',auth);
+  const extraReceipt={...receipt,id:randomUUID(),preInvoiceId:extraInvoice.id,journalDate:'2026-11-07',createdAt:'2026-11-07T10:00:00.000Z'};
+  await storeJournalSnapshot(pool,{operationId:randomUUID(),version:2,invoice:extraInvoice,receipts:[extraReceipt]},'identified',auth);
+  const preCommand={operationId:randomUUID(),invoiceId:extraInvoice.id,expectedVersion:2,recordedAt:'2026-11-09T10:01:00.000Z',choice:'refund' as const};
+  await storePrototypePreInvoiceCredit(pool,preCommand,{kind:'admin',actorId:'admin'});
+  const preAssignment={requestId:randomUUID(),noteOperationId:preCommand.operationId,refund:250000,commercialId:null};
+  await assignAdminCreditRefund(pool,preAssignment,'admin');
+  const {readPrototypeCreditReference}=await import('../../../apps/api/src/credit-note-reference-prototype.js');
+  const {validatePrototypeCreditReference}=await import('../../../apps/mobile/credit-note-reference-prototype.js');
+  const reference=await readPrototypeCreditReference(pool),validated=validatePrototypeCreditReference(reference);
+  assert.deepEqual(new Map(validated.cashAssignments?.map(x=>[x.noteOperationId,[x.commercialId,x.refund]])),new Map([[command.operationId,[b.id,50000]],[preCommand.operationId,[null,250000]]]));
+  assert.throws(()=>validatePrototypeCreditReference({...reference,cashAssignments:[{...reference.cashAssignments[0],refund:1}]}),/Attribution/);
+  assert.throws(()=>validatePrototypeCreditReference({...reference,cashAssignments:[reference.cashAssignments[0],reference.cashAssignments[0]]}),/Attribution/);
+  const {DatabaseSync}=await import('node:sqlite');
+  const {identifiedDeviceSchema}=await import('../../../apps/mobile/identified-device.js');
+  const {creditReferencePrototypeSchema,savePrototypeCreditReference}=await import('../../../apps/mobile/credit-note-reference-cache-prototype.js');
+  const cache=new DatabaseSync(':memory:');try{
+   cache.exec(identifiedDeviceSchema+creditReferencePrototypeSchema);const identity={commercialId:b.id,serverOrigin:'https://example.test'};
+   cache.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(b.id,identity.serverOrigin);
+   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>cache.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{cache.prepare(sql).run(...args)}};
+   await savePrototypeCreditReference(tx,identity,identity,reference);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...reference,cashAssignments:[]}),/Attribution/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...reference,cashAssignments:[{...reference.cashAssignments[0],commercialId:null}]}),/Attribution/);
+   await assert.rejects(savePrototypeCreditReference(tx,identity,identity,{...reference,cashAssignments:null}),/Attributions/);
+  }finally{cache.close();}
   const nextA=await readPrototypeCreditJournal(pool,a.id,'2026-11-09'),nextB=await readPrototypeCreditJournal(pool,b.id,'2026-11-09');
-  assert.equal(nextA.creditNoteTotal,119000);assert.equal(nextA.creditRefundUnassignedTotal,0);assert.equal(nextA.creditRefundTotal,0);
+  assert.equal(nextA.creditNoteTotal,719000);assert.equal(nextA.creditRefundUnassignedTotal,0);assert.equal(nextA.creditRefundTotal,0);
   assert.equal(nextB.creditNoteTotal,0);assert.equal(nextB.creditRefundTotal,50000);assert.equal(nextB.creditCashEvents[0].cashAssignment?.requestId,assignment.requestId);assert.equal(nextB.collectedAfterRefunds,-50000);
   const {requestTourTransition}=await import('../../../apps/api/src/tour-closure-store.js');
   await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-09',expectedVersion:0},actor,true,true),/rapprochement du téléphone/);
   await db.query('UPDATE credit_refund_assignment_prototype SET refund=1 WHERE request_id=$1',[assignment.requestId]);
   await assert.rejects(readPrototypeCreditJournal(pool,b.id,'2026-11-09'),/Attribution de remboursement incohérente/);
+  await assert.rejects(readPrototypeCreditReference(pool),/Attribution de remboursement incohérente/);
  }finally{await db.close();}
 });

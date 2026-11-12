@@ -120,7 +120,15 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    if(!status||typeof status.active!=='boolean'||typeof status.statusRevision!=='string'||!/^\d+$/.test(status.statusRevision)||BigInt(status.statusRevision)<1n)throw new RangeError('Statut client indisponible.');
    return {...c,active:status.active,statusRevision:status.statusRevision as string};
   });
-  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,eligibleSaleProofs,eligibleJournalIds,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs};
+  const assignedRows=await db.query(`SELECT note_operation_id AS "noteOperationId",request_id AS "requestId",commercial_id AS "commercialId",refund::text AS refund,actor_id AS "actorId",assigned_at AS "assignedAt" FROM credit_refund_assignment_prototype`);
+  const allNotes=new Map([...saleNotes.rows,...preNotes.rows].map(r=>[r.operation_id,r.event]));
+  const assignmentIds=new Set<string>();
+  const cashAssignments=assignedRows.rows.map(r=>{
+   const event=allNotes.get(r.noteOperationId),date=new Date(r.assignedAt);
+   if(!event||event.actor?.role!=='admin'||!Number.isSafeInteger(event.refund)||event.refund<=0||r.refund!==String(event.refund)||!z.string().uuid().safeParse(r.requestId).success||(r.commercialId!==null&&!z.string().uuid().safeParse(r.commercialId).success)||typeof r.actorId!=='string'||!r.actorId.trim()||r.actorId.length>200||!Number.isFinite(date.getTime())||assignmentIds.has(r.noteOperationId))throw new RangeError('Attribution de remboursement incohérente.');
+   assignmentIds.add(r.noteOperationId);return {noteOperationId:r.noteOperationId as string,requestId:r.requestId as string,commercialId:r.commercialId as string|null,refund:event.refund as number,actorId:r.actorId as string,assignedAt:date.toISOString()};
+  });
+  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,eligibleSaleProofs,eligibleJournalIds,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs,cashAssignments};
 }
 /** En v5 les inactifs sont conservés pour le rapprochement, jamais pour la
  * sélection de nouveaux clients. La différence active/inactive est explicite. */

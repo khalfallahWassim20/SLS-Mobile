@@ -1,6 +1,6 @@
 /** Contrat futur non utilisé par l'application. Une référence v5 ne doit pas
  * être réduite en v3/v4 : les anciens téléphones ignoreraient les avoirs. */
-import {canonicalJson,prepareFullCreditNote,reconcilePreInvoiceCredits,type CreditNoteEvent,type CreditJournalState} from '@sls/domain';
+import {canonicalJson,prepareFullCreditNote,reconcilePreInvoiceCredits,calculatePreInvoiceCancellation,type CreditNoteEvent,type CreditJournalState} from '@sls/domain';
 import {validateIdentifiedReference} from './identified-reference';
 const obj=(v:unknown):Record<string,unknown>|null=>typeof v==='object'&&v!==null&&!Array.isArray(v)?v as Record<string,unknown>:null;
 const uuid=(v:unknown):v is string=>typeof v==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
@@ -61,9 +61,24 @@ export function validatePrototypeCreditReference(value:unknown) {
  });
  const seenJournals=new Set<string>();
  const eligibleJournalIds=raw.eligibleJournalIds.map(id=>{if(typeof id!=='string'||!availableJournals.has(id)||seenJournals.has(id))throw Error('Source préétablie identifiée invalide.');seenJournals.add(id);return id;});
+ // Ancien cache hors ligne sans cette liste : ne pas inventer d'affectations.
+ // La liste fournie par le serveur est reliée aux avoirs et à leurs montants.
+ let cashAssignments:null|{noteOperationId:string;requestId:string;commercialId:string|null;refund:number;actorId:string;assignedAt:string}[]=null;
+ if(raw.cashAssignments!==undefined&&raw.cashAssignments!==null){
+  if(!Array.isArray(raw.cashAssignments))throw Error('Attributions de caisse invalides.');
+  const notes=new Map<string,{refund:number;actor:{id:string;role:string}}>();
+  for(const s of sales)if(s.creditNote)notes.set(s.creditNote.command.operationId,{refund:s.creditNote.refund,actor:s.creditNote.actor});
+  for(const j of journals)if(j.creditNote){const c=calculatePreInvoiceCancellation({balance:0,invoiceTotal:j.total,receipts:j.receipts,alreadyCancelled:false,choice:j.creditNote.choice??undefined});notes.set(j.creditNote.operationId,{refund:c.refund,actor:j.creditNote.actor});}
+  const ids=new Set<string>(),requests=new Set<string>();
+  cashAssignments=raw.cashAssignments.map(value=>{
+   const a=obj(value),note=a&&typeof a.noteOperationId==='string'?notes.get(a.noteOperationId):undefined;
+   if(!a||Object.keys(a).sort().join(',')!=='actorId,assignedAt,commercialId,noteOperationId,refund,requestId'||!uuid(a.noteOperationId)||!uuid(a.requestId)||(a.commercialId!==null&&!uuid(a.commercialId))||!note||note.actor.role!=='admin'||note.refund<=0||a.refund!==note.refund||typeof a.actorId!=='string'||!a.actorId.trim()||a.actorId.length>200||typeof a.assignedAt!=='string'||!Number.isFinite(Date.parse(a.assignedAt))||new Date(a.assignedAt).toISOString()!==a.assignedAt||ids.has(a.noteOperationId)||requests.has(a.requestId))throw Error('Attribution de caisse incohérente.');
+   ids.add(a.noteOperationId);requests.add(a.requestId);return {noteOperationId:a.noteOperationId,requestId:a.requestId,commercialId:a.commercialId as string|null,refund:a.refund as number,actorId:a.actorId,assignedAt:a.assignedAt};
+  });
+ }
  // Vérifie aussi les identifiants de reçus et d'avoirs entre préétablies.
  reconcilePreInvoiceCredits(0,[],journals);
- return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,eligibleSaleProofs,eligibleJournalIds,journalStates:journals};
+ return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,eligibleSaleProofs,eligibleJournalIds,journalStates:journals,cashAssignments};
 }
 
 /** Seule cette liste est destinée au choix d'un client pour une nouvelle

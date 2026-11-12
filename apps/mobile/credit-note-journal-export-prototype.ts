@@ -25,6 +25,17 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
  if(!pending||pending.n)throw Error('Journal indisponible pendant une modification distante en attente.');
  const reference=await readPrototypeCreditReferenceCache(tx,identity);if(!reference)throw Error('Référence d’avoirs indisponible.');
  const credits=await readAllOfflineCreditPrototype(tx,identity);
+ const adminCreditRefunds:NonNullable<JournalExport['adminCreditRefunds']>=[];
+ for(const assignment of reference.cashAssignments??[]){
+  if(assignment.commercialId!==identity.commercialId)continue;
+  const sale=reference.saleStates.find(s=>s.creditNote?.command.operationId===assignment.noteOperationId);
+  const pre=reference.journalStates.find(j=>j.creditNote?.operationId===assignment.noteOperationId);
+  const source=sale??pre,recordedAt=sale?.creditNote?.command.recordedAt??pre?.creditNote?.recordedAt;
+  if(!source||!recordedAt)throw Error('Attribution de remboursement incohérente.');
+  if(tunisDay(new Date(recordedAt))!==day)continue;
+  const client=reference.clients.find(c=>c.id===source.clientId);if(!client)throw Error('Client du remboursement indisponible.');
+  adminCreditRefunds.push({noteOperationId:assignment.noteOperationId,assignmentId:assignment.requestId,invoiceId:sale?sale.saleId:pre!.id,kind:sale?'sale':'preinvoice',clientId:source.clientId,clientName:client.name,recordedAt,assignedAt:assignment.assignedAt,refund:assignment.refund});
+ }
  const saleRows=await tx.getAllAsync<{id:number;payload:string}>('SELECT id,payload FROM sales ORDER BY id DESC');
  const sales=saleRows.map(row=>({...value<Omit<SavedSale,'id'>>(row.payload),id:row.id}));
  const invoiceRows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid');
@@ -41,7 +52,7 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   clientIds.add(receipt.clientId);
  }
  for(const {note} of credits){const src=note.source as {clientId?:string;invoice?:{clientId?:string}};const id=note.kind==='sale'?src.clientId:src.invoice?.clientId;if(!id)throw Error('Client de l’avoir indisponible.');if(tunisDay(new Date(note.command.recordedAt))===day)clientIds.add(id);}
- for(const refund of [...saleRefunds,...remoteSaleRefunds])clientIds.add(refund.clientId);
+ for(const refund of [...saleRefunds,...remoteSaleRefunds,...adminCreditRefunds])clientIds.add(refund.clientId);
  const snapshot=await loadCreditBalanceSnapshotPrototype(tx,identity,digest);
  for(const id of clientIds){const balance=snapshot.balanceFor(id);if(balance.conflict)throw Error('Solde en conflit : export refusé.');}
  const remoteSaleUpdates:NonNullable<JournalExport['remoteSaleUpdates']>=[];
@@ -72,5 +83,5 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   if(source.version!==local.version||canonicalJson(source.invoice)!==canonicalJson(invoice)||canonicalJson(source.receipts)!==canonicalJson(receipts.filter(r=>r.preInvoiceId===invoice.id))||await digest(canonicalJson(source))!==proof.hash)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
   remoteCancellations.push({kind:'preinvoice',invoiceId:invoice.id,day:tunisDay(new Date(state.creditNote.recordedAt)),source});
  }
- return {day,commercial,rows,receipts,credits,remoteCancellations,remoteSaleUpdates,saleRefunds,remoteSaleRefunds,initialSalePayments:cash.initialPayments};
+ return {day,commercial,rows,receipts,credits,remoteCancellations,remoteSaleUpdates,saleRefunds,remoteSaleRefunds,initialSalePayments:cash.initialPayments,adminCreditRefunds,adminRefundAssignmentsKnown:reference.cashAssignments!==null};
 }

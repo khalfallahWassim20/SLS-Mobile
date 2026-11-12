@@ -40,3 +40,15 @@ test('export local : avoirs du jour distincts des factures et de l’ancienne de
  assert.throws(()=>journalCsv({...data,credits:[{...notes[0],note:{...notes[0].note,refund:1}}]}),/incohérents/);
  const later=journalCsv({...data,day:'2026-11-09',rows:[]});assert.doesNotMatch(later,/facture du 2026-11-07/);
 });
+
+ test('attributions administrateur dans les exports et le total, sans doublon',async()=>{
+  const {randomUUID}=await import('node:crypto');
+  const {describeCreditJournalPrototype}=await import('../../../apps/mobile/credit-note-journal-view-model-prototype.js');
+  const r={noteOperationId:randomUUID(),assignmentId:randomUUID(),invoiceId:randomUUID(),kind:'sale' as const,clientId:randomUUID(),clientName:'Client fictif',recordedAt:'2026-11-08T10:00:00.000Z',assignedAt:'2026-11-08T11:00:00.000Z',refund:50000};
+  const data={day:'2026-11-08',commercial:'Fictif',rows:[],receipts:[],credits:[],adminCreditRefunds:[r],adminRefundAssignmentsKnown:true};
+  const model=describeCreditJournalPrototype(data);assert.equal(model.adminCreditRefundTotal,50000);assert.equal(model.totals.collectedAfterLocalRefunds,-50000);
+  assert.match(journalCsv(data),/TOTAL REMBOURSEMENTS ADMIN ATTRIBUÉS/);assert.match(journalCsv(data),/50,000/);assert.match(journalHtml(data),/versement physique/);
+  assert.throws(()=>journalCsv({...data,adminCreditRefunds:[r,r]}),/Attribution/);
+  assert.throws(()=>journalCsv({...data,adminCreditRefunds:[{...r,refund:0}]}),/Attribution/);
+  assert.match(journalCsv({...data,adminCreditRefunds:[],adminRefundAssignmentsKnown:false}),/ancienne référence/);
+ });

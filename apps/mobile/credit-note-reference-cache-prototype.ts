@@ -21,6 +21,11 @@ export async function savePrototypeCreditReference(tx:Tx,identity:DeviceIdentity
  if(previous) {
   if(previous.commercialId!==identity.commercialId||previous.serverOrigin!==identity.serverOrigin)throw Error('Cache lié à une autre identité.');
   const old=validatePrototypeCreditReference(JSON.parse(previous.payload));
+  if(old.cashAssignments){
+   if(!next.cashAssignments)throw Error('Attributions de caisse périmées.');
+   const assignments=new Map(next.cashAssignments.map(a=>[a.noteOperationId,a]));
+   for(const item of old.cashAssignments)if(!assignments.has(item.noteOperationId)||canonicalJson(assignments.get(item.noteOperationId))!==canonicalJson(item))throw Error('Attribution de caisse périmée ou incohérente.');
+  }
   const nextClients=new Map(next.clients.map(c=>[c.id,c]));
   for(const client of old.clients){
    const updated=nextClients.get(client.id);
