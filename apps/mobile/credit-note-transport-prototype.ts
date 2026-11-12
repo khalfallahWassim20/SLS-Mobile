@@ -1,4 +1,5 @@
 /** Transport v5 de test isolé. Les opérations et leurs accusés restent gérés par SQLite. */
+import {compareCashReconciliation} from '@sls/domain';
 import {validSession} from './secure-commercial-session';
 import type {CommercialSession} from './commercial-login';
 import type {reconcileLocalSalePrototype} from './local-sale-reconcile-prototype';
@@ -30,6 +31,7 @@ type Dependencies={
   resolve:(identity:DeviceIdentity,verified:DeviceIdentity,entry:IdentifiedEntry,response:unknown,reference:unknown,guard:()=>void)=>Promise<void>;
  };
  saleCash?: (identity:DeviceIdentity,day:string,guard:()=>void)=>Promise<unknown>;
+ journalCash?: (identity:DeviceIdentity,day:string,guard:()=>void)=>Promise<unknown>;
  tour?:{
   getAttempt:(identity:DeviceIdentity,day:string,guard:()=>void)=>Promise<Attempt|null>;
   prepare:(identity:DeviceIdentity,day:string,version:number,guard:()=>void)=>Promise<Attempt>;
@@ -126,6 +128,10 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
   compareSaleCash:(day:string)=>exclusive(async()=>{
    if(!validDay(day)||!io.saleCash)throw Error('Comparaison de caisse indisponible.');
    const server=await read(`day/${day}/sale-cash`);check();const local=await io.saleCash(identity,day,check);check();return compareSaleCashEvents(local,server,identity,day);
+  }),
+  compareJournalCash:(day:string)=>exclusive(async()=>{
+   if(!validDay(day)||!io.journalCash)throw Error('Comparaison du journal indisponible.');
+   const server=await read(`day/${day}/journal-cash`);check();const local=await io.journalCash(identity,day,check);check();return compareCashReconciliation(local,server,identity.commercialId,day);
   }),
   refreshDay:(day:string)=>exclusive(()=>readDay(day)),
   closeDay:(day:string)=>exclusive(async()=>{

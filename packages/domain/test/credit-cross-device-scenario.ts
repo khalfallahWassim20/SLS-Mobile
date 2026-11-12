@@ -1,3 +1,5 @@
+import {readLocalJournalCashReconciliation} from '../../../apps/mobile/journal-cash-reconciliation-prototype.js';
+import {compareCashReconciliation} from '@sls/domain';
 import {readLocalSaleCashComparison,compareSaleCashEvents} from '../../../apps/mobile/credit-sale-cash-compare-prototype.js';
 import {readPendingCreditAbandonPrototype,resolveCreditAbandonPrototype} from '../../../apps/mobile/credit-note-abandon-prototype.js';
 import {readAbandonedCreditNotesPrototype} from '../../../apps/mobile/credit-note-offline-prototype.js';
@@ -362,6 +364,9 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'sale',saleId,saleProof,undefined,true)),/rapprochement/);
   await assert.rejects(transaction(()=>assertKnownDeviceEntity(tx,identity,'journal',invoiceId,undefined,journalProof,true)),/rapprochement/);
   assert.match(journalCsv(await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'Deuxième',digest))),/synchronisé/);
+  const cashRemote=await get(`day/${day}/journal-cash`),cashLocal=await transaction(()=>readLocalJournalCashReconciliation(tx,identity,day,digest));
+  assert.deepEqual(cashLocal.events.map(e=>e.kind).sort(),['credit','credit']);assert.equal(compareCashReconciliation(cashLocal,cashRemote,identity.commercialId,day).matches,true);
+
   // Factures du premier commercial, avoirs créés par le deuxième :
   // l'annulation reste au propriétaire mais la sortie de caisse revient à l'auteur.
   const ownerDay=await (await fetch(`${origin}/v5/day/${day}/details`,{headers:headers(a.token)})).json();

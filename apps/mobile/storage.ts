@@ -1,3 +1,4 @@
+import {readLocalJournalCashReconciliation} from './journal-cash-reconciliation-prototype';
 import {readLocalSaleCashComparison} from './credit-sale-cash-compare-prototype';
 import {readPendingCreditAbandonPrototype,resolveCreditAbandonPrototype} from './credit-note-abandon-prototype';
 import {reconcileLocalSalePrototype} from './local-sale-reconcile-prototype';
@@ -462,6 +463,7 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
    read:async(id,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof readRemoteAbandonCandidatePrototype>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await readRemoteAbandonCandidatePrototype(tx,id);guard();});return result!;},
    resolve:async(id,verified,entry,response,reference,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await resolveRemoteAbandonPrototype(tx,id,verified,entry,response,reference,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});}
   },
+  journalCash:async(id,day,guard)=>{const database=await db();let result:Awaited<ReturnType<typeof readLocalJournalCashReconciliation>>|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await readLocalJournalCashReconciliation(tx,id,day,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));guard();});return result!;},
   tour:{
    getAttempt:async(id,day,guard)=>{const database=await db();let result:Attempt|null=null;await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);result=await findTourCloseAttempt(tx,id.commercialId,day);guard();});return result;},
    prepare:async(id,day,version,guard)=>{const database=await db();let result:Attempt|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await prepareVerifiedPrototypeClose(tx,id,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));guard();});return result!;},

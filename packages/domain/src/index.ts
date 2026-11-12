@@ -160,3 +160,5 @@ export { calculatePreInvoiceCancellation } from './pre-invoice-credit-note.ts';
 export { reconcilePreInvoiceCredits } from './pre-invoice-credit-reconciliation.ts';
 export type { CreditJournalState } from './pre-invoice-credit-reconciliation.ts';
 export { reconcileSaleCredits } from './sale-credit-reconciliation.ts';
+export {validateCashReconciliation,compareCashReconciliation} from './cash-reconciliation.ts';
+export type {CashReconciliationEntry} from './cash-reconciliation.ts';

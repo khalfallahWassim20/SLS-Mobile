@@ -17,6 +17,7 @@ import {IdentifiedOverlap} from './identified-overlap.js';
 import {CreditProtocolUpgradeRequired} from './credit-note-active-guards.js';
 import {readPrototypeCreditReference} from './credit-note-reference-prototype.js';
 import {readPrototypeCreditJournal} from './credit-note-journal-prototype.js';
+import {readJournalCashReconciliation} from './journal-cash-reconciliation-prototype.js';
 import {readSaleCashPreview} from './sale-cash-preview-prototype.js';
 import {journalDateSchema} from './journal-protocol.js';
 import {readPrototypeCreditSources} from './credit-note-sources-prototype.js';
@@ -76,6 +77,11 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
    if(!cash.available){res.status(409).json({error:cash.reason});return;}
    res.json({version:5,commercialId:actor.id,day,initialEvents:cash.initialEvents,refundEvents:cash.refundEvents.map(({operationId,saleId,clientId,recordedAt,refund})=>({operationId,saleId,clientId,recordedAt,refund}))});
   }catch(e){await db.query('ROLLBACK');throw e;}finally{db.release();}
+ }catch(e){errorHandler(e,res,next);}});
+ if(options.allowCreditProtocol===true)r.get('/day/:day/journal-cash',async(req,res,next)=>{try{
+  const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
+  if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
+  const db=await pool.connect();try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));const result=await readJournalCashReconciliation(db,actor.id,req.params.day);await db.query('COMMIT');res.json(result);}catch(e){await db.query('ROLLBACK');throw e;}finally{db.release();}
  }catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day/details',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}const {closureEvents:_adminHistory,...details}=supportsCredit(req)?await readPrototypeCreditJournal(pool,actor.id,req.params.day):await readIdentifiedJournalDay(pool,actor.id,req.params.day,enforceMode);res.json(details);}catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}if(enforceMode)assertIdentifiedMode(await readSyncMode(pool));res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});

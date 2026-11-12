@@ -8,8 +8,11 @@ import type {Pool} from 'pg';
 import {schemaSql} from '../../../apps/api/src/schema.js';
 import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
-import {storeIdentifiedSale} from '../../../apps/api/src/identified-operations.js';
+import {storeIdentifiedSale,storeIdentifiedSettlement} from '../../../apps/api/src/identified-operations.js';
 import {storePrototypeCreditNote} from '../../../apps/api/src/credit-note-registry-prototype.js';
+import {storeJournalSnapshot} from '../../../apps/api/src/journal-store.js';
+import {readLocalJournalCashReconciliation} from '../../../apps/mobile/journal-cash-reconciliation-prototype.js';
+import {compareCashReconciliation} from '@sls/domain';
 import {assignAdminCreditRefund} from '../../../apps/api/src/credit-refund-assignment-prototype.js';
 import {identifiedCommercialRoutes} from '../../../apps/api/src/identified-tour-routes.js';
 import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
@@ -54,6 +57,7 @@ test('téléphone v5 : attribution arrivée après capture, abandon sûr, synchr
    request:async(url,options)=>{const r=await fetch(url.replace(identity.serverOrigin+'/api/mobile/identified',origin+'/v5'),options);if(url.endsWith('/close/abandon')&&loseAbandon){loseAbandon=false;assert.equal(r.status,200);throw Error('réponse abandon perdue');}if(url.endsWith('/close')&&r.status===201&&loseClose){loseClose=false;throw Error('réponse clôture perdue');}return r;},
    cacheReference:(x,y,v,guard)=>transaction(async()=>{guard();await saveVerifiedCreditReference(tx,x,y,v,digest);guard();}),
    cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),
+   journalCash:(id,d,guard)=>transaction(async()=>{guard();return readLocalJournalCashReconciliation(tx,id,d,digest);}),
    tour:{getAttempt:(id,d,guard)=>transaction(async()=>{guard();return findTourCloseAttempt(tx,id.commercialId,d);}),
     prepare:(id,d,v,guard)=>transaction(async()=>{guard();return prepareVerifiedPrototypeClose(tx,id,d,v,randomUUID,digest);}),
     acknowledge:(id,d,response,guard)=>transaction(async()=>{guard();await acknowledgeTourClose(tx,id.commercialId,d,response);guard();}),
@@ -64,8 +68,39 @@ test('téléphone v5 : attribution arrivée après capture, abandon sûr, synchr
   await assert.rejects(controller.closeDay(day),/Synchronisez, vérifiez le journal/);assert.equal(await transaction(()=>findTourCloseAttempt(tx,actor.id,day)),null);
   await controller.refreshReference();const data=await transaction(()=>readCreditJournalExportPrototype(tx,identity,day,'B',digest));const model=describeCreditJournalPrototype(data);
   assert.equal(model.adminCreditRefundTotal,50000);assert.equal(model.totals.collectedAfterLocalRefunds,-50000);
+  assert.deepEqual(await controller.compareJournalCash(day),{matches:true,onlyLocal:0,onlyServer:0,changed:0,differences:[]});
   await assert.rejects(controller.closeDay(day),/réponse clôture perdue/);const sent=await transaction(()=>findTourCloseAttempt(tx,actor.id,day));assert.deepEqual(sent?.adminRefundProof,[{noteOperationId:command.operationId,assignmentId:assignment.requestId,refund:50000}]);
   assert.deepEqual(await controller.closeDay(day),{status:'closed',version:1});assert.equal((await transaction(()=>findTourCloseAttempt(tx,actor.id,day)))?.status,'closed');
+  // Préétablie, paiement facture/ancienne dette et règlement global reçus
+  // pour la même identité : détecter l'autre appareil par UUID, pas par total.
+  const compareDay='2026-11-07',cid=randomUUID(),invoiceId=randomUUID(),creation=randomUUID(),receiptOp=randomUUID(),settlementId=randomUUID();
+  await db.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,$3)',[cid,'Autre client',1000000]);
+  const invoice={id:invoiceId,clientId:cid,clientName:'Autre client',journalDate:compareDay,createdAt:compareDay+'T09:00:00.000Z',sector:'',amount:600000};
+  const receipt={id:randomUUID(),preInvoiceId:invoiceId,clientId:cid,journalDate:compareDay,createdAt:compareDay+'T10:00:00.000Z',prePaid:250000,oldDebtPaid:400000,creditFull:false,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:1000000};
+  const initialEvent={operationId:creation,version:1,invoice,receipts:[]},finalEvent={operationId:receiptOp,version:2,invoice,receipts:[receipt]},session={secret,token:b.token,enforceMode:true,creditAware:true};
+  await storeJournalSnapshot(pool,initialEvent,'identified',session);await storeJournalSnapshot(pool,finalEvent,'identified',session);
+  const payment={syncOperationId:settlementId,clientId:cid,clientName:'Autre client',createdAt:compareDay+'T11:00:00.000Z',amount:100000,mode:'Virement' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+  await storeIdentifiedSettlement(pool,{operationId:settlementId,settlement:payment},session);await controller.refreshReference();
+  const missing=await controller.compareJournalCash(compareDay);assert.equal(missing.onlyServer,3);assert.equal(missing.differences.length,3);
+  mobile.prepare('INSERT INTO tour_pre_invoices(id,client_id,journal_date,payload) VALUES(?,?,?,?)').run(invoiceId,cid,compareDay,JSON.stringify(invoice));
+  mobile.prepare('INSERT INTO tour_journal_receipts(id,pre_invoice_id,client_id,journal_date,payload) VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,cid,compareDay,JSON.stringify(receipt));
+  mobile.prepare('INSERT INTO journal_sync_state VALUES(?,?,?)').run(invoiceId,2,JSON.stringify(finalEvent));
+  mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(creation,actor.id,'journal',invoiceId,invoice.createdAt);
+  mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(receiptOp,actor.id,'journal',invoiceId,receipt.createdAt);
+  const absent=await controller.compareJournalCash(compareDay);assert.equal(absent.onlyServer,1);assert.deepEqual(absent.differences,[{status:'server',kind:'settlement',operationId:settlementId}]);
+  mobile.prepare('INSERT INTO settlements(client_id,payload) VALUES(?,?)').run(cid,JSON.stringify(payment));
+  mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(settlementId,actor.id,'settlement',settlementId,payment.createdAt);
+  assert.deepEqual(await controller.compareJournalCash(compareDay),{matches:true,onlyLocal:0,onlyServer:0,changed:0,differences:[]});
+  const local=await transaction(()=>readLocalJournalCashReconciliation(tx,identity,compareDay,digest));const serverCash=await fetch(origin+`/v5/day/${compareDay}/journal-cash`,{headers:{Authorization:`Bearer ${b.token}`,'X-SLS-Reference-Version':'5'}});assert.equal(serverCash.status,200);const remote=await serverCash.json();
+  const changed=compareCashReconciliation(local,{...remote,events:remote.events.map((e:any)=>e.kind==='receipt'?{...e,oldDebtPaid:e.oldDebtPaid-1}:e)},actor.id,compareDay);assert.equal(changed.changed,1);assert.deepEqual(changed.differences,[{status:'changed',kind:'receipt',operationId:receiptOp}]);
+  assert.throws(()=>compareCashReconciliation(local,{...remote,events:[...remote.events,remote.events[0]]},actor.id,compareDay),/dupliqué/);
+  const storedHash=(await db.query<{payload_hash:string}>('SELECT payload_hash FROM identified_journal_events WHERE operation_id=$1',[receiptOp])).rows[0].payload_hash;
+  await db.query('UPDATE identified_journal_events SET payload_hash=$2 WHERE operation_id=$1',[receiptOp,'0'.repeat(64)]);
+  const broken=await fetch(origin+`/v5/day/${compareDay}/journal-cash`,{headers:{Authorization:`Bearer ${b.token}`,'X-SLS-Reference-Version':'5'}});assert.equal(broken.status,400);
+  await db.query('UPDATE identified_journal_events SET payload_hash=$2 WHERE operation_id=$1',[receiptOp,storedHash]);
+  assert.deepEqual(await controller.compareJournalCash(compareDay),{matches:true,onlyLocal:0,onlyServer:0,changed:0,differences:[]});
+  const unauth=await fetch(origin+`/v5/day/${compareDay}/journal-cash`,{headers:{'X-SLS-Reference-Version':'5'}});assert.equal(unauth.status,401);
+  const wrongVersion=await fetch(origin+`/v5/day/${compareDay}/journal-cash`,{headers:{Authorization:`Bearer ${b.token}`}});assert.equal(wrongVersion.status,409);
   // Un autre téléphone clôture après préparation : le conflit n'efface que
   // la tentative réservée au serveur, puis l'état fermé est observé.
   const secondDay='2026-11-09';const secondAttempt=await transaction(()=>prepareVerifiedPrototypeClose(tx,identity,secondDay,0,randomUUID,digest));
