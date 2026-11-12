@@ -25,7 +25,11 @@ import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync
 import {readPrototypeCreditBalance} from '../../../apps/mobile/credit-note-balance-storage-prototype.js';
 import {previewLocalCredit,confirmLocalCreditReview} from '../../../apps/mobile/credit-note-review-prototype.js';
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from '../../../apps/mobile/identified-outbox.js';
-import {uploadIdentifiedOperations,ClosedDaySyncError,OperationConflictSyncError} from '../../../apps/mobile/identified-upload.js';
+import {uploadIdentifiedOperations} from '../../../apps/mobile/identified-upload.js';
+import {createRequire} from 'node:module';
+// Le mobile est chargé en CommonJS par tsx sur Windows : partager les mêmes
+// constructeurs avec lui plutôt que l'enveloppe ESM pour les tests instanceof.
+const {ClosedDaySyncError,OperationConflictSyncError}:typeof import('../../../apps/mobile/identified-upload.js')=createRequire(import.meta.url)('../../../apps/mobile/identified-upload.ts');
 import {saveAndVerifyFinalCreditReference} from '../../../apps/mobile/credit-note-sync-final-prototype.js';
 import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
 import {createCreditTransportPrototype} from '../../../apps/mobile/credit-note-transport-prototype.js';
