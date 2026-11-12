@@ -53,6 +53,16 @@ test('avoirs vente et préétablie : sorties chez l’auteur, dette ancienne con
   const {readPrototypeCreditReference}=await import('../../../apps/api/src/credit-note-reference-prototype.js');
   const {validatePrototypeCreditReference}=await import('../../../apps/mobile/credit-note-reference-prototype.js');
   const reference=await readPrototypeCreditReference(pool),validated=validatePrototypeCreditReference(reference);
+  const {projectOwnedCredits}=await import('../../../apps/mobile/credit-owned-reference-prototype.js');
+  const firstOwned=projectOwnedCredits(validated,a.id,day),laterOwned=projectOwnedCredits(validated,a.id,'2026-11-09');
+  assert.equal(firstOwned.length,2);assert.equal(firstOwned.reduce((n,x)=>n+x.invoiceTotal,0),719000);
+  assert.equal(firstOwned.reduce((n,x)=>n+x.refund,0),300000);
+  assert.ok(firstOwned.every(x=>x.actorId===b.id));
+  assert.equal(laterOwned.length,2);assert.equal(laterOwned.reduce((n,x)=>n+x.invoiceTotal,0),719000);
+  assert.ok(laterOwned.every(x=>x.actorRole==='admin'));assert.equal(laterOwned.find(x=>x.kind==='preinvoice')?.invoiceDay,'2026-11-07');
+  assert.deepEqual(projectOwnedCredits(validated,b.id,day),[]);
+  assert.throws(()=>projectOwnedCredits({...validated,creditOwners:null},a.id,day),/synchronisez/);
+  assert.throws(()=>projectOwnedCredits(validated,a.id,'2026-02-30'),/Date/);
   assert.equal(validated.creditOwners?.length,4);
   assert.equal(validated.creditOwners?.find(x=>x.operationId===command.operationId)?.ownerId,a.id);
   assert.equal(validated.creditOwners?.find(x=>x.operationId===preCommand.operationId)?.ownerId,a.id);

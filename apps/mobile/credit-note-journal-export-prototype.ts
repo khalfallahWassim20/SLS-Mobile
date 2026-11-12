@@ -1,3 +1,4 @@
+import {projectOwnedCredits} from './credit-owned-reference-prototype';
 /** Lecture atomique préparatoire d'un export v5 ; non utilisée par l'écran v3. */
 import {canonicalJson} from '@sls/domain';
 import {readConfirmedRemoteSaleRefunds} from './credit-remote-sale-confirm-prototype';
@@ -25,6 +26,8 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
  if(!pending||pending.n)throw Error('Journal indisponible pendant une modification distante en attente.');
  const reference=await readPrototypeCreditReferenceCache(tx,identity);if(!reference)throw Error('Référence d’avoirs indisponible.');
  const credits=await readAllOfflineCreditPrototype(tx,identity);
+ const remoteOwnedCredits=reference.creditOwners===null?[]:projectOwnedCredits(reference,identity.commercialId,day).filter(e=>e.actorRole==='admin'||e.actorId!==identity.commercialId);
+
  const adminCreditRefunds:NonNullable<JournalExport['adminCreditRefunds']>=[];
  for(const assignment of reference.cashAssignments??[]){
   if(assignment.commercialId!==identity.commercialId)continue;
@@ -83,5 +86,5 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   if(source.version!==local.version||canonicalJson(source.invoice)!==canonicalJson(invoice)||canonicalJson(source.receipts)!==canonicalJson(receipts.filter(r=>r.preInvoiceId===invoice.id))||await digest(canonicalJson(source))!==proof.hash)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
   remoteCancellations.push({kind:'preinvoice',invoiceId:invoice.id,day:tunisDay(new Date(state.creditNote.recordedAt)),source});
  }
- return {day,commercial,rows,receipts,credits,remoteCancellations,remoteSaleUpdates,saleRefunds,remoteSaleRefunds,initialSalePayments:cash.initialPayments,adminCreditRefunds,adminRefundAssignmentsKnown:reference.cashAssignments!==null};
+ return {day,commercial,rows,receipts,credits,remoteOwnedCredits,creditOwnersKnown:reference.creditOwners!==null,remoteCancellations,remoteSaleUpdates,saleRefunds,remoteSaleRefunds,initialSalePayments:cash.initialPayments,adminCreditRefunds,adminRefundAssignmentsKnown:reference.cashAssignments!==null};
 }

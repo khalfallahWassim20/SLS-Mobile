@@ -52,3 +52,16 @@ test('export local : avoirs du jour distincts des factures et de l’ancienne de
   assert.throws(()=>journalCsv({...data,adminCreditRefunds:[{...r,refund:0}]}),/Attribution/);
   assert.match(journalCsv({...data,adminCreditRefunds:[],adminRefundAssignmentsKnown:false}),/ancienne référence/);
  });
+
+test('avoirs distants du propriétaire : information distincte, totaux inchangés et contrôles',async()=>{
+ const {randomUUID}=await import('node:crypto');
+ const {describeCreditJournalPrototype}=await import('../../../apps/mobile/credit-note-journal-view-model-prototype.js');
+ const e={operationId:randomUUID(),invoiceId:randomUUID(),kind:'preinvoice' as const,clientId:randomUUID(),clientName:'=Client fictif',recordedAt:'2026-11-08T10:00:00.000Z',invoiceDay:'2026-11-07',invoiceTotal:600000,refund:250000,retainedCredit:0,actorRole:'admin' as const,actorId:'admin'};
+ const data={day:'2026-11-08',commercial:'Fictif',rows:[],receipts:[],credits:[],remoteOwnedCredits:[e],creditOwnersKnown:true};
+ const model=describeCreditJournalPrototype(data);assert.equal(model.remoteOwnedCredits.length,1);assert.equal(model.totals.billedAfterLocalCredits,0);assert.equal(model.totals.collectedAfterLocalRefunds,0);
+ const csv=journalCsv(data);assert.match(csv,/AVOIRS ENREGISTRÉS AILLEURS/);assert.match(csv,/600,000/);assert.match(csv,/'=Client fictif/);assert.match(csv,/pas encore intégrés/);assert.match(journalHtml(data),/facture du 2026-11-07/);
+ assert.throws(()=>journalCsv({...data,remoteOwnedCredits:[e,e]}),/invalide/);
+ assert.throws(()=>journalCsv({...data,remoteOwnedCredits:[{...e,invoiceDay:'2026-02-30'}]}),/invalide/);
+ assert.throws(()=>journalCsv({...data,remoteOwnedCredits:[{...e,refund:600001}]}),/invalide/);
+ assert.match(journalCsv({...data,remoteOwnedCredits:[],creditOwnersKnown:false}),/Propriétaires des avoirs indisponibles/);
+});
