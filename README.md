@@ -25,7 +25,7 @@ Le prototype utilise Expo SDK 58. Lancer `npm run mobile` et ouvrir le projet av
 
 ## Prototype administration
 
-Le serveur et l'espace web de gestion des clients et articles nécessitent PostgreSQL. Suivre les instructions de `apps/api/README.md` puis `apps/admin/README.md`. Ces composants sont en développement local et reliés au mobile pour les essais ; n'y saisir aucune donnée réelle. L'import CSV est reporté.
+Le serveur et l'espace web de gestion des clients et articles nécessitent PostgreSQL. Suivre les instructions de `apps/api/README.md` puis `apps/admin/README.md`. Ces composants sont en développement local et reliés au mobile pour les essais ; n'y saisir aucune donnée réelle. Un import spécifique du fichier articles est disponible côté serveur ; voir `apps/api/README.md`. Les données réelles ne doivent pas encore être utilisées en production.
 
 
 ## Essai de la clôture individuelle

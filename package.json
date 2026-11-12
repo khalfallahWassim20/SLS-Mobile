@@ -16,7 +16,8 @@
     "admin": "npm run dev --workspace @sls/admin",
     "migrate": "npm run migrate --workspace @sls/api",
     "reset:test-operations": "tsx apps/api/src/reset-test-operations-cli.ts",
-    "test:journal-db": "tsx --test apps/api/test/*postgres.test.ts"
+    "test:journal-db": "tsx --test apps/api/test/*postgres.test.ts",
+    "import:articles": "tsx apps/api/src/import-articles-cli.ts"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.15",
