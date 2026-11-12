@@ -19,7 +19,7 @@ export async function resetTestOperations(pool:Pool):Promise<void> {
   if(typeof remote.rows[0]?.present!=='boolean')throw Error('État des révisions indisponible.');
   if(remote.rows[0].present)await db.query('DELETE FROM remote_sale_abandon_prototype');
   for(const table of [
-   'tour_closure_requests','tour_closure_events','tour_closures',
+   'tour_close_abandoned_requests','tour_closure_requests','tour_closure_events','tour_closures',
    'identified_journal_events','identified_journal_receipt_ids','identified_journal_invoices',
    'sync_journal_events','sync_journal_receipt_ids','sync_journal_invoices',
    'demo_journal_events','demo_journal_receipt_ids','demo_journal_invoices',

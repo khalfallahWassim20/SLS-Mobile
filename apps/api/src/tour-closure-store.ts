@@ -3,7 +3,7 @@
 import {randomUUID} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
 import {z} from 'zod';
-import {initialTourClosure,transitionTourClosure,type TourActor,type TourClosureState} from '@sls/domain';
+import {initialTourClosure,transitionTourClosure,canonicalJson,type TourActor,type TourClosureState} from '@sls/domain';
 import {journalDateSchema} from './journal-protocol.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
@@ -12,7 +12,10 @@ import {readPrototypeCreditHistoryInTransaction} from './credit-note-history-pro
 import {JournalConflict} from './journal-store.js';
 
 export class ClosureConflict extends Error {}
+export class ClosureProofConflict extends ClosureConflict {}
+export class ClosureAbandoned extends ClosureConflict {}
 const identifier=z.string().uuid();
+const proofSchema=z.array(z.object({noteOperationId:identifier,assignmentId:identifier,refund:z.number().int().safe().positive()}).strict()).max(10000).superRefine((items,ctx)=>{for(let i=1;i<items.length;i++)if(items[i-1].noteOperationId>=items[i].noteOperationId)ctx.addIssue({code:'custom',message:'Preuve de remboursements non triée ou dupliquée.'});});
 function checkInputs(commercialId:string,day:string) {identifier.parse(commercialId);journalDateSchema.parse(day);}
 function fromRow(commercialId:string,day:string,row: {status:'open'|'closed';version:number;closed_at:Date|string|null}|undefined):TourClosureState {
  if(!row) return initialTourClosure(commercialId,day);
@@ -54,9 +57,10 @@ export async function changeTourClosure(pool:Pool,commercialId:string,day:string
 
 /** Service expérimental uniquement : une session commerciale ne peut clôturer que sa propre journée.
  * L'admin est fourni uniquement par un middleware serveur, jamais par le corps de la requête. */
-export async function requestTourTransition(pool:Pool, input:{requestId:string;day:string;expectedVersion:number}, principal:
+export async function requestTourTransition(pool:Pool, input:{requestId:string;day:string;expectedVersion:number;adminRefundProof?:{noteOperationId:string;assignmentId:string;refund:number}[]}, principal:
  {kind:'commercial';token:string;secret:string}|{kind:'admin';actorId:string;commercialId:string}, enforceMode=false, creditAware=false) {
- const {requestId,day,expectedVersion}=z.object({requestId:identifier,day:journalDateSchema,expectedVersion:z.number().int().min(0).max(2147483646)}).strict().parse(input);
+ const {requestId,day,expectedVersion,adminRefundProof}=z.object({requestId:identifier,day:journalDateSchema,expectedVersion:z.number().int().min(0).max(2147483646),adminRefundProof:proofSchema.optional()}).strict().parse(input);
+ if(adminRefundProof!==undefined&&(!creditAware||principal.kind!=='commercial'))throw new ClosureConflict('Preuve de caisse non autorisée.');
  const db=await pool.connect();
  try {
   await db.query('BEGIN');
@@ -76,13 +80,15 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
    if(!commercial.rows.length) throw new ClosureConflict('Commercial introuvable.');
   }
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['tour-closure-request',requestId]);
-  const existing=await db.query(`SELECT commercial_id,journal_date::text AS day,action,actor_id,actor_role,expected_version,result_version,occurred_at
+  const existing=await db.query(`SELECT commercial_id,journal_date::text AS day,action,actor_id,actor_role,expected_version,result_version,occurred_at,admin_refund_proof
    FROM tour_closure_requests WHERE request_id=$1`,[requestId]);
   if(existing.rows.length) {
    const old=existing.rows[0];
-   if(old.commercial_id!==commercialId || old.day!==day || old.action!==action || old.actor_id!==actor.id || old.actor_role!==actor.role || old.expected_version!==expectedVersion) throw new ClosureConflict('Identifiant de demande déjà utilisé.');
+   if(old.commercial_id!==commercialId || old.day!==day || old.action!==action || old.actor_id!==actor.id || old.actor_role!==actor.role || old.expected_version!==expectedVersion || canonicalJson(old.admin_refund_proof??null)!==canonicalJson(adminRefundProof??null)) throw new ClosureConflict('Identifiant de demande déjà utilisé.');
    await db.query('COMMIT');return {status:'duplicate' as const,requestId,commercialId,day,action,version:old.result_version,at:new Date(old.occurred_at).toISOString()};
   }
+  const abandoned=await db.query('SELECT request_id FROM tour_close_abandoned_requests WHERE request_id=$1',[requestId]);
+  if(abandoned.rows.length)throw new ClosureAbandoned('Demande de clôture abandonnée : synchronisez et préparez une nouvelle demande.');
   if(enforceMode&&!creditAware)await assertOldCreditProtocolSafe(db);
   const state=await lockTourClosure(db,commercialId,day);
   // Les écritures de vente prennent ce même verrou avant insertion ; une
@@ -94,9 +100,12 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
    let history:Awaited<ReturnType<typeof readPrototypeCreditHistoryInTransaction>>;
    try{history=await readPrototypeCreditHistoryInTransaction(db);}catch(e){if(e instanceof RangeError)throw new JournalConflict('Historique d’avoirs incohérent : clôture refusée.');throw e;}
    if(history.some(h=>h.recordedDay===day&&h.actor.role==='admin'&&h.refund>0&&!h.cashAssignment))throw new JournalConflict('Remboursement d’avoir saisi par l’administrateur : caisse non attribuée, clôture refusée.');
-   // L'affectation à une caisse commerciale est visible sur le serveur, mais
-   // pas encore rapprochée automatiquement sur ce téléphone : ne pas clôturer.
-   if(history.some(h=>h.recordedDay===day&&h.actor.role==='admin'&&h.refund>0&&h.cashAssignment?.commercialId===commercialId))throw new JournalConflict('Remboursement administrateur attribué à ce commercial : rapprochement du téléphone requis avant clôture.');
+   // La liste a été figée avec le journal du téléphone. Le verrou global de
+   // mode empêche qu'une attribution ou un avoir passe entre ce contrôle et
+   // la clôture ; une liste absente ou périmée ne lève jamais la garde.
+   const expected=history.filter(h=>h.recordedDay===day&&h.actor.role==='admin'&&h.refund>0&&h.cashAssignment?.commercialId===commercialId)
+    .map(h=>({noteOperationId:h.operationId,assignmentId:h.cashAssignment!.requestId,refund:h.refund})).sort((a,b)=>a.noteOperationId<b.noteOperationId?-1:a.noteOperationId>b.noteOperationId?1:0);
+   if((expected.length>0||adminRefundProof!==undefined)&&canonicalJson(adminRefundProof??null)!==canonicalJson(expected))throw new ClosureProofConflict('Remboursement administrateur attribué à ce commercial : rapprochement du téléphone requis avant clôture.');
   }
   let next;
   try {next=transitionTourClosure(state,action,actor,new Date().toISOString(),expectedVersion);}
@@ -104,9 +113,28 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
   await db.query('UPDATE tour_closures SET status=$3,version=$4,closed_at=$5 WHERE commercial_id=$1 AND journal_date=$2::date',[commercialId,day,next.state.status,next.state.version,next.state.closedAt]);
   await db.query(`INSERT INTO tour_closure_events(id,commercial_id,journal_date,action,actor_id,actor_role,occurred_at,version)
    VALUES($1,$2,$3::date,$4,$5,$6,$7,$8)`,[randomUUID(),commercialId,day,action,actor.id,actor.role,next.event.at,next.event.version]);
-  await db.query(`INSERT INTO tour_closure_requests(request_id,commercial_id,journal_date,action,actor_id,actor_role,expected_version,result_version,occurred_at)
-   VALUES($1,$2,$3::date,$4,$5,$6,$7,$8,$9)`,[requestId,commercialId,day,action,actor.id,actor.role,expectedVersion,next.event.version,next.event.at]);
+  await db.query(`INSERT INTO tour_closure_requests(request_id,commercial_id,journal_date,action,actor_id,actor_role,expected_version,result_version,occurred_at,admin_refund_proof)
+   VALUES($1,$2,$3::date,$4,$5,$6,$7,$8,$9,$10::jsonb)`,[requestId,commercialId,day,action,actor.id,actor.role,expectedVersion,next.event.version,next.event.at,adminRefundProof===undefined?null:JSON.stringify(adminRefundProof)]);
   await db.query('COMMIT');return {status:'received' as const,requestId,commercialId,day,action,version:next.event.version,at:next.event.at};
  } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
 }
 export class ClosureAuthenticationError extends Error {}
+
+/** Réserve définitivement l'UUID avant d'autoriser le téléphone à oublier
+ * une tentative incertaine ; une clôture arrivée en parallèle gagne ou perd
+ * le même verrou. La réponse perdue peut être redemandée sans risque. */
+export async function abandonTourClose(pool:Pool,input:{requestId:string;day:string;expectedVersion:number},principal:{token:string;secret:string}) {
+ const {requestId,day,expectedVersion}=z.object({requestId:identifier,day:journalDateSchema,expectedVersion:z.number().int().min(0).max(2147483646)}).strict().parse(input);
+ const db=await pool.connect();try{
+  await db.query('BEGIN');assertIdentifiedMode(await lockSyncMode(db));
+  const {verifyCommercialSession}=await import('./commercial-session.js');const actor=await verifyCommercialSession(db,principal.secret,principal.token,true);
+  if(!actor)throw new ClosureAuthenticationError('Session commerciale invalide ou expirée.');
+  await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['tour-closure-request',requestId]);
+  const existing=await db.query('SELECT commercial_id,journal_date::text AS day,action,expected_version FROM tour_closure_requests WHERE request_id=$1',[requestId]);
+  if(existing.rows.length){const r=existing.rows[0];if(r.commercial_id!==actor.id||r.day!==day||r.action!=='close'||r.expected_version!==expectedVersion)throw new ClosureConflict('Identifiant de demande déjà utilisé.');await db.query('COMMIT');return {status:'already-received' as const,requestId,commercialId:actor.id,day,expectedVersion};}
+  const abandoned=await db.query('SELECT commercial_id,journal_date::text AS day,expected_version FROM tour_close_abandoned_requests WHERE request_id=$1',[requestId]);
+  if(abandoned.rows.length){const r=abandoned.rows[0];if(r.commercial_id!==actor.id||r.day!==day||r.expected_version!==expectedVersion)throw new ClosureConflict('Identifiant de demande déjà utilisé.');}
+  else await db.query('INSERT INTO tour_close_abandoned_requests(request_id,commercial_id,journal_date,expected_version) VALUES($1,$2,$3::date,$4)',[requestId,actor.id,day,expectedVersion]);
+  await db.query('COMMIT');return {status:'abandoned' as const,requestId,commercialId:actor.id,day,expectedVersion};
+ }catch(e){await db.query('ROLLBACK');throw e;}finally{db.release();}
+}

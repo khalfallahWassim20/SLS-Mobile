@@ -2,13 +2,15 @@
  * Toutes les fonctions doivent être appelées dans une transaction exclusive SQLite. */
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
-export type Attempt={commercialId:string;day:string;requestId:string;expectedVersion:number;status:'closing'|'closed';closedVersion:number|null};
+export type AdminRefundProof={noteOperationId:string;assignmentId:string;refund:number}[];
+export type Attempt={commercialId:string;day:string;requestId:string;expectedVersion:number;status:'closing'|'closed';closedVersion:number|null;adminRefundProof?:AdminRefundProof};
 export const tourCloseQueueSchema=`CREATE TABLE IF NOT EXISTS tour_close_attempts (
  commercial_id TEXT NOT NULL, journal_date TEXT NOT NULL, request_id TEXT NOT NULL UNIQUE,
  expected_version INTEGER NOT NULL CHECK(expected_version>=0), status TEXT NOT NULL CHECK(status IN ('closing','closed')),
  closed_version INTEGER, PRIMARY KEY(commercial_id,journal_date),
  CHECK((status='closing' AND closed_version IS NULL) OR (status='closed' AND closed_version=expected_version+1))
 );
+CREATE TABLE IF NOT EXISTS tour_close_admin_refund_proofs (request_id TEXT PRIMARY KEY, payload TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tour_known_server_states (
  commercial_id TEXT NOT NULL, journal_date TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('open','closed')),
  version INTEGER NOT NULL CHECK(version>=0), PRIMARY KEY(commercial_id,journal_date)
@@ -20,8 +22,14 @@ function valid(commercialId:string,day:string) {
 }
 export async function findTourCloseAttempt(tx:Tx,commercialId:string,day:string):Promise<Attempt|null> {
  valid(commercialId,day);
- return tx.getFirstAsync<Attempt>(`SELECT commercial_id AS commercialId,journal_date AS day,request_id AS requestId,
+ const attempt=await tx.getFirstAsync<Attempt>(`SELECT commercial_id AS commercialId,journal_date AS day,request_id AS requestId,
  expected_version AS expectedVersion,status,closed_version AS closedVersion FROM tour_close_attempts WHERE commercial_id=? AND journal_date=?`,commercialId,day);
+ if(!attempt)return null;
+ const stored=await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_close_admin_refund_proofs WHERE request_id=?',attempt.requestId);
+ if(!stored)return attempt;
+ let proof:unknown;try{proof=JSON.parse(stored.payload);}catch{throw Error('Preuve de clôture illisible.');}
+ if(!Array.isArray(proof)||proof.length>10000||proof.some((p,i)=>!p||typeof p!=='object'||Array.isArray(p)||Object.keys(p).sort().join(',')!=='assignmentId,noteOperationId,refund'||typeof p.noteOperationId!=='string'||!isUuid(p.noteOperationId)||typeof p.assignmentId!=='string'||!isUuid(p.assignmentId)||!Number.isSafeInteger(p.refund)||p.refund<=0||(i>0&&proof[i-1].noteOperationId>=p.noteOperationId)))throw Error('Preuve de clôture invalide.');
+ return {...attempt,adminRefundProof:proof as AdminRefundProof};
 }
 /** Verrou de précaution local, pas un substitut au contrôle serveur. */
 export async function assertLocalTourWritable(tx:Tx,commercialId:string,day:string) {
@@ -61,6 +69,19 @@ export async function acknowledgeTourClose(tx:Tx,commercialId:string,day:string,
  if((r.status!=='received'&&r.status!=='duplicate')||r.requestId!==attempt.requestId||r.commercialId!==commercialId||r.day!==day||r.action!=='close'||r.version!==attempt.expectedVersion+1)throw Error('Accusé de clôture invalide.');
  await tx.runAsync('UPDATE tour_close_attempts SET status=?,closed_version=? WHERE commercial_id=? AND journal_date=?','closed',attempt.expectedVersion+1,commercialId,day);
 }
+/** Effacer uniquement après réservation serveur de l'UUID ; une clôture déjà
+ * reçue ne peut jamais être abandonnée et son accusé doit être repris. */
+export async function acknowledgeAbandonedTourClose(tx:Tx,commercialId:string,day:string,expected:Attempt,response:unknown):Promise<void>{
+ valid(commercialId,day);const attempt=await findTourCloseAttempt(tx,commercialId,day);
+ if(!attempt||attempt.status!=='closing'||attempt.requestId!==expected.requestId||attempt.expectedVersion!==expected.expectedVersion||JSON.stringify(attempt.adminRefundProof??null)!==JSON.stringify(expected.adminRefundProof??null))throw Error('Tentative de clôture modifiée : abandon refusé.');
+ if(!response||typeof response!=='object'||Array.isArray(response))throw Error('Accusé d’abandon invalide.');
+ const r=response as Record<string,unknown>;
+ if(Object.keys(r).sort().join(',')!=='commercialId,day,expectedVersion,requestId,status'||r.requestId!==attempt.requestId||r.commercialId!==commercialId||r.day!==day||r.expectedVersion!==attempt.expectedVersion)throw Error('Accusé d’abandon invalide.');
+ if(r.status==='already-received')throw Error('Clôture déjà reçue par le serveur : reprenez son accusé.');
+ if(r.status!=='abandoned')throw Error('Accusé d’abandon invalide.');
+ await tx.runAsync('DELETE FROM tour_close_admin_refund_proofs WHERE request_id=?',attempt.requestId);
+ await tx.runAsync('DELETE FROM tour_close_attempts WHERE commercial_id=? AND journal_date=?',commercialId,day);
+}
 /** Appeler uniquement après lecture authentifiée de l'état serveur ; jamais sur une simple erreur réseau. */
 export async function applyReopenedServerState(tx:Tx,commercialId:string,day:string,state:unknown):Promise<boolean> {
  valid(commercialId,day);const attempt=await findTourCloseAttempt(tx,commercialId,day);
@@ -68,16 +89,17 @@ export async function applyReopenedServerState(tx:Tx,commercialId:string,day:str
  if(typeof state!=='object'||state===null||Array.isArray(state))throw Error('État serveur invalide.');
  const s=state as Record<string,unknown>;
  if(s.commercialId!==commercialId||s.day!==day||s.status!=='open'||!Number.isSafeInteger(s.version)||(s.version as number)<=attempt.closedVersion!)throw Error('Réouverture serveur non confirmée.');
+ await tx.runAsync('DELETE FROM tour_close_admin_refund_proofs WHERE request_id=?',attempt.requestId);
  await tx.runAsync('DELETE FROM tour_close_attempts WHERE commercial_id=? AND journal_date=?',commercialId,day);return true;
 }
 
 /** Envoie la demande immuable ; l'accusé doit être enregistré par le callback transactionnel.
  * Sur erreur réseau/accusé, le callback n'efface rien et la même demande peut être renvoyée. */
 export async function sendPreparedTourClose(attempt:Attempt,
- send:(body:{requestId:string;day:string;expectedVersion:number})=>Promise<{ok:boolean;status:number;json:()=>Promise<unknown>}>,
+ send:(body:{requestId:string;day:string;expectedVersion:number;adminRefundProof?:AdminRefundProof})=>Promise<{ok:boolean;status:number;json:()=>Promise<unknown>}>,
  acknowledge:(response:unknown)=>Promise<void>):Promise<void> {
  if(attempt.status!=='closing')throw Error('Aucune clôture en attente.');
- const response=await send({requestId:attempt.requestId,day:attempt.day,expectedVersion:attempt.expectedVersion});
+ const response=await send({requestId:attempt.requestId,day:attempt.day,expectedVersion:attempt.expectedVersion,...(attempt.adminRefundProof===undefined?{}:{adminRefundProof:attempt.adminRefundProof})});
  const body=await response.json().catch(()=>null);
  if(!response.ok) {
   const data=typeof body==='object'&&body!==null&&!Array.isArray(body)?body as Record<string,unknown>:null;

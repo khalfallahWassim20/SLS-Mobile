@@ -56,6 +56,8 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       expected_version integer NOT NULL CHECK(expected_version>=0), result_version integer NOT NULL CHECK(result_version>0),
       occurred_at timestamptz NOT NULL
     );
+    ALTER TABLE tour_closure_requests ADD COLUMN IF NOT EXISTS admin_refund_proof jsonb;
+    CREATE TABLE IF NOT EXISTS tour_close_abandoned_requests (request_id uuid PRIMARY KEY, commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL, expected_version integer NOT NULL CHECK(expected_version>=0), abandoned_at timestamptz NOT NULL DEFAULT now());
     -- Préparation d'une bascule exclusive ; aucun endpoint ne permet encore de changer ce mode.
     CREATE TABLE IF NOT EXISTS tour_sync_mode (
       id integer PRIMARY KEY CHECK(id=1), mode text NOT NULL CHECK(mode IN ('legacy','identified'))

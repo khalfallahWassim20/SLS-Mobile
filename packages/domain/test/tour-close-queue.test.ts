@@ -75,3 +75,19 @@ test('état serveur vérifié sur un autre téléphone : blocage et réouverture
   assert.equal(attempt.requestId,request);
  } finally {db.close();}
 });
+
+ test('preuve de clôture figée, abandon attesté et réponse perdue',async()=>{
+  const {findTourCloseAttempt,acknowledgeAbandonedTourClose}=await import('../../../apps/mobile/tour-close-queue.js');
+  const {db,tx}=setup();try{
+   const a=await prepareTourClose(tx,id,day,0,()=>request),proof=[{noteOperationId:'a1000000-0000-4000-8000-000000000003',assignmentId:'a1000000-0000-4000-8000-000000000004',refund:50000}];
+   db.prepare('INSERT INTO tour_close_admin_refund_proofs VALUES(?,?)').run(request,JSON.stringify(proof));
+   const stored=await findTourCloseAttempt(tx,id,day);assert.deepEqual(stored?.adminRefundProof,proof);
+   let body:unknown;await assert.rejects(sendPreparedTourClose(stored!,async b=>{body=b;throw Error('coupure');},async()=>{}),/coupure/);assert.deepEqual((body as any).adminRefundProof,proof);
+   const response={status:'abandoned',requestId:request,commercialId:id,day,expectedVersion:0};
+   await assert.rejects(acknowledgeAbandonedTourClose(tx,id,day,stored!,{...response,status:'already-received'}),/déjà reçue/);
+   await assert.rejects(acknowledgeAbandonedTourClose(tx,id,day,stored!,{...response,requestId:'autre'}),/invalide/);
+   assert.equal((await findTourCloseAttempt(tx,id,day))?.requestId,a.requestId);
+   await acknowledgeAbandonedTourClose(tx,id,day,stored!,response);assert.equal(await findTourCloseAttempt(tx,id,day),null);
+   assert.equal(db.prepare('SELECT count(*) AS n FROM tour_close_admin_refund_proofs').get()?.n,0);
+  }finally{db.close();}
+ });

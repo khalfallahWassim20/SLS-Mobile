@@ -8,7 +8,7 @@ import { validatePreInvoiceReceipt,type FullCreditChoice } from '@sls/domain';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
 import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
-import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,type Attempt} from './tour-close-queue';
+import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,acknowledgeAbandonedTourClose,observeVerifiedTourState,type Attempt} from './tour-close-queue';
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from './identified-outbox';
 import type {IdentifiedEntry} from './identified-upload';
 import {identifiedDeviceSchema,getDeviceIdentity,bindVerifiedDevice,saveVerifiedIdentifiedReference,assertDeviceWritable,recordDeviceOperation,assertKnownDeviceEntity,type DeviceIdentity} from './identified-device';
@@ -465,6 +465,7 @@ export function createExperimentalCreditMobileTransport(session:CommercialSessio
   tour:{
    getAttempt:async(id,day,guard)=>{const database=await db();let result:Attempt|null=null;await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);result=await findTourCloseAttempt(tx,id.commercialId,day);guard();});return result;},
    prepare:async(id,day,version,guard)=>{const database=await db();let result:Attempt|undefined;await database.withExclusiveTransactionAsync(async tx=>{guard();result=await prepareVerifiedPrototypeClose(tx,id,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));guard();});return result!;},
+   discard:async(id,day,attempt,response,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);await acknowledgeAbandonedTourClose(tx,id.commercialId,day,attempt,response);guard();});},
    acknowledge:async(id,day,response,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);await acknowledgeTourClose(tx,id.commercialId,day,response);guard();});},
    observe:async(id,day,response,guard)=>{const database=await db();await database.withExclusiveTransactionAsync(async tx=>{guard();await checkIdentity(tx,id);await observeVerifiedTourState(tx,id.commercialId,day,response);guard();});}
   }

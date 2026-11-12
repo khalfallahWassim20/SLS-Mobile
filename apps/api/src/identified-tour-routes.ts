@@ -4,7 +4,7 @@ import {rateLimit} from 'express-rate-limit';
 import {ZodError,z} from 'zod';
 import type {Pool} from 'pg';
 import {verifyCommercialSession} from './commercial-session.js';
-import {ClosureAuthenticationError,ClosureConflict,readTourClosure,requestTourTransition} from './tour-closure-store.js';
+import {ClosureAuthenticationError,ClosureConflict,ClosureProofConflict,ClosureAbandoned,abandonTourClose,readTourClosure,requestTourTransition} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed,storeJournalSnapshot} from './journal-store.js';
 import {readLocalSaleHistoryPrototype} from './local-sale-history-prototype.js';
 import {readRemoteSaleReceiptPrototype} from './remote-sale-receipt-prototype.js';
@@ -23,12 +23,13 @@ import {readPrototypeCreditSources} from './credit-note-sources-prototype.js';
 import {prototypeCommercialCreditRoutes,prototypeAdminCreditRoutes} from './credit-note-routes-prototype.js';
 import {IdentifiedSyncDisabled,assertIdentifiedMode,readSyncMode,lockSyncMode} from './tour-sync-mode.js';
 
-const input=z.object({requestId:z.string().uuid(),day:z.string(),expectedVersion:z.number().int().min(0)}).strict();
+const input=z.object({requestId:z.string().uuid(),day:z.string(),expectedVersion:z.number().int().min(0),adminRefundProof:z.array(z.object({noteOperationId:z.string().uuid(),assignmentId:z.string().uuid(),refund:z.number().int().safe().positive()}).strict()).max(10000).optional()}).strict();
 const bearer=(value:string|undefined)=>value?.match(/^Bearer (.+)$/)?.[1]??'';
 function errorHandler(error:unknown,res:import('express').Response,next:import('express').NextFunction) {
  if(error instanceof ClosureAuthenticationError || error instanceof JournalAuthenticationError) {res.status(401).json({error:'Session invalide ou expirée.'});return;}
  if(error instanceof TourDayClosed) {res.status(409).json({error:error.message,code:'TOUR_DAY_CLOSED',day:error.day,commercialId:error.commercialId});return;}
  if(error instanceof CreditProtocolUpgradeRequired) {res.status(409).json({error:error.message,code:'CREDIT_PROTOCOL_UPGRADE_REQUIRED'});return;}
+ if(error instanceof ClosureProofConflict || error instanceof ClosureAbandoned) {res.status(409).json({error:error.message,code:error instanceof ClosureProofConflict?'CLOSURE_REFUND_PROOF_STALE':'CLOSURE_REQUEST_ABANDONED'});return;}
  if(error instanceof ClosureConflict || error instanceof JournalConflict || error instanceof ReferenceOverlap || error instanceof IdentifiedOverlap || error instanceof IdentifiedSyncDisabled) {res.status(409).json({error:error.message});return;}
  if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données invalides.'});return;}
  next(error);
@@ -78,6 +79,7 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  }catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day/details',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}const {closureEvents:_adminHistory,...details}=supportsCredit(req)?await readPrototypeCreditJournal(pool,actor.id,req.params.day):await readIdentifiedJournalDay(pool,actor.id,req.params.day,enforceMode);res.json(details);}catch(e){errorHandler(e,res,next);}});
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}if(enforceMode)assertIdentifiedMode(await readSyncMode(pool));res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});
+ if(options.allowCreditProtocol===true)r.post('/close/abandon',async(req,res,next)=>{try{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}res.json(await abandonTourClose(pool,req.body,{secret,token:bearer(req.get('Authorization'))}));}catch(e){errorHandler(e,res,next);}});
  r.post('/close',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))},enforceMode,supportsCredit(req));res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
  for(const kind of ['journal','sales','settlements'] as const) r.post('/'+kind,async(req,res,next)=>{try{
   const session={secret,token:bearer(req.get('Authorization')),enforceMode,creditAware:supportsCredit(req)};

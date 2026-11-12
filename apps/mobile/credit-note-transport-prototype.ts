@@ -34,6 +34,7 @@ type Dependencies={
   getAttempt:(identity:DeviceIdentity,day:string,guard:()=>void)=>Promise<Attempt|null>;
   prepare:(identity:DeviceIdentity,day:string,version:number,guard:()=>void)=>Promise<Attempt>;
   acknowledge:(identity:DeviceIdentity,day:string,response:unknown,guard:()=>void)=>Promise<void>;
+  discard?:(identity:DeviceIdentity,day:string,attempt:Attempt,response:unknown,guard:()=>void)=>Promise<void>;
   observe:(identity:DeviceIdentity,day:string,response:unknown,guard:()=>void)=>Promise<void>;
  };
  now?:()=>number;
@@ -133,7 +134,16 @@ export function createCreditTransportPrototype(session:CommercialSession,identit
    if(attempt?.status==='closed')throw Error('Journée déjà clôturée.');
    if(!attempt){const state=await readDay(day);if(state.status!=='open')throw Error('Journée déjà clôturée.');attempt=await tour().prepare(identity,day,state.version,check);}
    else attempt=await tour().prepare(identity,day,attempt.expectedVersion,check);
-   check();await sendPreparedTourClose(attempt,body=>request('close','POST',JSON.stringify(body)),body=>tour().acknowledge(identity,day,body,check));check();
+   let conflict=false;
+   try{check();await sendPreparedTourClose(attempt,async body=>{const result=await request('close','POST',JSON.stringify(body));return {...result,json:async()=>{const value=await result.json();if(result.status===409)conflict=true;return value;}};},body=>tour().acknowledge(identity,day,body,check));check();}
+   catch(error){
+    if(!conflict||!tour().discard)throw error;
+    const response=await request('close/abandon','POST',JSON.stringify({requestId:attempt.requestId,day,expectedVersion:attempt.expectedVersion}));const body=await response.json().catch(()=>null);check();
+    if(!response.ok)throw Error('Abandon de clôture non confirmé : demande conservée.');
+    await tour().discard!(identity,day,attempt,body,check);check();
+    const detail=error instanceof Error?error.message:'Clôture refusée.';
+    throw Error(`${detail} Demande de clôture abandonnée sans perte. Synchronisez, vérifiez le journal et l’état de la journée, puis relancez la clôture.`);
+   }
    return readDay(day);
   })
  };

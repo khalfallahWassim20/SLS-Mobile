@@ -13,7 +13,7 @@ test('refus serveur explicite : blocage persistant sans effacer données ou file
  const db=new DatabaseSync(':memory:'),id={commercialId:'a1000000-0000-4000-8000-000000000001',serverOrigin:'https://sls.example.test'};
  try{
   db.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}`);
-  const others=['credit_sources_prototype_cache','sales_outbox','sale_event_times','sale_revisions','sales','settlements','journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices','tour_close_attempts','tour_known_server_states','reference_snapshot'];
+  const others=['credit_sources_prototype_cache','sales_outbox','sale_event_times','sale_revisions','sales','settlements','journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices','tour_close_admin_refund_proofs','tour_close_attempts','tour_known_server_states','reference_snapshot'];
   for(const table of others)db.exec(`CREATE TABLE ${table}(id TEXT)`);
   db.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(id.commercialId,id.serverOrigin);
   db.exec("INSERT INTO sales VALUES('facture'); INSERT INTO sales_outbox VALUES('operation')");

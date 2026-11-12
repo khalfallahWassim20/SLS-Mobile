@@ -63,7 +63,7 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
   const result=await transport.compareSaleCash(day);if(!alive(seq))return;
   Alert.alert('Comparaison des ventes',result.matches?'Les paiements initiaux et remboursements de ventes de ce téléphone correspondent aux opérations reçues pour ce commercial à cet instant. Les autres encaissements et avoirs ne sont pas comparés ici ; ce contrôle ne valide pas la clôture.':'Écarts détectés : '+result.onlyLocal+' opération(s) seulement sur ce téléphone, '+result.onlyServer+' seulement sur le serveur, '+result.changed+' différente(s). Synchronisez et vérifiez les autres appareils avec l’administrateur.' + '\n\nLes autres encaissements et avoirs ne sont pas comparés ici.');
  });
- const close=()=>{if(!transport||busy)return;Alert.alert('Clôturer la journée ?', 'Synchronisez toutes les opérations et tous les avoirs. Seul un administrateur pourra rouvrir cette journée.',[{text:'Annuler',style:'cancel'},{text:'Clôturer',onPress:()=>void run(async seq=>{await transport.closeDay(day);await load(seq);})}]);};
+ const close=()=>{if(!transport||busy)return;Alert.alert('Clôturer la journée ?', 'Synchronisez toutes les opérations et tous les avoirs, puis vérifiez les remboursements attribués dans le journal. Leur enregistrement ne prouve pas le versement physique. Seul un administrateur pourra rouvrir cette journée.',[{text:'Annuler',style:'cancel'},{text:'Clôturer',onPress:()=>void run(async seq=>{await transport.closeDay(day);await load(seq);})}]);};
  const exportJournal=(format:'csv'|'pdf')=>void run(async seq=>{
   const current=await getCreditMobileWorkspacePrototype(identity,day,commercialName);if(!alive(seq))return;
   await shareCreditJournalPrototype(current.journal,format,{
