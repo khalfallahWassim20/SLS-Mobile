@@ -40,6 +40,17 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       password_hash text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
     );
     ALTER TABLE commercial_credentials ADD COLUMN IF NOT EXISTS session_version bigint NOT NULL DEFAULT 1;
+    -- Autorisations ponctuelles préparatoires ; l'adresse seule ne prouve pas
+    -- la continuité d'une base, notamment après restauration d'une copie.
+    CREATE TABLE IF NOT EXISTS mobile_address_approvals (
+      request_id uuid PRIMARY KEY, commercial_id uuid NOT NULL REFERENCES commercials(id),
+      previous_origin text NOT NULL, target_origin text NOT NULL, lineage_id uuid NOT NULL,
+      code_hash text NOT NULL CHECK (length(code_hash)=64), approved_by text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL,
+      redeemed_at timestamptz, revoked_at timestamptz,
+      CHECK (expires_at > created_at)
+    );
+
     -- Préparation des clôtures : non exposée et sans verrouillage des écritures existantes.
     CREATE TABLE IF NOT EXISTS tour_closures (
       commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
