@@ -1,3 +1,5 @@
+import {inspectAddressContinuity} from '../../../apps/mobile/server-address-continuity.js';
+import {migrateDeviceOriginPrototype} from '../../../apps/mobile/server-address-migration.js';
 import {readLocalJournalCashReconciliation} from '../../../apps/mobile/journal-cash-reconciliation-prototype.js';
 import {compareCashReconciliation} from '@sls/domain';
 import {readLocalSaleCashComparison,compareSaleCashEvents} from '../../../apps/mobile/credit-sale-cash-compare-prototype.js';
@@ -127,6 +129,12 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,1);mobile.exec('DELETE FROM sales_outbox');
   await transaction(()=>saveVerifiedCreditReference(tx,identity,identity,reference,digest));
+  const v5cacheBefore=mobile.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload;
+  const continuity=await transaction(()=>inspectAddressContinuity(tx,identity,5,reference,digest));assert.ok(continuity.anchors>0);
+  assert.equal(mobile.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,v5cacheBefore);
+  await assert.rejects(transaction(()=>inspectAddressContinuity(tx,identity,5,{...reference,saleStates:[]},digest)));
+  assert.equal(mobile.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,v5cacheBefore);
+
   const sources=await get(`credit-sources/${clientId}`);await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   // Aperçu expérimental d'une modification distante : aucune copie locale ni
   // opération en file ; la facture, le solde et le jour sont revérifiés.
@@ -150,6 +158,19 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_remote_sale_confirm_prototype').get()?.n,0);
   const confirmed=await transaction(()=>confirmRemoteSaleEditPrototype(tx,draftRequest,digest));assert.equal(confirmed.replayed,false);
   assert.equal((await transaction(()=>confirmRemoteSaleEditPrototype(tx,draftRequest,digest))).replayed,true);
+  // Migration v5 en transaction annulée : l'événement financier reste
+  // strictement identique et sa file reste lisible avec la nouvelle origine.
+  const beforeMigration=mobile.prepare('SELECT payload FROM credit_remote_sale_confirm_prototype').get()?.payload;
+  await assert.rejects(transaction(async()=>{
+   const moved={...identity,serverOrigin:'https://new.example.test'};
+   await migrateDeviceOriginPrototype(tx,identity,moved.serverOrigin);
+   const queue=await readRemoteEditQueuePrototype(tx,moved);
+   assert.equal(queue.length,1);assert.equal(queue[0].operationId,draftRequest.operationId);assert.equal(queue[0].payload,beforeMigration);
+   assert.deepEqual(await readRemoteEditBalancePrototype(tx,moved,clientId,digest),{balance:950000,conflict:false});
+   throw Error('annuler migration test');
+  }),/annuler migration test/);
+  assert.equal(mobile.prepare('SELECT server_origin FROM identified_device').get()?.server_origin,identity.serverOrigin);
+
   await assert.rejects(transaction(()=>confirmRemoteSaleEditPrototype(tx,{...draftRequest,choice:'credit'},digest)),/autre contenu/);
   assert.deepEqual(await transaction(()=>readRemoteEditBalancePrototype(tx,identity,clientId,digest)),{balance:950000,conflict:false});
   // La file et le solde actifs restent intacts : le registre n'est pas activé.

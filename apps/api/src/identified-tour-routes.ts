@@ -41,6 +41,17 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  const r=Router();r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
  r.use(rateLimit({windowMs:15*60*1000,limit:500,standardHeaders:'draft-8',legacyHeaders:false}));
  const supportsCredit=(req:import('express').Request)=>options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5';
+ // Lecture uniquement : cet identifiant ne permet pas de changer une liaison.
+ // Il n'est exploitable qu'après enregistrement préalable auprès d'un serveur
+ // connu ; une ancienne installation non épinglée reste à rapprocher.
+ r.get('/server-lineage',async(req,res,next)=>{try{
+  const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));
+  if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
+  const result=await pool.query('SELECT lineage_id AS "lineageId" FROM server_lineage_identity WHERE id=1');
+  if(result.rows.length!==1||!z.string().uuid().safeParse(result.rows[0].lineageId).success)throw new Error('Identité de base indisponible.');
+  res.json({version:1,commercialId:actor.id,lineageId:result.rows[0].lineageId});
+ }catch(e){errorHandler(e,res,next);}});
+
  r.get('/reference',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(supportsCredit(req)?await readPrototypeCreditReference(pool,false):await readIdentifiedReference(pool,false,enforceMode));}catch(e){errorHandler(e,res,next);}});
  // Uniquement pour une base de test isolée, jamais activé par défaut.
  if(options.allowCreditProtocol===true)r.post('/credit-notes-abandon',async(req,res,next)=>{try{

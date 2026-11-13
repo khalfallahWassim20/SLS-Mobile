@@ -1,5 +1,12 @@
 // Migration relançable du prototype ; toutes les valeurs monétaires sont en millimes.
 export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
+    -- Identifiant stable dans cette base, conservé par sauvegarde/restauration.
+    -- Il identifie une lignée, pas un serveur authentifié ni une copie unique.
+    CREATE TABLE IF NOT EXISTS server_lineage_identity (
+      id integer PRIMARY KEY CHECK(id=1), lineage_id uuid NOT NULL UNIQUE
+    );
+    INSERT INTO server_lineage_identity(id,lineage_id) VALUES(1,gen_random_uuid()) ON CONFLICT(id) DO NOTHING;
+
     CREATE TABLE IF NOT EXISTS clients (
       id uuid PRIMARY KEY, name text NOT NULL, sector text NOT NULL DEFAULT '', address text NOT NULL DEFAULT '',
       tax_id text NOT NULL DEFAULT '', phone text NOT NULL DEFAULT '', opening_balance bigint NOT NULL DEFAULT 0,
@@ -33,6 +40,17 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       password_hash text NOT NULL, updated_at timestamptz NOT NULL DEFAULT now()
     );
     ALTER TABLE commercial_credentials ADD COLUMN IF NOT EXISTS session_version bigint NOT NULL DEFAULT 1;
+    -- Autorisations ponctuelles préparatoires ; l'adresse seule ne prouve pas
+    -- la continuité d'une base, notamment après restauration d'une copie.
+    CREATE TABLE IF NOT EXISTS mobile_address_approvals (
+      request_id uuid PRIMARY KEY, commercial_id uuid NOT NULL REFERENCES commercials(id),
+      previous_origin text NOT NULL, target_origin text NOT NULL, lineage_id uuid NOT NULL,
+      code_hash text NOT NULL CHECK (length(code_hash)=64), approved_by text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(), expires_at timestamptz NOT NULL,
+      redeemed_at timestamptz, revoked_at timestamptz,
+      CHECK (expires_at > created_at)
+    );
+
     -- Préparation des clôtures : non exposée et sans verrouillage des écritures existantes.
     CREATE TABLE IF NOT EXISTS tour_closures (
       commercial_id uuid NOT NULL REFERENCES commercials(id), journal_date date NOT NULL,
