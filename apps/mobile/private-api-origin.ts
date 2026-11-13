@@ -6,3 +6,9 @@ export function isPrivateHttpOrigin(value:string):boolean{
   const n=p.map(Number);return n[0]===10||(n[0]===172&&n[1]>=16&&n[1]<=31)||(n[0]===192&&n[1]===168);
  }catch{return false;}
 }
+/** Avant toute connexion de récupération : HTTPS ou HTTP privé explicitement accepté. */
+export function assertAddressRecoveryTransport(origin:string,allowPrivateHttp:boolean,acknowledged:boolean):void{
+ try{const url=new URL(origin);if(url.protocol==='https:'&&url.origin===origin&&!url.username&&!url.password&&url.pathname==='/'&&!url.search&&!url.hash)return;}catch{/* refus prudent */}
+ if(!allowPrivateHttp||!isPrivateHttpOrigin(origin))throw Error('Adresse refusée : HTTPS ou IP privée autorisée requis. Aucun mot de passe envoyé.');
+ if(!acknowledged)throw Error('Confirmez les risques du HTTP avant de continuer.');
+}

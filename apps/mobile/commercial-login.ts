@@ -27,3 +27,16 @@ export async function openCommercialSession(address:string,login:string,password
 export async function testCommercialLogin(address:string,login:string,password:string,request:FetchLike):Promise<{id:string;name:string}> {
  const {id,name}=await openCommercialSession(address,login,password,request);return {id,name};
 }
+
+/** Hors procédure de changement d'adresse, ne jamais envoyer le mot de passe
+ * à une autre origine que celle liée dans SQLite. La lecture est volontairement
+ * effectuée avant tout réseau ; une erreur de stockage bloque la connexion. */
+export async function openBoundCommercialSession(address:string,login:string,password:string,request:FetchLike,readIdentity:()=>Promise<{commercialId:string;serverOrigin:string}|null>):Promise<CommercialSession>{
+ const target=apiOrigin(address),bound=await readIdentity();
+ if(bound&&bound.serverOrigin!==target)throw Error('Ce téléphone est lié à une autre adresse. Utilisez « Changer l’adresse du serveur » ; aucun identifiant n’a été envoyé.');
+ const session=await openCommercialSession(target,login,password,request);
+ const current=await readIdentity();
+ if((bound?.commercialId??null)!==(current?.commercialId??null)||(bound?.serverOrigin??null)!==(current?.serverOrigin??null))throw Error('La liaison a changé pendant la connexion : réessayez.');
+ if(current&&session.id!==current.commercialId)throw Error('Ce téléphone est lié à un autre commercial : connexion refusée.');
+ return session;
+}

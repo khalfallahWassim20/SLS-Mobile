@@ -6,3 +6,8 @@ node_modules/
 dist/
 coverage/
 *.sqlite
+# Ne jamais committer de clés privées ou certificats locaux
+*.key
+*.pem
+*.p12
+*.pfx

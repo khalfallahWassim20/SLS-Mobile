@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import express, { type RequestHandler } from 'express';
 import {createServer as createHttpsServer} from 'node:https';
-import {readFileSync} from 'node:fs';
+import {readTransportConfig} from './https-config.js';
 import {addressApprovalAdminRoutes,addressApprovalCommercialRoutes} from './mobile-address-approval-routes.js';
 import { rateLimit } from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
@@ -173,11 +173,8 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
 const creditV5TestOnly=process.env.SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
 const addressTestOnly=process.env.SLS_ADDRESS_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
 const addressPrivateHttp=process.env.SLS_ADDRESS_PRIVATE_HTTP==='J_ACCEPTE_LES_RISQUES_HTTP';
-if(addressTestOnly&&addressPrivateHttp)throw Error('Modes de changement d’adresse incompatibles.');
-const tlsKey=process.env.SLS_ADDRESS_TEST_TLS_KEY,tlsCert=process.env.SLS_ADDRESS_TEST_TLS_CERT;
-if(addressTestOnly&&(!creditV5TestOnly||!tlsKey||!tlsCert))throw Error('Le changement d’adresse expérimental exige une base fictive v5 et un certificat HTTPS de test.');
-if((tlsKey||tlsCert)&&!addressTestOnly)throw Error('Les paramètres TLS de test exigent SLS_ADDRESS_TEST_ONLY.');
-if(addressTestOnly||addressPrivateHttp){
+const transport=readTransportConfig(process.env);
+if(addressTestOnly||addressPrivateHttp||transport.addressHttps){
  app.use('/api/mobile/address-approvals',addressApprovalCommercialRoutes(pool,secret,addressPrivateHttp));
  app.use('/api/address-approvals',addressApprovalAdminRoutes(pool,auth,username,addressPrivateHttp));
 }
@@ -280,5 +277,5 @@ app.put('/api/articles/:id', async (req, res) => { const id = uuid.parse(req.par
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof CreditProtocolUpgradeRequired) { res.status(409).json({error:err.message,code:'CREDIT_PROTOCOL_UPGRADE_REQUIRED'}); return; } if (err instanceof LegacySyncDisabled) { res.status(409).json({error:err.message}); return; } if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
 const port=Number(process.env.PORT || 3001),host=process.env.API_HOST || '127.0.0.1';
 const ready=()=>console.log('API de développement prête sur le port '+port);
-if(addressTestOnly)createHttpsServer({key:readFileSync(tlsKey!),cert:readFileSync(tlsCert!)},app).listen(port,host,ready);
+if(transport.tls)createHttpsServer(transport.tls,app).listen(port,host,ready);
 else app.listen(port,host,ready);

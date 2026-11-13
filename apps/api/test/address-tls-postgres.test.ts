@@ -20,7 +20,7 @@ import pg from 'pg';
 import {schemaSql} from '../src/schema.js';
 import {saveCommercial,setCommercialCredentials} from '../src/commercials.js';
 
-test('serveur HTTPS isolé : circuit des autorisations authentifié',async()=>{
+for(const mode of ['test-v5','https-direct'] as const)test(`serveur HTTPS isolé (${mode}) : circuit des autorisations authentifié`,async()=>{
  const database=process.env.DATABASE_URL;if(!database)throw Error('DATABASE_URL manquante');
  const dir=mkdtempSync(join(tmpdir(),'sls-tls-')),key=join(dir,'key.pem'),cert=join(dir,'cert.pem');let child:ChildProcess|undefined,pool:pg.Pool|undefined;
  const schema='sls_tls_'+randomUUID().replaceAll('-',''),root=new pg.Pool({connectionString:database}),secret='secret fictif assez long pour les essais TLS';
@@ -30,7 +30,7 @@ test('serveur HTTPS isolé : circuit des autorisations authentifié',async()=>{
   const person=await saveCommercial(pool,'admin',{name:'Commercial fictif',active:true});await setCommercialCredentials(pool,'admin',person.id,{login:'tls.test',password:'mot de passe fictif'});
   const lineageId=(await pool.query('SELECT lineage_id::text AS id FROM server_lineage_identity')).rows[0].id;
   const port=await new Promise<number>((resolve,reject)=>{const s=createServer();s.once('error',reject);s.listen(0,'127.0.0.1',()=>{const a=s.address();if(!a||typeof a==='string')return reject(Error('port'));s.close(()=>resolve(a.port));});});
-  const env={...process.env,DATABASE_URL:database,PGOPTIONS:`-c search_path=${schema}`,PORT:String(port),API_HOST:'127.0.0.1',JWT_SECRET:secret,ADMIN_USERNAME:'testadmin',ADMIN_PASSWORD_HASH:bcrypt.hashSync('mot de passe fictif',4),SLS_V5_TEST_ONLY:'DONNEES_FICTIVES_ISOLEES',SLS_ADDRESS_TEST_ONLY:'DONNEES_FICTIVES_ISOLEES',SLS_ADDRESS_TEST_TLS_KEY:key,SLS_ADDRESS_TEST_TLS_CERT:cert};
+  const env={...process.env,DATABASE_URL:database,PGOPTIONS:`-c search_path=${schema}`,PORT:String(port),API_HOST:'127.0.0.1',JWT_SECRET:secret,ADMIN_USERNAME:'testadmin',ADMIN_PASSWORD_HASH:bcrypt.hashSync('mot de passe fictif',4),SLS_V5_TEST_ONLY:'DONNEES_FICTIVES_ISOLEES',...(mode==='test-v5'?{SLS_ADDRESS_TEST_ONLY:'DONNEES_FICTIVES_ISOLEES',SLS_ADDRESS_TEST_TLS_KEY:key,SLS_ADDRESS_TEST_TLS_CERT:cert}:{SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS',SLS_TLS_KEY:key,SLS_TLS_CERT:cert})};
   child=spawn(process.execPath,['--import','tsx','src/server.ts'],{cwd:fileURLToPath(new URL('..',import.meta.url)),env,stdio:['ignore','pipe','pipe']});
   await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Serveur TLS non démarré')),15000);child!.stdout!.on('data',d=>{if(String(d).includes('API de développement prête')){clearTimeout(timer);resolve();}});child!.once('exit',c=>{clearTimeout(timer);reject(Error(`Serveur arrêté ${c}`));});child!.stderr!.on('data',d=>process.stderr.write(d));});
   const post=(path:string,data:unknown,token?:string)=>new Promise<{status:number;body:any;cache:string|undefined}>((resolve,reject)=>{const req=httpsRequest({hostname:'127.0.0.1',port,path:'/api'+path,method:'POST',ca:readFileSync(cert),headers:{'content-type':'application/json',...(token?{authorization:`Bearer ${token}`}:{})}},res=>{let raw='';res.on('data',x=>raw+=x);res.on('end',()=>resolve({status:res.statusCode??0,body:raw?JSON.parse(raw):null,cache:res.headers['cache-control']}));});req.on('error',reject);req.end(JSON.stringify(data));});
