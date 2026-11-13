@@ -1,4 +1,5 @@
 import {creditAbandonInputSchema} from './credit-note-abandon-prototype.js';
+import {settlementSchema} from './identified-operations.js';
 /** Projection intégrée réservée aux tests. Aucun routeur actif ne l'expose ;
  * elle ne rend pas les registres expérimentaux utilisables en production. */
 import type {Pool,PoolClient} from 'pg';
@@ -100,6 +101,17 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    if(!sale||sale.syncSaleId!==row.sale_id||sale.syncVersion!==row.version||sale.clientId!==row.client_id||state.clientId!==row.client_id||state.version!==row.version||String(sale.total)!==state.total||String(sale.paid)!==state.paid)throw new RangeError('Source de vente identifiée incohérente.');
    return {saleId:row.sale_id,version:row.version,hash:createHash('sha256').update(canonicalJson(sale)).digest('hex')};
   }).filter((p):p is {saleId:string;version:number;hash:string}=>p!==null);
+  // Une preuve du contenu complet permet au téléphone de ne pas confondre
+  // deux règlements portant le même UUID et le même client mais des montants
+  // ou modalités différents. Les anciens espaces restent sans preuve v5.
+  const paymentRows=await db.query('SELECT operation_id,client_id,payload FROM identified_settlements');
+  const knownPayments=new Map(base.settlementStates.map(p=>[p.operationId,p.clientId]));
+  const settlementProofs=paymentRows.rows.flatMap(row=>{
+   if(!knownPayments.has(row.operation_id))return [];
+   const event=settlementSchema.parse(row.payload);
+   if(event.operationId!==row.operation_id||event.settlement.syncOperationId!==row.operation_id||event.settlement.clientId!==row.client_id||knownPayments.get(row.operation_id)!==row.client_id)throw new RangeError('Règlement identifié incohérent.');
+   return [{operationId:row.operation_id as string,hash:createHash('sha256').update(canonicalJson(event.settlement)).digest('hex')}];
+  });
   const eligibleJournals=await db.query(`SELECT i.id FROM identified_journal_invoices i
    WHERE i.commercial_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM sync_journal_invoices s WHERE s.id=i.id)`);
   const knownJournals=new Set(base.journalStates.map(s=>s.id));
@@ -138,7 +150,7 @@ export async function readPrototypeCreditReferenceInTransaction(db:PoolClient) {
    FROM pre_invoice_credit_prototype_events n LEFT JOIN identified_journal_invoices i ON i.id=n.invoice_id`);
   if(ownerRows.rows.length!==noteIds.size||new Set(ownerRows.rows.map(r=>r.operation_id)).size!==noteIds.size||ownerRows.rows.some(r=>!noteIds.has(r.operation_id)))throw new RangeError('Propriétaires des avoirs incomplets.');
   const creditOwners=ownerRows.rows.map(r=>({operationId:r.operation_id,ownerId:r.owner_id as string|null})).sort((a,b)=>a.operationId.localeCompare(b.operationId));
-  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,eligibleSaleProofs,eligibleJournalIds,settlementStates:base.settlementStates,journalStates,journalProofs:base.journalProofs,cashAssignments,creditOwners};
+  return {experimental:true as const,version:5 as const,clients:allClients,articles:base.articles,saleStates,saleProofs,eligibleSaleProofs,eligibleJournalIds,settlementStates:base.settlementStates,settlementProofs,journalStates,journalProofs:base.journalProofs,cashAssignments,creditOwners};
 }
 /** En v5 les inactifs sont conservés pour le rapprochement, jamais pour la
  * sélection de nouveaux clients. La différence active/inactive est explicite. */

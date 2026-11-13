@@ -21,6 +21,11 @@ export async function savePrototypeCreditReference(tx:Tx,identity:DeviceIdentity
  if(previous) {
   if(previous.commercialId!==identity.commercialId||previous.serverOrigin!==identity.serverOrigin)throw Error('Cache lié à une autre identité.');
   const old=validatePrototypeCreditReference(JSON.parse(previous.payload));
+  if(old.settlementProofs){
+   if(!next.settlementProofs)throw Error('Preuves de règlement manquantes.');
+   const proofs=new Map(next.settlementProofs.map(p=>[p.operationId,p.hash]));
+   for(const proof of old.settlementProofs)if(proofs.get(proof.operationId)!==proof.hash)throw Error('Preuve de règlement périmée ou incohérente.');
+  }
   if(old.creditOwners){
    if(!next.creditOwners)throw Error('Propriétaires des avoirs périmés.');
    const owners=new Map(next.creditOwners.map(x=>[x.operationId,x.ownerId]));

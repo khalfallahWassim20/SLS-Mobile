@@ -21,13 +21,17 @@ test('transition avoir : chaque opération locale doit avoir une preuve serveur 
   db.prepare('INSERT INTO settlements VALUES(1,?,?)').run(client,JSON.stringify(payment));
   db.prepare('INSERT INTO tour_pre_invoices VALUES(?,?,?)').run(journalId,client,JSON.stringify(journal.invoice));
   db.prepare('INSERT INTO journal_sync_state VALUES(?,?,?)').run(journalId,1,JSON.stringify(journal));
-  const ref:any={saleStates:[{saleId,clientId:client,version:1,total:'1000',paid:'100',creditNote:null}],eligibleSaleProofs:[{saleId,version:1,hash:await digest(canonicalJson(sale))}],settlementStates:[{operationId:paymentId,clientId:client}],journalStates:[{id:journalId,clientId:client,creditNote:null}],journalProofs:[{id:journalId,version:1,hash:await digest(canonicalJson(journal))}]};
+  const ref:any={saleStates:[{saleId,clientId:client,version:1,total:'1000',paid:'100',creditNote:null}],eligibleSaleProofs:[{saleId,version:1,hash:await digest(canonicalJson(sale))}],settlementStates:[{operationId:paymentId,clientId:client}],settlementProofs:[{operationId:paymentId,hash:await digest(canonicalJson(payment))}],journalStates:[{id:journalId,clientId:client,creditNote:null}],journalProofs:[{id:journalId,version:1,hash:await digest(canonicalJson(journal))}]};
   await assertTransitionLocalHistory(tx,ref,digest);
   await assert.rejects(assertTransitionLocalHistory(tx,{...ref,saleStates:[]},digest),/Vente locale/);
   db.prepare('UPDATE sales SET payload=?').run(JSON.stringify({...sale,name:'modifié'}));
   await assert.rejects(assertTransitionLocalHistory(tx,ref,digest),/Vente locale/);
   db.prepare('UPDATE sales SET payload=?').run(JSON.stringify(sale));
   await assert.rejects(assertTransitionLocalHistory(tx,{...ref,settlementStates:[]},digest),/Règlement local/);
+  await assert.rejects(assertTransitionLocalHistory(tx,{...ref,settlementProofs:null},digest),/Règlement local/);
+  db.prepare('UPDATE settlements SET payload=?').run(JSON.stringify({...payment,amount:200}));
+  await assert.rejects(assertTransitionLocalHistory(tx,ref,digest),/Règlement local/);
+  db.prepare('UPDATE settlements SET payload=?').run(JSON.stringify(payment));
   db.prepare('UPDATE journal_sync_state SET payload=?').run(JSON.stringify({...journal,receipts:[{id:randomUUID()}]}));
   await assert.rejects(assertTransitionLocalHistory(tx,ref,digest),/Préétablie locale/);
   assert.equal(db.prepare('SELECT count(*) AS n FROM sales').get()?.n,1);

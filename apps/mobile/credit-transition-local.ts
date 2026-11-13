@@ -1,7 +1,7 @@
 /** Vérification conservative préalable au passage d'un téléphone v4 vers v5.
  * Lecture uniquement dans la transaction exclusive de liaison. Les règlements
- * ne sont comparés qu'en identifiant/client : leur montant n'a pas de preuve
- * dans la référence actuelle et cela ne démontre pas l'authenticité du serveur. */
+ * incluent une empreinte du contenu. Ces preuves ne démontrent pas
+ * l’authenticité du serveur. */
 import {canonicalJson} from '@sls/domain';
 import type {validatePrototypeCreditReference} from './credit-note-reference-prototype';
 type Tx={getAllAsync<T>(sql:string,...params:(string|number|null)[]):Promise<T[]>};
@@ -19,7 +19,8 @@ export async function assertTransitionLocalHistory(tx:Tx,reference:Reference,dig
  }
  const payments=await tx.getAllAsync<{clientId:string;payload:string}>('SELECT client_id AS clientId,payload FROM settlements ORDER BY id');
  for(const row of payments){const payment=parse(row.payload),state=reference.settlementStates?.find(s=>s.operationId===payment.syncOperationId);
-  if(payment.clientId!==row.clientId||!state||state.clientId!==row.clientId)throw Error('Règlement local sans marqueur serveur : rapprochement nécessaire.');
+  const proof=reference.settlementProofs?.find(p=>p.operationId===payment.syncOperationId);
+  if(payment.clientId!==row.clientId||!state||state.clientId!==row.clientId||!proof||await digest(canonicalJson(payment))!==proof.hash)throw Error('Règlement local sans preuve serveur identique : rapprochement nécessaire.');
  }
  const journals=await tx.getAllAsync<{id:string;clientId:string;version:number|null;payload:string|null}>(`SELECT p.id,p.client_id AS clientId,s.version,s.payload FROM tour_pre_invoices p LEFT JOIN journal_sync_state s ON s.invoice_id=p.id ORDER BY p.rowid`);
  for(const row of journals){
