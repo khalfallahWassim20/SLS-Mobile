@@ -1,3 +1,4 @@
+import {inspectAddressContinuity} from '../../../apps/mobile/server-address-continuity.js';
 import {migrateDeviceOriginPrototype} from '../../../apps/mobile/server-address-migration.js';
 import {readLocalJournalCashReconciliation} from '../../../apps/mobile/journal-cash-reconciliation-prototype.js';
 import {compareCashReconciliation} from '@sls/domain';
@@ -128,6 +129,12 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,1);mobile.exec('DELETE FROM sales_outbox');
   await transaction(()=>saveVerifiedCreditReference(tx,identity,identity,reference,digest));
+  const v5cacheBefore=mobile.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload;
+  const continuity=await transaction(()=>inspectAddressContinuity(tx,identity,5,reference,digest));assert.ok(continuity.anchors>0);
+  assert.equal(mobile.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,v5cacheBefore);
+  await assert.rejects(transaction(()=>inspectAddressContinuity(tx,identity,5,{...reference,saleStates:[]},digest)));
+  assert.equal(mobile.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,v5cacheBefore);
+
   const sources=await get(`credit-sources/${clientId}`);await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
   // Aperçu expérimental d'une modification distante : aucune copie locale ni
   // opération en file ; la facture, le solde et le jour sont revérifiés.
