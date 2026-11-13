@@ -1,5 +1,12 @@
 // Migration relançable du prototype ; toutes les valeurs monétaires sont en millimes.
 export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
+    -- Identifiant stable dans cette base, conservé par sauvegarde/restauration.
+    -- Il identifie une lignée, pas un serveur authentifié ni une copie unique.
+    CREATE TABLE IF NOT EXISTS server_lineage_identity (
+      id integer PRIMARY KEY CHECK(id=1), lineage_id uuid NOT NULL UNIQUE
+    );
+    INSERT INTO server_lineage_identity(id,lineage_id) VALUES(1,gen_random_uuid()) ON CONFLICT(id) DO NOTHING;
+
     CREATE TABLE IF NOT EXISTS clients (
       id uuid PRIMARY KEY, name text NOT NULL, sector text NOT NULL DEFAULT '', address text NOT NULL DEFAULT '',
       tax_id text NOT NULL DEFAULT '', phone text NOT NULL DEFAULT '', opening_balance bigint NOT NULL DEFAULT 0,
