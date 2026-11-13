@@ -26,7 +26,10 @@ export async function bindAndCacheCreditReferencePrototype(tx:Tx,identity:Device
    OR EXISTS(SELECT 1 FROM sale_event_times) OR EXISTS(SELECT 1 FROM offline_credit_prototype)
    OR EXISTS(SELECT 1 FROM credit_abandoned_note_prototype) OR EXISTS(SELECT 1 FROM credit_protocol_quarantine)
    OR EXISTS(SELECT 1 FROM tour_close_attempts) OR EXISTS(SELECT 1 FROM tour_known_server_states)
-   OR EXISTS(SELECT 1 FROM tour_close_cash_proofs) OR EXISTS(SELECT 1 FROM tour_close_admin_refund_proofs) AS n`);
+   OR EXISTS(SELECT 1 FROM tour_close_cash_proofs) OR EXISTS(SELECT 1 FROM tour_close_admin_refund_proofs)
+   OR EXISTS(SELECT 1 FROM credit_remote_sale_draft_prototype) OR EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype)
+   OR EXISTS(SELECT 1 FROM credit_local_sale_reconcile_prototype) OR EXISTS(SELECT 1 FROM credit_remote_sale_receipt_prototype)
+   OR EXISTS(SELECT 1 FROM credit_remote_sale_abandoned_prototype) OR EXISTS(SELECT 1 FROM credit_remote_sale_failure_prototype) AS n`);
   if(!history||history.n)throw Error('Historique local sans identité liée : rapprochement nécessaire avant la liaison v5.');
  }
  // Une première migration d'un téléphone déjà lié ne doit pas croiser un

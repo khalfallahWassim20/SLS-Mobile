@@ -122,6 +122,11 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   assert.equal(mobile.prepare('SELECT payload FROM identified_reference_cache').get()?.payload,'{}');
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
   mobile.exec('DELETE FROM identified_reference_cache');
+  mobile.prepare('INSERT INTO credit_remote_sale_draft_prototype VALUES(?,?,?,?,?,?)').run(randomUUID(),saleId,second.id,identity.serverOrigin,'{}','{}');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Historique local sans identité/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_remote_sale_draft_prototype').get()?.n,1);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
+  mobile.exec('DELETE FROM credit_remote_sale_draft_prototype');
   mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,1,'{}');
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/opérations en attente/);mobile.exec('DELETE FROM sales_outbox');
   // Un téléphone déjà lié en v3 ne peut pas basculer pendant un envoi
@@ -573,6 +578,16 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    assert.equal(preview.balanceAfter,0);assert.equal(preview.refund,2400);
    const draft={operationId:remoteEvent.operationId,context:context2,key,recordedAt:remoteEvent.recordedAt,lines:editLines,choice:'refund' as const,preview};
    await isolatedTransaction(()=>stageRemoteSaleEditDraftPrototype(isolatedTx,draft,digest));await isolatedTransaction(()=>confirmRemoteSaleEditPrototype(isolatedTx,draft,digest));
+   // Une révision peut apparaître après le contrôle initial de la file. Même
+   // si le client n'a aucune vente locale, la validation finale ne doit pas
+   // annoncer une synchronisation complète ; le cache est aussi restauré.
+   const beforeFinal=isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload;
+   await assert.rejects(isolatedTransaction(()=>saveAndVerifyFinalCreditReference(isolatedTx,identity,identity,referenceBeforeEdit,digest)),/modification distante reste en attente/);
+   assert.equal(isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,beforeFinal);
+   assert.equal(isolated.prepare('SELECT acknowledged FROM credit_remote_sale_confirm_prototype').get()?.acknowledged,0);
+   isolated.prepare('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=1').run();
+   await assert.rejects(isolatedTransaction(()=>saveAndVerifyFinalCreditReference(isolatedTx,identity,identity,referenceBeforeEdit,digest)),/modification distante reste en attente/);
+   isolated.prepare('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=0').run();
    assert.deepEqual(await isolatedTransaction(()=>readRemoteEditBalancePrototype(isolatedTx,identity,client2,digest)),{balance:0,conflict:false});
    // Hors ligne, la révision bloque seulement son client. Un autre client
    // peut encore recevoir une vente, qui sera envoyée après la révision.
