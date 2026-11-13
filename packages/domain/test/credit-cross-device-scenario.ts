@@ -109,6 +109,19 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,{...reference,version:3},digest,()=>{})),/Référence/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,{...identity,commercialId:randomUUID()},reference,digest,()=>{})),/Session/);
+  // Sans identité, un historique local ne doit jamais être attribué
+  // silencieusement au compte qui tente de se lier.
+  mobile.prepare('INSERT INTO settlements(client_id,payload) VALUES(?,?)').run(clientId,'historique fictif');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Historique local sans identité/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
+  assert.equal(mobile.prepare('SELECT payload FROM settlements').get()?.payload,'historique fictif');
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  mobile.exec('DELETE FROM settlements');
+  mobile.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(second.id,identity.serverOrigin,'{}');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Historique local sans identité/);
+  assert.equal(mobile.prepare('SELECT payload FROM identified_reference_cache').get()?.payload,'{}');
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
+  mobile.exec('DELETE FROM identified_reference_cache');
   mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,1,'{}');
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/opérations en attente/);mobile.exec('DELETE FROM sales_outbox');
   // Un téléphone déjà lié en v3 ne peut pas basculer pendant un envoi

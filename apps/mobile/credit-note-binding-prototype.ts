@@ -13,6 +13,22 @@ export async function bindAndCacheCreditReferencePrototype(tx:Tx,identity:Device
  if(identity.commercialId!==verified.commercialId||identity.serverOrigin!==verified.serverOrigin)throw Error('Session ou serveur différent du téléphone.');
  const previouslyBound=await getDeviceIdentity(tx);
  await bindVerifiedDevice(tx,verified);guard();
+ // Une identité absente ne prouve pas que SQLite est neuf : des données
+ // antérieures peuvent être restées après une installation incomplète ou
+ // une corruption. Ne pas leur attribuer silencieusement le compte courant.
+ // Le catalogue seul est admis. L'échec annule aussi l'identité insérée.
+ if(!previouslyBound){
+  const history=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM sales) OR EXISTS(SELECT 1 FROM sale_revisions)
+   OR EXISTS(SELECT 1 FROM settlements) OR EXISTS(SELECT 1 FROM tour_pre_invoices)
+   OR EXISTS(SELECT 1 FROM tour_journal_receipts) OR EXISTS(SELECT 1 FROM journal_sync_state)
+   OR EXISTS(SELECT 1 FROM identified_local_operations) OR EXISTS(SELECT 1 FROM identified_reference_cache)
+   OR EXISTS(SELECT 1 FROM credit_reference_prototype_cache) OR EXISTS(SELECT 1 FROM credit_sources_prototype_cache)
+   OR EXISTS(SELECT 1 FROM sale_event_times) OR EXISTS(SELECT 1 FROM offline_credit_prototype)
+   OR EXISTS(SELECT 1 FROM credit_abandoned_note_prototype) OR EXISTS(SELECT 1 FROM credit_protocol_quarantine)
+   OR EXISTS(SELECT 1 FROM tour_close_attempts) OR EXISTS(SELECT 1 FROM tour_known_server_states)
+   OR EXISTS(SELECT 1 FROM tour_close_cash_proofs) OR EXISTS(SELECT 1 FROM tour_close_admin_refund_proofs) AS n`);
+  if(!history||history.n)throw Error('Historique local sans identité liée : rapprochement nécessaire avant la liaison v5.');
+ }
  // Une première migration d'un téléphone déjà lié ne doit pas croiser un
  // envoi v3 en cours. Une reconnexion v5 conserve au contraire ses files.
  const existing=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_reference_prototype_cache) AS n');
