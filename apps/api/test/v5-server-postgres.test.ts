@@ -37,6 +37,9 @@ test('serveur réel : v5 uniquement sur option de test, authentification et avoi
   response=await fetch(`${base}/identified-tour/credit-snapshot`,{headers:{'X-SLS-Reference-Version':'5'}});assert.equal(response.status,401);
   const login=await fetch(`${base}/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'testadmin',password:'password-fictif'})});assert.equal(login.status,200);const admin=(await login.json()).token;
   const adminHeaders={Authorization:`Bearer ${admin}`,'Content-Type':'application/json','X-SLS-Reference-Version':'5'};
+  // Même en v5, le changement d’adresse reste absent sans le second drapeau.
+  assert.equal((await fetch(`${base}/address-approvals`,{method:'POST',headers:adminHeaders,body:'{}'})).status,404);
+
   const at=new Date().toISOString(),saleId=randomUUID(),sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900}],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
   response=await fetch(`${base}/mobile/identified/sales`,{method:'POST',headers:{...auth,'Content-Type':'application/json'},body:JSON.stringify({operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0})});assert.equal(response.status,201);
   const revised={...sale,syncVersion:2,lines:[{...sale.lines[0],unitPrice:10000}],total:11900,paid:11900,remaining:0};

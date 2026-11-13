@@ -1,3 +1,4 @@
+import {recoverAddressPrototype} from './server-address-recovery-prototype';
 import {readLocalJournalCashReconciliation} from './journal-cash-reconciliation-prototype';
 import {readLocalSaleCashComparison} from './credit-sale-cash-compare-prototype';
 import {readPendingCreditAbandonPrototype,resolveCreditAbandonPrototype} from './credit-note-abandon-prototype';
@@ -532,4 +533,13 @@ export async function commitRemoteSaleEditPrototype(request:RemoteEditDraftReque
 export async function getPendingRemoteEditPrototype(identity:DeviceIdentity):Promise<Awaited<ReturnType<typeof readPendingRemoteEditPrototype>>>{
  const database=await db();let result:Awaited<ReturnType<typeof readPendingRemoteEditPrototype>>=null;
  await database.withExclusiveTransactionAsync(async tx=>{result=await readPendingRemoteEditPrototype(tx,identity);});return result;
+}
+
+/** Essai isolé uniquement. Le contrôleur ne transmet aucune opération ;
+ * transaction exclusive et garde de contexte également en fin de migration. */
+export async function runAddressRecoveryTest(old:DeviceIdentity,session:CommercialSession,requestId:string,code:string,isCurrent:()=>boolean){
+ if(process.env.EXPO_PUBLIC_SLS_V5_TEST_ONLY!=='DONNEES_FICTIVES_ISOLEES'||process.env.EXPO_PUBLIC_SLS_ADDRESS_TEST_ONLY!=='DONNEES_FICTIVES_ISOLEES')throw Error('Essai isolé désactivé.');
+ const database=await db();
+ const transaction=async<T>(fn:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await fn(tx);});return result;};
+ return recoverAddressPrototype(old,session,requestId,code,5,{testOnly:'DONNEES_FICTIVES_ISOLEES',request:fetch,transaction,digest:text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text),isCurrent});
 }

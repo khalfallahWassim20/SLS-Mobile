@@ -47,6 +47,8 @@ const uuid=(v:string)=>/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-
 const validDay=(v:string)=>{const d=new Date(`${v}T00:00:00.000Z`);return /^\d{4}-\d{2}-\d{2}$/.test(v)&&Number.isFinite(d.getTime())&&d.toISOString().slice(0,10)===v;};
 const object=(v:unknown):Record<string,unknown>|null=>v!==null&&typeof v==='object'&&!Array.isArray(v)?v as Record<string,unknown>:null;
 let controllerBusy=false;
+/** Évite une bascule d’adresse pendant une requête v5 en cours. */
+export function isCreditTransportBusy(){return controllerBusy;}
 /** Le contrôleur ne crée pas de session et ne conserve pas de mot de passe.
  * Une réponse reçue après expiration n'est jamais acquittée localement. */
 export function createCreditTransportPrototype(session:CommercialSession,identity:DeviceIdentity,io:Dependencies){

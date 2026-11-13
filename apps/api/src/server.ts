@@ -1,5 +1,8 @@
 import 'dotenv/config';
 import express, { type RequestHandler } from 'express';
+import {createServer as createHttpsServer} from 'node:https';
+import {readFileSync} from 'node:fs';
+import {addressApprovalAdminRoutes,addressApprovalCommercialRoutes} from './mobile-address-approval-routes.js';
 import { rateLimit } from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -168,6 +171,15 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
 // Tant que la transition n'est pas autorisée, elles refusent toute écriture.
 // Explicitement réservé à une base fictive isolée : jamais activé par défaut.
 const creditV5TestOnly=process.env.SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
+const addressTestOnly=process.env.SLS_ADDRESS_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
+const tlsKey=process.env.SLS_ADDRESS_TEST_TLS_KEY,tlsCert=process.env.SLS_ADDRESS_TEST_TLS_CERT;
+if(addressTestOnly&&(!creditV5TestOnly||!tlsKey||!tlsCert))throw Error('Le changement d’adresse expérimental exige une base fictive v5 et un certificat HTTPS de test.');
+if((tlsKey||tlsCert)&&!addressTestOnly)throw Error('Les paramètres TLS de test exigent SLS_ADDRESS_TEST_ONLY.');
+if(addressTestOnly){
+ app.use('/api/mobile/address-approvals',addressApprovalCommercialRoutes(pool,secret));
+ app.use('/api/address-approvals',addressApprovalAdminRoutes(pool,auth,username));
+}
+
 app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly}));
 app.use('/api', auth);
 app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username,{allowCreditProtocol:creditV5TestOnly}));
@@ -264,4 +276,7 @@ app.put('/api/clients/:id', async (req, res) => { const id = uuid.parse(req.para
 app.post('/api/articles', async (req, res) => { const a = articleSchema.parse(req.body), id = randomUUID(); const r = await changeWithAudit('articles','création',id,`INSERT INTO articles(id,code,name,barcode,purchase_ttc,sale_ttc,vat_rate,units_per_carton,active) VALUES($1,'ART-' || lpad(nextval('article_code_seq')::text, 6, '0'),$2,$3,$4,$5,$6,$7,$8) RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); res.status(201).json(r); });
 app.put('/api/articles/:id', async (req, res) => { const id = uuid.parse(req.params.id), a = articleSchema.parse(req.body); const r = await changeWithAudit('articles','modification',id,`UPDATE articles SET name=$2,barcode=$3,purchase_ttc=$4,sale_ttc=$5,vat_rate=$6,units_per_carton=$7,active=$8,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); if (!r) { res.status(404).json({error:'Article introuvable.'}); return; } res.json(r); });
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof CreditProtocolUpgradeRequired) { res.status(409).json({error:err.message,code:'CREDIT_PROTOCOL_UPGRADE_REQUIRED'}); return; } if (err instanceof LegacySyncDisabled) { res.status(409).json({error:err.message}); return; } if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
-app.listen(Number(process.env.PORT || 3001), process.env.API_HOST || '127.0.0.1', () => console.log('API de développement prête sur le port ' + (process.env.PORT || 3001)));
+const port=Number(process.env.PORT || 3001),host=process.env.API_HOST || '127.0.0.1';
+const ready=()=>console.log('API de développement prête sur le port '+port);
+if(addressTestOnly)createHttpsServer({key:readFileSync(tlsKey!),cert:readFileSync(tlsCert!)},app).listen(port,host,ready);
+else app.listen(port,host,ready);

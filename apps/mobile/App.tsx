@@ -4,9 +4,12 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import { createSecureSessionStore, validSession } from './secure-commercial-session';
 import {CreditMobileWorkspacePrototype} from './credit-mobile-workspace-prototype';
+import {AddressRecoveryTest} from './address-recovery-test';
+import {isCreditTransportBusy} from './credit-note-transport-prototype';
 import {createExperimentalCreditMobileTransport,getCreditReferencePrototype} from './storage';
 import type {DeviceIdentity} from './identified-device';
 const V5_TEST_ONLY=process.env.EXPO_PUBLIC_SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
+const ADDRESS_TEST_ONLY=process.env.EXPO_PUBLIC_SLS_ADDRESS_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
 import { journalCsv, journalHtml } from './journal-export';
 import React, { Children, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, AppState, BackHandler, Keyboard, SafeAreaView, ScrollView, StatusBar, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -146,6 +149,15 @@ export default function App() {
   const [v5Identity,setV5Identity]=useState<DeviceIdentity|null>(null);
   const [v5Login,setV5Login]=useState(false);
   const [v5Ready,setV5Ready]=useState(false);
+  const [addressRecovery,setAddressRecovery]=useState(false);
+  const startAddressRecovery=async()=>{
+    if(commercialBusyRef.current)return;
+    if(isCreditTransportBusy()){setCommercialError('Une synchronisation ou actualisation est en cours. Attendez sa fin.');return;}
+    commercialBusyRef.current=true;setCommercialBusy(true);setCommercialError('');
+    try{await secureSessions.clear();setIndividual(null);setAddressRecovery(true);}
+    catch{setCommercialError('Impossible de fermer la session : essai annulé.');}
+    finally{commercialBusyRef.current=false;setCommercialBusy(false);}
+  };
   const [closureLabel,setClosureLabel]=useState('');
   useEffect(()=>{
     let alive=true;commercialBusyRef.current=true;setCommercialBusy(true);
@@ -620,6 +632,7 @@ export default function App() {
   const showFab = screen === 'journal' && !keyboardOpen;
   const bottomSpace = (showTabs ? 96 : 0) + (bar ? (bar.info ? 120 : 100) : 0) + (showFab ? 72 : 0) + 36;
   if(V5_TEST_ONLY){
+    if(ADDRESS_TEST_ONLY&&addressRecovery&&v5Identity)return <SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"><AddressRecoveryTest old={v5Identity} onBack={()=>{setAddressRecovery(false);setV5Login(true);}} onMigrated={identity=>{setV5Identity(identity);setServerUrl(identity.serverOrigin);setAddressRecovery(false);setV5Login(true);setCommercialError('');setSessionNotice('Adresse modifiée pour cet essai fictif. Reconnectez-vous ; aucune opération n’a été envoyée.');}} /></ScrollView></SafeAreaView>;
     if(commercialBusy&&!v5Identity&&!v5Login)return <SafeAreaView style={styles.safe}><Text>Ouverture du téléphone…</Text></SafeAreaView>;
     if(!v5Identity||!v5Ready||v5Login)return <SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Header title="Connexion · essai v5" detail="Base de test isolée uniquement" />
@@ -630,11 +643,13 @@ export default function App() {
       {!!sessionNotice&&<Text style={styles.warning}>{sessionNotice}</Text>}
       {!!commercialError&&<Text accessibilityRole="alert" style={styles.warning}>{commercialError}</Text>}
       <Button label={commercialBusy?'Connexion…':'Se connecter'} disabled={commercialBusy} onPress={()=>{void connectIndividual();}} />
+      {ADDRESS_TEST_ONLY&&v5Identity&&<Button secondary label="Changer l’adresse · essai fictif" disabled={commercialBusy} onPress={()=>{void startAddressRecovery();}}/>}
       {v5Identity&&v5Ready&&<Button secondary label="Continuer hors ligne" disabled={commercialBusy} onPress={()=>setV5Login(false)}/>}
     </ScrollView></SafeAreaView>;
     return <SafeAreaView style={styles.safe}><StatusBar barStyle="dark-content" />
       {!individual&&<View style={styles.content}><Text style={styles.warning}>Session expirée ou absente : travail hors ligne possible, reconnexion nécessaire pour synchroniser.</Text><Button label="Se reconnecter" onPress={()=>setV5Login(true)}/></View>}
       {!!sessionNotice&&<Text style={styles.warning}>{sessionNotice}</Text>}
+      {ADDRESS_TEST_ONLY&&<View style={styles.content}><Button secondary label="Changer l’adresse · essai fictif" onPress={()=>{if(isCreditTransportBusy()){Alert.alert('Essai indisponible','Attendez la fin de la synchronisation ou de l’actualisation.');return;}setV5Login(true);}}/></View>}
       <CreditMobileWorkspacePrototype identity={v5Identity} day={journalDate} commercialName={individual?.name??'Commercial lié'} session={individual} onUnauthorized={()=>{if(individual)invalidateIndividual(individual);}} />
     </SafeAreaView>;
   }
