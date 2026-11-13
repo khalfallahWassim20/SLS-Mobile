@@ -118,7 +118,26 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/opérations en attente/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,1);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
-  mobile.exec('DELETE FROM sales_outbox;DELETE FROM identified_device');
+  mobile.exec('DELETE FROM sales_outbox');
+  // Une clôture v3 en vol ou dont la réponse est perdue ne doit pas être
+  // remplacée par une clôture v5 ni disparaître lors de la première liaison.
+  const closeId=randomUUID();mobile.prepare("INSERT INTO tour_close_attempts VALUES(?,?,?,0,'closing',NULL)").run(second.id,'2026-11-08',closeId);
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Clôture en attente/);
+  assert.equal(mobile.prepare('SELECT request_id FROM tour_close_attempts').get()?.request_id,closeId);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  assert.equal(mobile.prepare('SELECT commercial_id FROM identified_device').get()?.commercial_id,second.id);
+  mobile.prepare('UPDATE tour_close_attempts SET status=?,closed_version=1 WHERE request_id=?').run('closed',closeId);
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Ancienne référence indisponible/);
+  const oldReference={...reference,version:4};
+  const badReference={...oldReference,journalProofs:oldReference.journalProofs.map((p:any,index:number)=>index? p:{...p,hash:'f'.repeat(64)})};
+  mobile.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(second.id,identity.serverOrigin,JSON.stringify(badReference));
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Preuve de journal différente/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  mobile.prepare('UPDATE identified_reference_cache SET payload=?').run(JSON.stringify(oldReference));
+  await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,1);
+  // Nettoyage de cet appareil fictif uniquement pour poursuivre le scénario.
+  mobile.exec('DELETE FROM credit_reference_prototype_cache;DELETE FROM identified_reference_cache;DELETE FROM tour_close_attempts;DELETE FROM identified_device');
   let checks=0;await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{if(++checks===2)throw Error('session expirée');})),/session expirée/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
   await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
