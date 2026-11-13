@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/api/tsconfig.json",
     "check": "npm run typecheck && npm test && npm run test:admin-export",
     "test:admin-export": "tsx --test apps/admin/test/*.test.mjs apps/admin/test/*.test.jsx",
+    "test:address-mobile-bundle": "node --test apps/mobile/test/address-bundle.test.mjs",
     "mobile": "npm run start --workspace @sls/mobile",
     "api": "npm run dev --workspace @sls/api",
     "admin": "npm run dev --workspace @sls/admin",
