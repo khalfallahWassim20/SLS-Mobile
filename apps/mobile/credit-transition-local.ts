@@ -22,9 +22,14 @@ export async function assertTransitionLocalHistory(tx:Tx,reference:Reference,dig
   const proof=reference.settlementProofs?.find(p=>p.operationId===payment.syncOperationId);
   if(payment.clientId!==row.clientId||!state||state.clientId!==row.clientId||!proof||await digest(canonicalJson(payment))!==proof.hash)throw Error('Règlement local sans preuve serveur identique : rapprochement nécessaire.');
  }
- const journals=await tx.getAllAsync<{id:string;clientId:string;version:number|null;payload:string|null}>(`SELECT p.id,p.client_id AS clientId,s.version,s.payload FROM tour_pre_invoices p LEFT JOIN journal_sync_state s ON s.invoice_id=p.id ORDER BY p.rowid`);
+ const journals=await tx.getAllAsync<{id:string;clientId:string;day:string;invoicePayload:string;version:number|null;payload:string|null}>(`SELECT p.id,p.client_id AS clientId,p.journal_date AS day,p.payload AS invoicePayload,s.version,s.payload FROM tour_pre_invoices p LEFT JOIN journal_sync_state s ON s.invoice_id=p.id ORDER BY p.rowid`);
+ const receipts=await tx.getAllAsync<{id:string;invoiceId:string;clientId:string;day:string;payload:string}>('SELECT id,pre_invoice_id AS invoiceId,client_id AS clientId,journal_date AS day,payload FROM tour_journal_receipts ORDER BY rowid');
+ const states=await tx.getAllAsync<{invoiceId:string}>('SELECT invoice_id AS invoiceId FROM journal_sync_state');
+ if(states.some(s=>!journals.some(j=>j.id===s.invoiceId))||receipts.some(r=>!journals.some(j=>j.id===r.invoiceId)))throw Error('Journal local orphelin : rapprochement nécessaire.');
  for(const row of journals){
   const state=reference.journalStates.find(s=>s.id===row.id),proof=reference.journalProofs.find(p=>p.id===row.id);
-  if(!row.payload||!state||state.clientId!==row.clientId||state.creditNote||!proof||proof.version!==row.version||await digest(canonicalJson(parse(row.payload)))!==proof.hash)throw Error('Préétablie locale sans preuve serveur identique : rapprochement nécessaire.');
+  if(!row.payload||!state||state.clientId!==row.clientId||state.creditNote||!proof||proof.version!==row.version)throw Error('Préétablie locale sans preuve serveur identique : rapprochement nécessaire.');
+  const snapshot=parse(row.payload),invoice=parse(row.invoicePayload),localReceipts=receipts.filter(r=>r.invoiceId===row.id);
+  if(snapshot.version!==row.version||invoice.id!==row.id||invoice.clientId!==row.clientId||invoice.journalDate!==row.day||canonicalJson(invoice)!==canonicalJson(snapshot.invoice)||!Array.isArray(snapshot.receipts)||localReceipts.some(r=>{const value=parse(r.payload);return value.id!==r.id||value.preInvoiceId!==row.id||value.clientId!==row.clientId||value.journalDate!==row.day||r.clientId!==row.clientId||r.day!==row.day;})||canonicalJson(localReceipts.map(r=>parse(r.payload)))!==canonicalJson(snapshot.receipts)||await digest(canonicalJson(snapshot))!==proof.hash)throw Error('Préétablie locale sans preuve serveur identique : rapprochement nécessaire.');
  }
 }
