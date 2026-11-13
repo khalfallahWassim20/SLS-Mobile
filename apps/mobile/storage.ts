@@ -543,3 +543,11 @@ export async function runAddressRecoveryTest(old:DeviceIdentity,session:Commerci
  const transaction=async<T>(fn:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await fn(tx);});return result;};
  return recoverAddressPrototype(old,session,requestId,code,5,{testOnly:'DONNEES_FICTIVES_ISOLEES',request:fetch,transaction,digest:text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text),isCurrent});
 }
+/** Mode HTTP explicite : réseau privé seulement, trafic NON chiffré. Aucun
+ * envoi d'opérations ; le consentement et l'approbation admin sont obligatoires. */
+export async function runAddressRecoveryPrivate(old:DeviceIdentity,session:CommercialSession,requestId:string,code:string,isCurrent:()=>boolean){
+ if(process.env.EXPO_PUBLIC_SLS_ADDRESS_PRIVATE_HTTP!=='J_ACCEPTE_LES_RISQUES_HTTP')throw Error('Changement HTTP non activé.');
+ const database=await db();
+ const transaction=async<T>(fn:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await fn(tx);});return result;};
+ return recoverAddressPrototype(old,session,requestId,code,4,{allowPrivateHttp:true,request:fetch,transaction,digest:text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text),isCurrent});
+}

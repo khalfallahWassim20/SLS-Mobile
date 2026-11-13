@@ -4,6 +4,7 @@
 import {createHash,randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {z} from 'zod';
 import type {Pool} from 'pg';
+import {isPrivateHttpOrigin} from '../../mobile/private-api-origin.js';
 import {verifyCommercialSession} from './commercial-session.js';
 
 const origin=z.string().max(2048).refine(value=>{try{const u=new URL(value);return ['http:','https:'].includes(u.protocol)&&!u.username&&!u.password&&u.pathname==='/'&&!u.search&&!u.hash&&u.origin===value&&!['localhost','127.0.0.1','[::1]'].includes(u.hostname);}catch{return false;}},'Origine invalide.');
@@ -13,10 +14,10 @@ export class AddressApprovalRejected extends Error {constructor(){super('Autoris
 /** L'identité admin doit provenir de son middleware de session, jamais du corps.
  * Les détails sont liés au code aléatoire ; ni mot de passe ni code en clair
  * ne sont conservés. Répéter la création avec le même UUID est refusé. */
-export async function issueAddressApproval(pool:Pool,admin:string,input:unknown){
+export async function issueAddressApproval(pool:Pool,admin:string,input:unknown,allowPrivateHttp=false){
  if(!admin||!admin.trim()||admin.length>200)throw new RangeError('Administrateur requis.');
  // Éviter que des champs inattendus soient acceptés par les intersections Zod.
- const body=z.object({requestId:z.string().uuid(),commercialId:z.string().uuid(),previousOrigin:origin,targetOrigin:origin.refine(v=>v.startsWith('https://')),lineageId:z.string().uuid(),confirmation:z.literal('J_AI_VERIFIE_LA_BASE_ET_LE_TELEPHONE')}).strict().parse(input);
+ const body=z.object({requestId:z.string().uuid(),commercialId:z.string().uuid(),previousOrigin:origin,targetOrigin:origin.refine(v=>v.startsWith('https://')||(allowPrivateHttp&&isPrivateHttpOrigin(v))),lineageId:z.string().uuid(),confirmation:z.literal('J_AI_VERIFIE_LA_BASE_ET_LE_TELEPHONE')}).strict().parse(input);
  const parsed=body;if(parsed.previousOrigin===parsed.targetOrigin)throw new RangeError('Adresses identiques.');
  const code=randomBytes(32).toString('base64url'),db=await pool.connect();
  try{
@@ -33,8 +34,8 @@ export async function issueAddressApproval(pool:Pool,admin:string,input:unknown)
 }
 /** Reprise idempotente jusqu'à expiration uniquement avec le même code et la
  * même session. Aucune preuve ne doit être considérée après expiration. */
-export async function redeemAddressApproval(pool:Pool,secret:string,token:string,input:unknown){
- const body=z.object({requestId:z.string().uuid(),commercialId:z.string().uuid(),previousOrigin:origin,targetOrigin:origin.refine(v=>v.startsWith('https://')),lineageId:z.string().uuid(),code:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict().parse(input);
+export async function redeemAddressApproval(pool:Pool,secret:string,token:string,input:unknown,allowPrivateHttp=false){
+ const body=z.object({requestId:z.string().uuid(),commercialId:z.string().uuid(),previousOrigin:origin,targetOrigin:origin.refine(v=>v.startsWith('https://')||(allowPrivateHttp&&isPrivateHttpOrigin(v))),lineageId:z.string().uuid(),code:z.string().regex(/^[A-Za-z0-9_-]{43}$/)}).strict().parse(input);
  const parsed=body,db=await pool.connect();
  try{
   await db.query('BEGIN');
