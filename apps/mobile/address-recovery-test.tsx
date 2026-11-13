@@ -4,7 +4,7 @@ import {randomUUID} from 'expo-crypto';
 import {apiOrigin,openCommercialSession,type CommercialSession} from './commercial-login';
 import {fetchServerLineage} from './server-lineage-proof';
 import {runAddressRecoveryTest,runAddressRecoveryPrivate} from './storage';
-import {isPrivateHttpOrigin} from './private-api-origin';
+import {assertAddressRecoveryTransport} from './private-api-origin';
 import type {DeviceIdentity} from './identified-device';
 
 type Prepared={requestId:string;commercialId:string;previousOrigin:string;targetOrigin:string;lineageId:string};
@@ -18,7 +18,7 @@ export function AddressRecoveryTest({old,onBack,onMigrated,allowPrivateHttp=fals
  async function prepare(){if(running.current)return;running.current=true;setBusy(true);setError('');setPrepared(null);setSession(null);
   const ticket=++generation.current,pass=password;setPassword('');
   try{
-   const target=apiOrigin(url);if(allowPrivateHttp&&!acknowledged)throw Error('Confirmez les risques du HTTP avant de continuer.');if(!target.startsWith('https://')&&!(allowPrivateHttp&&isPrivateHttpOrigin(target)))throw Error('Adresse refusée : HTTPS ou IP privée autorisée requis. Aucun mot de passe envoyé.');
+   const target=apiOrigin(url);assertAddressRecoveryTransport(target,allowPrivateHttp,acknowledged);
    if(target===old.serverOrigin)throw Error('La nouvelle adresse doit être différente.');
    const value=await openCommercialSession(target,login,pass,fetch);
    if(!active.current||generation.current!==ticket)return;
@@ -30,7 +30,7 @@ export function AddressRecoveryTest({old,onBack,onMigrated,allowPrivateHttp=fals
  }
  async function change(){if(running.current||!prepared||!session)return;running.current=true;setBusy(true);setError('');const ticket=generation.current,secret=code.trim();setCode('');
   try{
-   if(allowPrivateHttp&&!acknowledged)throw Error('Confirmez les risques du HTTP avant de continuer.');
+   assertAddressRecoveryTransport(prepared.targetOrigin,allowPrivateHttp,acknowledged);
    if(allowPrivateHttp)await runAddressRecoveryPrivate(old,session,prepared.requestId,secret,()=>active.current&&generation.current===ticket);
    else await runAddressRecoveryTest(old,session,prepared.requestId,secret,()=>active.current&&generation.current===ticket);
    if(active.current&&generation.current===ticket)onMigrated({commercialId:old.commercialId,serverOrigin:prepared.targetOrigin});
@@ -39,7 +39,7 @@ export function AddressRecoveryTest({old,onBack,onMigrated,allowPrivateHttp=fals
  }
  const input={borderWidth:1,borderColor:'#cbd5d0',borderRadius:8,padding:12,marginVertical:5} as const;
  const button=(label:string,press:()=>void,disabled=false)=><TouchableOpacity accessibilityRole="button" disabled={disabled} onPress={press} style={{padding:12,backgroundColor:disabled?'#a2aaa6':'#0e8a6d',borderRadius:8,marginVertical:5}}><Text style={{color:'white',textAlign:'center'}}>{label}</Text></TouchableOpacity>;
- return <View><Text style={{fontWeight:'bold',fontSize:20}}>Changer l’adresse API</Text><Text>L’ancienne base n’est pas prouvée par ce contrôle. L’administrateur doit vérifier la base ; aucune opération ne sera synchronisée automatiquement.</Text>{allowPrivateHttp?<><Text style={{color:'#a12b23'}}>Attention : HTTP ne chiffre ni le mot de passe, ni le code, ni les données. Ils peuvent être interceptés ou modifiés. Utilisez seulement un réseau privé de confiance.</Text><View><Switch accessibilityLabel="J’accepte les risques du HTTP" value={acknowledged} disabled={busy} onValueChange={value=>{setAcknowledged(value);if(!value){generation.current++;setPrepared(null);setSession(null);setCode('');}}}/><Text>J’ai compris et j’accepte les risques du HTTP.</Text></View></>:<Text>Données fictives uniquement.</Text>}<Text>Adresse liée : {old.serverOrigin}</Text>
+ return <View><Text style={{fontWeight:'bold',fontSize:20}}>Changer l’adresse API</Text><Text>L’ancienne base n’est pas prouvée par ce contrôle. L’administrateur doit vérifier la base ; aucune opération ne sera synchronisée automatiquement.</Text>{allowPrivateHttp?<><Text style={{color:'#a12b23'}}>Attention : HTTP ne chiffre ni le mot de passe, ni le code, ni les données. Ils peuvent être interceptés ou modifiés. Utilisez seulement un réseau privé de confiance.</Text><View><Switch accessibilityLabel="J’accepte les risques du HTTP" value={acknowledged} disabled={busy} onValueChange={value=>{setAcknowledged(value);if(!value){generation.current++;setPrepared(null);setSession(null);setCode('');}}}/><Text>J’ai compris et j’accepte les risques du HTTP (uniquement si l’adresse est en HTTP).</Text></View></>:<Text>Données fictives uniquement.</Text>}<Text>Adresse liée : {old.serverOrigin}</Text>
  {!prepared?<><TextInput style={input} accessibilityLabel="Nouvelle adresse du serveur" placeholder="http://192.168.100.23:3001" value={url} onChangeText={setUrl} autoCapitalize="none" autoCorrect={false}/><TextInput style={input} accessibilityLabel="Identifiant de test" placeholder="Identifiant commercial" value={login} onChangeText={setLogin} autoCapitalize="none"/><TextInput style={input} accessibilityLabel="Mot de passe de test" placeholder="Mot de passe commercial" value={password} onChangeText={setPassword} secureTextEntry/>{button(busy?'Vérification…':'Préparer la demande',()=>{void prepare();},busy)}</>:<><Text>Transmettez cette demande à l’administrateur :</Text><Text selectable style={{padding:8,backgroundColor:'#eef4f1'}}>{JSON.stringify(prepared)}</Text><Text>Le code doit être reçu par un canal de confiance et expire après cinq minutes.</Text><TextInput style={input} accessibilityLabel="Code d’autorisation" value={code} onChangeText={setCode} placeholder="Code temporaire" autoCapitalize="none" autoCorrect={false}/>{button(busy?'Vérification…':'Vérifier et changer l’adresse',()=>{void change();},busy||!code.trim())}</>}
  {!!error&&<Text accessibilityRole="alert" style={{color:'#a12b23'}}>{error}</Text>}{button('Retour sans synchroniser',onBack,busy)}
  </View>;

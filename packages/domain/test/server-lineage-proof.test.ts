@@ -29,3 +29,15 @@ test('HTTP privé : opt-in explicite, adresses non privées refusées',async()=>
  await assert.rejects(fetchServerLineage(session,request),/HTTPS/);
  assert.equal((await fetchServerLineage(session,request,true)).lineageId,lineageId);
 });
+
+test('récupération : HTTPS sans consentement HTTP, HTTP privé exige activation et consentement',async()=>{
+ const {assertAddressRecoveryTransport:check}=await import('../../../apps/mobile/private-api-origin.js');
+ assert.doesNotThrow(()=>check('https://api.example.test',true,false));
+ assert.doesNotThrow(()=>check('https://api.example.test',false,false));
+ assert.throws(()=>check('http://192.168.100.23:3001',true,false),/risques/);
+ assert.throws(()=>check('http://192.168.100.23:3001',false,true),/refusée/);
+ assert.throws(()=>check('http://8.8.8.8',true,true),/refusée/);
+ assert.throws(()=>check('https://api.example.test/path',true,true),/refusée/);
+ assert.throws(()=>check('https://user@api.example.test',true,true),/refusée/);
+ assert.doesNotThrow(()=>check('http://192.168.100.23:3001',true,true));
+});

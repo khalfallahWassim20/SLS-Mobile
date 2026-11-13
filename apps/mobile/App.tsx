@@ -19,7 +19,7 @@ import { validateReference, preInvoiceAvailability, hasJournalDayConflict, forma
 import { tunisDay, buildJournal, journalTotal } from './journal';
 import { uploadJournalQueue } from './journal-upload';
 import { isIdentifiedDeviceBound } from './storage';
-import { testCommercialLogin,openCommercialSession, type CommercialSession } from './commercial-login';
+import { openBoundCommercialSession, type CommercialSession } from './commercial-login';
 import { clearLocalTestOperations,bindAndCacheIdentified,getBoundIdentity,recordCreditProtocolUpgrade,getIdentifiedOutbox,acknowledgeIdentifiedEntry,observeIdentifiedTour,getLocalCloseAttempt,prepareLocalClose,acknowledgeLocalClose } from './storage';
 import { uploadIdentifiedOperations, ClosedDaySyncError } from './identified-upload';
 import { sendPreparedTourClose } from './tour-close-queue';
@@ -138,7 +138,7 @@ export default function App() {
   const tryCommercialLogin=async()=>{
     if(commercialBusyRef.current)return; commercialBusyRef.current=true;setCommercialBusy(true);setCommercialError('');setCommercialResult('');
     const password=commercialPassword;setCommercialPassword('');
-    try {const result=await testCommercialLogin(serverUrl,commercialLogin,password,fetch);setCommercialResult(result.name);}
+    try {const result=await openBoundCommercialSession(serverUrl,commercialLogin,password,fetch,getBoundIdentity);setCommercialResult(result.name);}
     catch(error){setCommercialError(error instanceof Error?error.message:'Connexion impossible.');}
     finally {commercialBusyRef.current=false;setCommercialBusy(false);}
   };
@@ -218,7 +218,7 @@ export default function App() {
     if(commercialBusyRef.current)return;commercialBusyRef.current=true;setCommercialBusy(true);setCommercialError('');
     if(V5_TEST_ONLY)setV5Login(true);
     const password=commercialPassword;setCommercialPassword('');
-    try {const session=await openCommercialSession(serverUrl,commercialLogin,password,fetch);
+    try {const session=await openBoundCommercialSession(serverUrl,commercialLogin,password,fetch,getBoundIdentity);
       if(!validSession(session,{commercialId:session.id,serverOrigin:session.serverOrigin}))throw Error('Vérifiez la date et l’heure du téléphone : session expirée ou invalide.');
       const identity={commercialId:session.id,serverOrigin:session.serverOrigin};
       let state:{status:string};
