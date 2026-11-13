@@ -30,12 +30,12 @@ test('migration isolée : préserve files, historique et cache, et reste annulab
   db.exec('ROLLBACK');assert.equal(db.prepare('SELECT server_origin FROM identified_device').get()?.server_origin,old.serverOrigin);
  }finally{db.close();}
 });
-test('migration isolée : identité, tables inconnues et historique v5 bloquent sans perte',async()=>{
+test('migration isolée : identité, tables inconnues et avoir incohérent bloquent sans perte',async()=>{
  const {db,tx,old,target}=fixture();try{
   await assert.rejects(migrateDeviceOriginPrototype(tx,{...old,commercialId:randomUUID()},target),/Liaison/);
   db.exec('CREATE TABLE future(server_origin TEXT)');await assert.rejects(migrateDeviceOriginPrototype(tx,old,target),/Nouvelle table/);db.exec('DROP TABLE future');
   db.prepare('INSERT INTO offline_credit_prototype VALUES(?,?,?,?,?,?,?)').run(randomUUID(),randomUUID(),'sale',old.commercialId,old.serverOrigin,'{}',1);
-  await assert.rejects(migrateDeviceOriginPrototype(tx,old,target),/Historique/);
+  await assert.rejects(migrateDeviceOriginPrototype(tx,old,target),/incohérent/);
   assert.equal(db.prepare('SELECT server_origin FROM identified_reference_cache').get()?.server_origin,old.serverOrigin);
   assert.equal(db.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,1);
   assert.equal(db.prepare('SELECT payload FROM sales_outbox').get()?.payload,'{"money":123}');
@@ -48,5 +48,25 @@ test('migration isolée : erreur au milieu des écritures restaure tout',async()
   assert.equal(db.prepare('SELECT server_origin FROM identified_device').get()?.server_origin,old.serverOrigin);
   assert.equal(db.prepare('SELECT server_origin FROM identified_reference_cache').get()?.server_origin,old.serverOrigin);
   assert.equal(db.prepare('SELECT server_origin FROM credit_protocol_quarantine').get()?.server_origin,old.serverOrigin);
+ }finally{db.close();}
+});
+
+
+test('migration v5 : avoir en attente et archive gardent montants, UUID et reçus',async()=>{
+ const {db,tx,old,target}=fixture();try{
+  const invoiceId=randomUUID(),operationId=randomUUID();
+  const note={kind:'sale',commercialId:old.commercialId,serverOrigin:old.serverOrigin,command:{operationId,invoiceId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'credit'},source:{syncSaleId:invoiceId,syncVersion:1,total:600000,paid:200000},balanceDelta:-600000,refund:0,retainedCredit:200000};
+  const archiveOp=randomUUID(),archived={...note,command:{...note.command,operationId:archiveOp}};
+  const receipt=JSON.stringify({invoiceId,kind:'sale',operationId:archiveOp,status:'abandoned'});
+  db.prepare('INSERT INTO offline_credit_prototype VALUES(?,?,?,?,?,?,?)').run(operationId,invoiceId,'sale',old.commercialId,old.serverOrigin,JSON.stringify(note),1);
+  db.prepare('INSERT INTO credit_abandoned_note_prototype VALUES(?,?,?,?,?,?)').run(archiveOp,old.commercialId,old.serverOrigin,JSON.stringify(archived),receipt,'2026-11-08T11:00:00.000Z');
+  const draftOp=randomUUID(),preview={total:123},draft={operationId:draftOp,key:{invoiceId},context:{identity:old},preview};
+  db.prepare('INSERT INTO credit_remote_sale_draft_prototype VALUES(?,?,?,?,?,?)').run(draftOp,invoiceId,old.commercialId,old.serverOrigin,JSON.stringify(draft),JSON.stringify(preview));
+  db.exec('BEGIN');await migrateDeviceOriginPrototype(tx,old,target);db.exec('COMMIT');
+  const result=db.prepare('SELECT * FROM offline_credit_prototype').get()!;assert.equal(result.pending,1);assert.equal(result.operation_id,operationId);assert.equal(result.server_origin,target);
+  assert.deepEqual(JSON.parse(result.payload as string),{...note,serverOrigin:target});
+  const archive=db.prepare('SELECT * FROM credit_abandoned_note_prototype').get()!;assert.equal(archive.receipt,receipt);assert.deepEqual(JSON.parse(archive.payload as string),{...archived,serverOrigin:target});
+  const migrated=db.prepare('SELECT * FROM credit_remote_sale_draft_prototype').get()!;assert.equal(migrated.server_origin,target);assert.deepEqual(JSON.parse(migrated.request as string),{...draft,context:{identity:{...old,serverOrigin:target}}});
+  assert.equal(db.prepare('SELECT payload FROM sales_outbox').get()?.payload,'{"money":123}');
  }finally{db.close();}
 });

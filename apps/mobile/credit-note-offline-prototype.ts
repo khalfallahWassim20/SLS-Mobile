@@ -88,10 +88,10 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
  await tx.runAsync('INSERT INTO offline_credit_prototype(operation_id,invoice_id,kind,commercial_id,server_origin,payload,pending) VALUES(?,?,?,?,?,?,1)',command.operationId,command.invoiceId,kind,identity.commercialId,identity.serverOrigin,JSON.stringify(note));
  return note;
 }
-type LocalRow={payload:string;commercialId:string;serverOrigin:string;kind:Kind;invoiceId:string;operationId:string;pending:number};
+export type LocalRow={payload:string;commercialId:string;serverOrigin:string;kind:Kind;invoiceId:string;operationId:string;pending:number};
 /** Lecture stricte : les montants sont recalculés depuis l'instantané, jamais
  * acceptés sur la seule foi du JSON sauvegardé. */
-function validateRow(row:LocalRow,identity:DeviceIdentity):Note {
+export function validateOfflineCreditRow(row:LocalRow,identity:DeviceIdentity):Note {
  let note:Note;
  try {note=JSON.parse(row.payload);}catch {throw Error('Avoir local illisible.');}
  if(!note||!note.command||![null,'refund','credit'].includes(note.command.choice)||row.commercialId!==identity.commercialId||row.serverOrigin!==identity.serverOrigin||note.commercialId!==row.commercialId||note.serverOrigin!==row.serverOrigin||note.kind!==row.kind||note.command?.invoiceId!==row.invoiceId||note.command.operationId!==row.operationId||!uuid(row.operationId)||!uuid(row.invoiceId)||(row.pending!==0&&row.pending!==1))throw Error('Avoir local incohérent.');
@@ -115,7 +115,7 @@ function validateRow(row:LocalRow,identity:DeviceIdentity):Note {
 export async function readAllOfflineCreditPrototype(tx:Tx,identity:DeviceIdentity):Promise<{note:Note;pending:boolean}[]> {
  await bound(tx,identity);
  const rows=await tx.getAllAsync<LocalRow>(`SELECT payload,commercial_id AS commercialId,server_origin AS serverOrigin,kind,invoice_id AS invoiceId,operation_id AS operationId,pending FROM offline_credit_prototype ORDER BY rowid`);
- return rows.map(row=>({note:validateRow(row,identity),pending:row.pending===1}));
+ return rows.map(row=>({note:validateOfflineCreditRow(row,identity),pending:row.pending===1}));
 }
 /** Ne remet pas un avoir à l'envoyeur avant toutes les versions locales de sa
  * facture. Le rejet serveur ne supprime jamais l'entrée. */
@@ -124,7 +124,7 @@ export async function readReadyOfflineCreditPrototype(tx:Tx,identity:DeviceIdent
  const rows=await tx.getAllAsync<LocalRow>(`SELECT payload,commercial_id AS commercialId,server_origin AS serverOrigin,kind,invoice_id AS invoiceId,operation_id AS operationId,pending FROM offline_credit_prototype WHERE pending=1 ORDER BY rowid`);
  const result:Note[]=[];
  for(const row of rows){
-  const note=validateRow(row,identity);
+  const note=validateOfflineCreditRow(row,identity);
   const dependency=await tx.getFirstAsync<{n:number}>(row.kind==='sale'?'SELECT EXISTS(SELECT 1 FROM sales_outbox WHERE sale_id=?) AS n':'SELECT EXISTS(SELECT 1 FROM journal_sync_outbox WHERE invoice_id=?) AS n',row.invoiceId);
   if(!dependency)throw Error('File locale indisponible.');
   if(!dependency.n)result.push(note);
@@ -138,7 +138,7 @@ export async function acknowledgeOfflineCreditPrototype(tx:Tx,identity:DeviceIde
  const r=response as Record<string,unknown>;
  if((r.status!=='received'&&r.status!=='duplicate')||r.operationId!==note.command.operationId||note.commercialId!==identity.commercialId||note.serverOrigin!==identity.serverOrigin)throw Error('Accusé invalide.');
  const row=await tx.getFirstAsync<LocalRow>(`SELECT payload,pending,commercial_id AS commercialId,server_origin AS serverOrigin,kind,invoice_id AS invoiceId,operation_id AS operationId FROM offline_credit_prototype WHERE operation_id=?`,note.command.operationId);
- if(!row||row.pending!==1||canonicalJson(validateRow(row,identity))!==canonicalJson(note))throw Error('Avoir modifié : accusé refusé.');
+ if(!row||row.pending!==1||canonicalJson(validateOfflineCreditRow(row,identity))!==canonicalJson(note))throw Error('Avoir modifié : accusé refusé.');
  await tx.runAsync('UPDATE offline_credit_prototype SET pending=0 WHERE operation_id=?',note.command.operationId);
 }
 /** Archives indicatives : ne sont plus des avoirs actifs ni des remboursements. */
@@ -147,7 +147,7 @@ export async function readAbandonedCreditNotesPrototype(tx:Tx,identity:DeviceIde
  const rows=await tx.getAllAsync<{operationId:string;commercialId:string;serverOrigin:string;payload:string;receipt:string;abandonedAt:string}>('SELECT operation_id AS operationId,commercial_id AS commercialId,server_origin AS serverOrigin,payload,receipt,abandoned_at AS abandonedAt FROM credit_abandoned_note_prototype ORDER BY rowid DESC LIMIT 100');
  return rows.map(row=>{
   let raw:Note,r:Record<string,unknown>;try{raw=JSON.parse(row.payload);r=JSON.parse(row.receipt);}catch{throw Error('Archive d’avoir illisible.');}
-  const note=validateRow({payload:row.payload,commercialId:row.commercialId,serverOrigin:row.serverOrigin,kind:raw?.kind,invoiceId:raw?.command?.invoiceId,operationId:row.operationId,pending:1},identity);
+  const note=validateOfflineCreditRow({payload:row.payload,commercialId:row.commercialId,serverOrigin:row.serverOrigin,kind:raw?.kind,invoiceId:raw?.command?.invoiceId,operationId:row.operationId,pending:1},identity);
   if(!r||typeof r!=='object'||Array.isArray(r)||Object.keys(r).sort().join(',')!=='invoiceId,kind,operationId,status'||r.status!=='abandoned'||r.kind!==note.kind||r.operationId!==note.command.operationId||r.invoiceId!==note.command.invoiceId||!Number.isFinite(Date.parse(row.abandonedAt))||new Date(row.abandonedAt).toISOString()!==row.abandonedAt)throw Error('Archive d’avoir incohérente.');
   return {note,abandonedAt:row.abandonedAt};
  });
