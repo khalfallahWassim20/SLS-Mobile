@@ -172,12 +172,14 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
 // Explicitement réservé à une base fictive isolée : jamais activé par défaut.
 const creditV5TestOnly=process.env.SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
 const addressTestOnly=process.env.SLS_ADDRESS_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
+const addressPrivateHttp=process.env.SLS_ADDRESS_PRIVATE_HTTP==='J_ACCEPTE_LES_RISQUES_HTTP';
+if(addressTestOnly&&addressPrivateHttp)throw Error('Modes de changement d’adresse incompatibles.');
 const tlsKey=process.env.SLS_ADDRESS_TEST_TLS_KEY,tlsCert=process.env.SLS_ADDRESS_TEST_TLS_CERT;
 if(addressTestOnly&&(!creditV5TestOnly||!tlsKey||!tlsCert))throw Error('Le changement d’adresse expérimental exige une base fictive v5 et un certificat HTTPS de test.');
 if((tlsKey||tlsCert)&&!addressTestOnly)throw Error('Les paramètres TLS de test exigent SLS_ADDRESS_TEST_ONLY.');
-if(addressTestOnly){
- app.use('/api/mobile/address-approvals',addressApprovalCommercialRoutes(pool,secret));
- app.use('/api/address-approvals',addressApprovalAdminRoutes(pool,auth,username));
+if(addressTestOnly||addressPrivateHttp){
+ app.use('/api/mobile/address-approvals',addressApprovalCommercialRoutes(pool,secret,addressPrivateHttp));
+ app.use('/api/address-approvals',addressApprovalAdminRoutes(pool,auth,username,addressPrivateHttp));
 }
 
 app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly}));
