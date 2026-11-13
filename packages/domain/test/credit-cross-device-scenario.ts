@@ -143,7 +143,19 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   mobile.exec('DELETE FROM sales');
   // Une vente locale identique et déjà reçue peut être conservée.
   mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
-  await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
+  // Le même contrôleur que l'interface récupère la référence v5 par HTTP et
+  // la lie sous transaction. Si la session change juste après le commit,
+  // l'appel échoue mais le cache déjà validé demeure et une reprise est sûre.
+  let active=true,loseAfterCommit=true;const calls:string[]=[];
+  const bridge=createCreditTransportPrototype({id:second.id,name:second.name,serverOrigin:identity.serverOrigin,token:b.token,expiresAt:b.expiresAt},identity,{
+   request:(url,options)=>{calls.push(options.method+' '+url);assert.equal(options.method,'GET');assert.equal(options.headers['X-SLS-Reference-Version'],'5');return fetch(url.replace(`${identity.serverOrigin}/api/mobile/identified/`,`${origin}/v5/`),options);},
+   cacheReference:async()=>{},cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),isCurrentSession:()=>active,
+   bindReference:async(id,verified,value,guard)=>{await transaction(()=>bindAndCacheCreditReferencePrototype(tx,id,verified,value,digest,guard));if(loseAfterCommit){loseAfterCommit=false;active=false;}}
+  });
+  await assert.rejects(bridge.connect(),/Session expirée/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,1);
+  assert.equal(mobile.prepare('SELECT payload FROM sales').get()?.payload,JSON.stringify(sale));
+  active=true;await bridge.connect();assert.ok(calls.every(call=>call.endsWith('/reference')));assert.equal(calls.length,2);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,1);
   assert.equal(mobile.prepare('SELECT payload FROM sales').get()?.payload,JSON.stringify(sale));
   // Nettoyage de cet appareil fictif uniquement pour poursuivre le scénario.

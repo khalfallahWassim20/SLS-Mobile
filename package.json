@@ -12,6 +12,7 @@
     "check": "npm run typecheck && npm test && npm run test:admin-export",
     "test:admin-export": "tsx --test apps/admin/test/*.test.mjs apps/admin/test/*.test.jsx",
     "test:address-mobile-bundle": "node --test apps/mobile/test/address-bundle.test.mjs",
+    "test:credit-bridge-bundle": "node --test apps/mobile/test/credit-bridge-bundle.test.mjs",
     "test:https": "tsx --test apps/api/test/https-*.test.ts",
     "verifier:https": "tsx apps/api/src/https-probe-cli.ts",
     "mobile": "npm run start --workspace @sls/mobile",
