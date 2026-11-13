@@ -134,10 +134,20 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Preuve de journal différente/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
   mobile.prepare('UPDATE identified_reference_cache SET payload=?').run(JSON.stringify(oldReference));
+  // Une ancienne ligne locale illisible ne doit pas être masquée par la
+  // nouvelle référence. Le cache v5 est annulé avec toute la transaction.
+  mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,'{invalide');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})));
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,1);
+  mobile.exec('DELETE FROM sales');
+  // Une vente locale identique et déjà reçue peut être conservée.
+  mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
   await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,1);
+  assert.equal(mobile.prepare('SELECT payload FROM sales').get()?.payload,JSON.stringify(sale));
   // Nettoyage de cet appareil fictif uniquement pour poursuivre le scénario.
-  mobile.exec('DELETE FROM credit_reference_prototype_cache;DELETE FROM identified_reference_cache;DELETE FROM tour_close_attempts;DELETE FROM identified_device');
+  mobile.exec('DELETE FROM sales;DELETE FROM credit_reference_prototype_cache;DELETE FROM identified_reference_cache;DELETE FROM tour_close_attempts;DELETE FROM identified_device');
   let checks=0;await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{if(++checks===2)throw Error('session expirée');})),/session expirée/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
   await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));

@@ -2,8 +2,10 @@
  * l'appelant ; la liaison et le cache doivent être committés ensemble. */
 import {bindVerifiedDevice,getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {saveVerifiedCreditReference} from './credit-note-sync-reference';
+import {saveAndVerifyFinalCreditReference} from './credit-note-sync-final-prototype';
 import {validatePrototypeCreditReference} from './credit-note-reference-prototype';
 import {inspectAddressContinuity} from './server-address-continuity';
+import {assertTransitionLocalHistory} from './credit-transition-local';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
 export async function bindAndCacheCreditReferencePrototype(tx:Tx,identity:DeviceIdentity,verified:DeviceIdentity,value:unknown,digest:(text:string)=>Promise<string>,guard:()=>void){
@@ -30,6 +32,11 @@ export async function bindAndCacheCreditReferencePrototype(tx:Tx,identity:Device
    // d'abord être rapprochée ; ceci ne prouve pas l'authenticité de la base.
    const candidate=validatePrototypeCreditReference(value);
    await inspectAddressContinuity(tx,identity,4,{...candidate,version:4},digest);guard();
+   await assertTransitionLocalHistory(tx,candidate,digest);guard();
+   // Installer la référence et vérifier toutes les données locales sous la
+   // même transaction : un solde incohérent annule également son installation.
+   await saveAndVerifyFinalCreditReference(tx,identity,verified,value,digest);guard();
+   return;
   }
  }
  guard();await saveVerifiedCreditReference(tx,identity,verified,value,digest);guard();
