@@ -231,3 +231,5 @@ L’écran coupe la session avant l’essai, refuse une opération réseau v5 en
 
 
 **Affichage fiable du bouton :** le bouton mobile et l’entrée admin ne dépendent plus de variables d’environnement à fournir au démarrage d’Expo ou de Vite. Leur seule visibilité ne change aucune donnée et n’active aucune route serveur. Le mode HTTP sur l’API reste désactivé par défaut ; avant tout échange, le téléphone doit accepter l’avertissement et l’administration doit autoriser la demande. `npm run test:address-mobile-bundle` vérifie un véritable export Android sans drapeaux ; il ne remplace pas un test sur le téléphone physique.
+
+**HTTPS direct préparatoire :** l’API peut utiliser une clé et une chaîne de certificats avec `SLS_TLS_KEY` et `SLS_TLS_CERT` ; les routes de changement d’adresse HTTPS nécessitent en plus `SLS_ADDRESS_HTTPS=J_ACTIVE_HTTPS`. Aucun repli HTTP automatique. Les modalités, limites Android/Expo et vérifications nécessaires figurent dans `docs/https-api.md`. Cette option ne prouve pas la bonne base et ne constitue pas une validation de production.
