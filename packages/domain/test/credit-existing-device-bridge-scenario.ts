@@ -95,6 +95,22 @@ export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Poo
   await assert.rejects(controller.synchronize(),/réponse perdue/);assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
   assert.deepEqual(await controller.synchronize(),{operations:0,credits:2});assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:-180000,conflict:false});
   assert.deepEqual(await controller.synchronize(),{operations:0,credits:0});
+  // Un téléphone resté hors ligne ne doit pas pouvoir modifier une facture
+  // déjà annulée, même s'il annonce le protocole qui connaît les avoirs.
+  // En revanche la reprise exacte d'une opération déjà reçue est idempotente.
+  const saleRetry={operationId:saleOp,saleId,version:1,recordedAt:at,sale,refund:0};
+  assert.equal((await post('sales',saleRetry)).status,200);
+  assert.equal((await post('journal',snapshot)).status,200);
+  const staleSale={operationId:randomUUID(),saleId,version:2,recordedAt:'2026-11-08T12:00:00.000Z',sale:{...sale,syncVersion:2},refund:0};
+  const rejectedSale=await post('sales',staleSale);
+  assert.equal(rejectedSale.status,409);assert.match((await rejectedSale.json()).error,/Facture annulée/);
+  const rejectedJournal=await post('journal',{...snapshot,operationId:randomUUID(),version:3});
+  assert.equal(rejectedJournal.status,409);assert.match((await rejectedJournal.json()).error,/Facture annulée/);
+  // Une ancienne référence ne doit jamais publier un solde qui ignore les avoirs.
+  const staleReference=await fetch(origin+'/v5/reference',{headers:{Authorization:`Bearer ${session.token}`}});
+  assert.equal(staleReference.status,409);assert.equal((await staleReference.json()).code,'CREDIT_PROTOCOL_UPGRADE_REQUIRED');
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_journal_events WHERE invoice_id=$1',[invoiceId])).rows[0].n,2);
   await transaction(()=>confirmLocalCreditReview(tx,identity,preview,first,digest));
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).length,2);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,1);
