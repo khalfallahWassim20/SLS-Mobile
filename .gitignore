@@ -6,6 +6,12 @@ node_modules/
 dist/
 coverage/
 *.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+# Sauvegardes PostgreSQL : peuvent contenir données clients et identifiants
+*.dump
+*.backup
 # Ne jamais committer de clés privées ou certificats locaux
 *.key
 *.pem
