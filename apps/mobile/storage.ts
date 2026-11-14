@@ -323,6 +323,10 @@ export async function hasTourExpenses(identity:DeviceIdentity):Promise<boolean> 
 export async function getTourExpenses(identity:DeviceIdentity):Promise<TourExpense[]> {
  const database=await db();let rows:TourExpense[]=[];await database.withExclusiveTransactionAsync(async tx=>{rows=await readTourExpenses(tx,identity);});return rows;
 }
+export async function getTourExpenseSnapshot(identity:DeviceIdentity):Promise<{expenses:TourExpense[];history:ExpenseRevision[]}> {
+ const database=await db();let result:{expenses:TourExpense[];history:ExpenseRevision[]}|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result={expenses:await readTourExpenses(tx,identity),history:await readExpenseRevisions(tx,identity)};});return result!;
+}
 export async function getPendingTourExpenseOperations(identity:DeviceIdentity):Promise<{originals:TourExpense[];revisions:ExpenseRevision[]}> {
  const database=await db();let result:{originals:TourExpense[];revisions:ExpenseRevision[]}|undefined;
  await database.withExclusiveTransactionAsync(async tx=>{const originals=await readOriginalExpenses(tx,identity),revisions=await readExpenseRevisions(tx,identity,originals);result={originals:originals.filter(x=>x.pending===1),revisions:revisions.filter(x=>x.pending===1)};});return result!;

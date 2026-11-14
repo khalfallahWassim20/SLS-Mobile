@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
-import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
+import {tourCloseQueueSchema,observeVerifiedTourState} from '../../../apps/mobile/tour-close-queue.js';
 import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {tourExpenseSchema,addTourExpense,readTourExpenses,readOriginalExpenses,readExpenseRevisions,reviseTourExpense,acknowledgeTourExpense,acknowledgeExpenseRevision} from '../../../apps/mobile/tour-expenses.js';
@@ -26,5 +26,12 @@ test('plusieurs corrections hors ligne restent ordonnées et reprises sans effac
   assert.equal(db.prepare('SELECT amount FROM tour_expenses').get()?.amount,10000);assert.equal(db.prepare('SELECT count(*) n FROM tour_expense_revisions').get()?.n,2);
   db.prepare("INSERT INTO tour_known_server_states VALUES(?,?,?,?)").run(id.commercialId,'2026-11-08','closed',1);
   await assert.rejects(reviseTourExpense(tx,id,current,{operationId:randomUUID(),recordedAt:'2026-11-08T12:00:00.000Z',description:'Nouvelle correction',amount:16000}),/clôturée/);
+  db.prepare('INSERT INTO tour_close_attempts VALUES(?,?,?,?,?,?)').run(id.commercialId,'2026-11-08',randomUUID(),0,'closed',1);
+  await assert.rejects(observeVerifiedTourState(tx,id.commercialId,'2026-11-08',{commercialId:id.commercialId,day:'2026-11-08',status:'open',version:1}),/incohérent/);
+  await observeVerifiedTourState(tx,id.commercialId,'2026-11-08',{commercialId:id.commercialId,day:'2026-11-08',status:'open',version:2});
+  await reviseTourExpense(tx,id,current,{operationId:randomUUID(),recordedAt:'2026-11-09T12:00:00.000Z',description:'Nouvelle correction',amount:16000});
+  [current]=await readTourExpenses(tx,id);assert.equal(current.day,'2026-11-08');assert.equal(current.version,4);assert.equal(current.pending,1);
+  db.prepare('INSERT INTO tour_known_server_states VALUES(?,?,?,?)').run(id.commercialId,'2026-11-09','closed',1);
+  await assert.rejects(reviseTourExpense(tx,id,current,{operationId:randomUUID(),recordedAt:'2026-11-09T13:00:00.000Z',description:'Encore',amount:17000}),/clôturée/);
  }finally{db.close();}
 });

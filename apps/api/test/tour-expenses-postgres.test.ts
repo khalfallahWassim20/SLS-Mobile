@@ -25,6 +25,12 @@ test('PostgreSQL : dépense et clôture concurrentes, reprise sans doublon',asyn
   assert.equal(attempts.filter(x=>x.status==='fulfilled').length,1);assert.equal(attempts.filter(x=>x.status==='rejected').length,1);
   const accepted=attempts[0].status==='fulfilled'?first:second;assert.equal(await storeExpenseRevision(pool,accepted,credentials),'duplicate');
   const corrected=await readIdentifiedJournalDay(pool,person.id,'2026-11-07',true);assert.equal(corrected.expenseTotal,accepted.amount);assert.equal(corrected.expenseHistory.length,1);assert.equal(corrected.expenseHistory[0].previousAmount,25350);
+  await requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-07',expectedVersion:0},{kind:'commercial',token:session.token,secret},true);
+  const historical={operationId:randomUUID(),expenseId:original.operationId,version:3,recordedAt:'2026-11-09T11:00:00.000Z',previousDescription:accepted.description,previousAmount:accepted.amount,description:'Frais corrigés',amount:40000};
+  await assert.rejects(storeExpenseRevision(pool,historical,credentials),/clôturé/);
+  await requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-07',expectedVersion:1},{kind:'admin',actorId:'admin',commercialId:person.id},true);
+  assert.equal(await storeExpenseRevision(pool,historical,credentials),'received');assert.equal(await storeExpenseRevision(pool,historical,credentials),'duplicate');
+  const afterReopen=await readIdentifiedJournalDay(pool,person.id,'2026-11-07',true);assert.equal(afterReopen.expenseTotal,40000);assert.equal(afterReopen.expenseHistory.length,2);
   const [write,close]=await Promise.allSettled([storeTourExpense(pool,op,credentials),requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0},{kind:'commercial',token:session.token,secret},true)]);
   assert.equal(close.status,'fulfilled');const n=Number((await pool.query("SELECT count(*) AS n FROM identified_tour_expenses WHERE journal_date='2026-11-08'")).rows[0].n);
   if(write.status==='fulfilled'){assert.equal(write.value,'received');assert.equal(n,1);assert.equal(await storeTourExpense(pool,op,credentials),'duplicate');}else{assert.match(String(write.reason),/clôturé/);assert.equal(n,0);}
