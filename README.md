@@ -21,7 +21,7 @@ Les calculs utilisent des millimes entiers et des taux en centièmes de pour cen
 
 ## Prototype mobile
 
-Le prototype utilise Expo SDK 58. Lancer `npm run mobile` et ouvrir le projet avec une version d’Expo Go compatible SDK 58 sur Android. Voir `apps/mobile/README.md` pour ses limites.
+Le prototype utilise Expo SDK 58. Lancer `npm run mobile` et ouvrir le projet avec une version d’Expo Go compatible SDK 58 sur Android. Voir `apps/mobile/README.md` pour ses limites. Un profil de construction d’APK interne est préparé : lire `docs/apk-android.md` avant toute installation, notamment parce que les données d’Expo Go ne sont pas transférées automatiquement.
 
 ## Prototype administration
 

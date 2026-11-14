@@ -11,3 +11,8 @@ coverage/
 *.pem
 *.p12
 *.pfx
+*.jks
+*.keystore
+*.apk
+*.aab
+credentials.json
