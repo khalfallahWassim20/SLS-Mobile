@@ -19,15 +19,26 @@ test('configuration TLS explicite : refuse omissions, mélanges et clé incorrec
  const dir=mkdtempSync(join(tmpdir(),'sls-tls-config-'));try{
   const first=makeCertificate(dir,'first'),second=makeCertificate(dir,'second');
   assert.equal(readTransportConfig({}).tls,null);
+  assert.throws(()=>readTransportConfig({SLS_REQUIRE_HTTPS:'1'}),/clé et un certificat/);
+  assert.throws(()=>readTransportConfig({SLS_REQUIRE_HTTPS:'0'}),/doit valoir/);
+  assert.throws(()=>readTransportConfig({SLS_REQUIRE_HTTPS:'1',SLS_ADDRESS_PRIVATE_HTTP:'J_ACCEPTE_LES_RISQUES_HTTP'}),/incompatible/);
+  assert.throws(()=>readTransportConfig({SLS_REQUIRE_HTTPS:'1',SLS_ADDRESS_TEST_ONLY:'DONNEES_FICTIVES_ISOLEES',SLS_V5_TEST_ONLY:'DONNEES_FICTIVES_ISOLEES',SLS_ADDRESS_TEST_TLS_KEY:first.key,SLS_ADDRESS_TEST_TLS_CERT:first.cert}),/incompatible/);
   assert.throws(()=>readTransportConfig({SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS'}),/clé et un certificat/);
   assert.throws(()=>readTransportConfig({SLS_TLS_KEY:first.key}),/clé et un certificat/);
   assert.throws(()=>readTransportConfig({SLS_TLS_KEY:second.key,SLS_TLS_CERT:first.cert}),/correspond pas/);
   assert.throws(()=>readTransportConfig({SLS_TLS_KEY:first.key,SLS_TLS_CERT:first.cert,SLS_ADDRESS_PRIVATE_HTTP:'J_ACCEPTE_LES_RISQUES_HTTP'}),/HTTP privé/);
   assert.throws(()=>readTransportConfig({SLS_ADDRESS_TEST_TLS_KEY:first.key}),/paramètres TLS de test/);
   assert.throws(()=>readTransportConfig({SLS_ADDRESS_TEST_ONLY:'DONNEES_FICTIVES_ISOLEES',SLS_V5_TEST_ONLY:'DONNEES_FICTIVES_ISOLEES',SLS_ADDRESS_TEST_TLS_KEY:first.key,SLS_ADDRESS_TEST_TLS_CERT:first.cert,SLS_TLS_KEY:second.key}),/mélanger/);
-  const config=readTransportConfig({SLS_TLS_KEY:first.key,SLS_TLS_CERT:first.cert,SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS'});
+  const config=readTransportConfig({SLS_REQUIRE_HTTPS:'1',SLS_TLS_KEY:first.key,SLS_TLS_CERT:first.cert,SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS'});
   assert.equal(config.addressHttps,true);assert.equal(config.tls?.minVersion,'TLSv1.2');
  }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+test('HTTPS obligatoire sans certificat : le serveur refuse de démarrer',{timeout:30000},()=>{
+ const env={...process.env};for(const k of Object.keys(env))if(k.startsWith('SLS_')||k==='NODE_TLS_REJECT_UNAUTHORIZED'||k==='NODE_EXTRA_CA_CERTS')delete env[k];
+ Object.assign(env,{DATABASE_URL:'postgresql://invalid:invalid@127.0.0.1:1/isolated',PORT:'0',API_HOST:'127.0.0.1',JWT_SECRET:'secret de test suffisamment long pour le serveur',ADMIN_USERNAME:'test',ADMIN_PASSWORD_HASH:bcrypt.hashSync('fictif',4),SLS_REQUIRE_HTTPS:'1'});
+ const result=spawnSync(process.execPath,['--import','tsx','src/server.ts'],{cwd:resolve('apps/api'),env,encoding:'utf8',timeout:15000});
+ assert.notEqual(result.status,0);assert.equal(result.signal,null);assert.match(result.stderr,/clé et un certificat TLS/);assert.doesNotMatch(result.stdout,/API de développement prête/);
 });
 
 test('API HTTPS réelle : certificat vérifié, nom contrôlé et pas de repli HTTP',{timeout:30000},async()=>{
@@ -35,7 +46,7 @@ test('API HTTPS réelle : certificat vérifié, nom contrôlé et pas de repli H
  try{
   const {key,cert}=makeCertificate(dir,'server'),port=await new Promise<number>((resolve,reject)=>{const s=netServer();s.on('error',reject);s.listen(0,'127.0.0.1',()=>{const a=s.address();if(!a||typeof a==='string')return reject(Error('port'));s.close(()=>resolve(a.port));});});
   const env={...process.env};for(const k of Object.keys(env))if(k.startsWith('SLS_')||k==='NODE_TLS_REJECT_UNAUTHORIZED'||k==='NODE_EXTRA_CA_CERTS')delete env[k];
-  Object.assign(env,{DATABASE_URL:'postgresql://invalid:invalid@127.0.0.1:1/isolated',PORT:String(port),API_HOST:'127.0.0.1',JWT_SECRET:'secret de test suffisamment long pour le serveur',ADMIN_USERNAME:'test',ADMIN_PASSWORD_HASH:bcrypt.hashSync('fictif',4),SLS_TLS_KEY:key,SLS_TLS_CERT:cert,SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS'});
+  Object.assign(env,{DATABASE_URL:'postgresql://invalid:invalid@127.0.0.1:1/isolated',PORT:String(port),API_HOST:'127.0.0.1',JWT_SECRET:'secret de test suffisamment long pour le serveur',ADMIN_USERNAME:'test',ADMIN_PASSWORD_HASH:bcrypt.hashSync('fictif',4),SLS_REQUIRE_HTTPS:'1',SLS_TLS_KEY:key,SLS_TLS_CERT:cert,SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS'});
   child=spawn(process.execPath,['--import','tsx','src/server.ts'],{cwd:resolve('apps/api'),env,stdio:['ignore','pipe','pipe']});
   await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Démarrage TLS expiré')),15000);child!.stdout!.on('data',d=>{if(String(d).includes('API de développement prête')){clearTimeout(timer);resolve();}});child!.once('exit',c=>{clearTimeout(timer);reject(Error(`API arrêtée ${c}`));});child!.stderr!.on('data',d=>process.stderr.write(d));});
   const query=(options:Record<string,unknown>)=>new Promise<number>((resolve,reject)=>{const req=request({hostname:'127.0.0.1',port,path:'/api/address-approvals',method:'POST',...options},res=>{res.resume();res.on('end',()=>resolve(res.statusCode??0));});req.on('error',reject);req.end();});

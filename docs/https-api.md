@@ -14,6 +14,7 @@ Après obtention et vérification du certificat, configurer dans l’environneme
 
 - `SLS_TLS_KEY` : chemin du fichier PEM de la clé privée non chiffrée, accessible uniquement au compte serveur.
 - `SLS_TLS_CERT` : chemin du certificat serveur PEM suivi des éventuels intermédiaires (full chain).
+- `SLS_REQUIRE_HTTPS=1` : garde recommandée une fois HTTPS déployé. Si la clé ou le certificat manquent, l’API refuse de démarrer au lieu de démarrer en HTTP. Une valeur différente de `1` est une erreur ; supprimer la variable pour conserver le mode HTTP temporaire de test. Ce réglage est incompatible avec le mode HTTP privé et le mode TLS fictif.
 - `API_HOST` et `PORT` : interface et port appropriés. L’accès réseau et le pare-feu doivent être limités.
 - Pour exposer **en plus** les routes de rapprochement d’adresse sur HTTPS : `SLS_ADDRESS_HTTPS=J_ACTIVE_HTTPS`.
 

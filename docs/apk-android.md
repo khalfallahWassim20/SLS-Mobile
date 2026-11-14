@@ -21,6 +21,8 @@ eas build --platform android --profile preview
 
 EAS produit un APK signé destiné aux essais internes ; son téléchargement et l’installation nécessitent l’accès approprié. Les variables `EXPO_PUBLIC_*` sont intégrées au code distribué : elles ne doivent contenir **aucun secret**. Ne pas activer les indicateurs `*_TEST_ONLY` pour un build normal.
 
+Le dépôt contient aussi un workflow GitHub déclenché manuellement, qui installe les versions du lockfile (`npm ci`) et attend la fin du build EAS avant de déclarer le job réussi. Il nécessite lui aussi un projet EAS associé, l’autorisation et une signature configurées en dehors du dépôt. Un job réussi ne garantit pas la sécurité, l’installation sur un appareil ni le transfert des données. Le résultat se consulte sur EAS ; le workflow ne le copie pas automatiquement dans le dépôt.
+
 ## Signature et mises à jour
 
 L’identifiant `com.slsmobile.app` et la clé de signature déterminent si Android accepte une mise à jour par-dessus l’APK installé. La société doit conserver le contrôle et une sauvegarde protégée de la clé et de ses autorisations. Une autre clé ou un autre identifiant peut imposer une nouvelle installation distincte ou une désinstallation, qui risque de perdre les données locales. Ne jamais désinstaller pour contourner un échec d’installation.

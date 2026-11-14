@@ -9,6 +9,8 @@ export type TransportConfig={tls:ServerOptions|null;addressHttps:boolean};
  * La confiance de l'appareil et le nom du certificat restent à vérifier côté client. */
 export function readTransportConfig(env:Environment):TransportConfig {
  const test=env.SLS_ADDRESS_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
+ if(env.SLS_REQUIRE_HTTPS!==undefined&&env.SLS_REQUIRE_HTTPS!=='1')throw Error('SLS_REQUIRE_HTTPS doit valoir 1 ou être absent.');
+ const requireHttps=env.SLS_REQUIRE_HTTPS==='1';
  const privateHttp=env.SLS_ADDRESS_PRIVATE_HTTP==='J_ACCEPTE_LES_RISQUES_HTTP';
  const addressHttps=env.SLS_ADDRESS_HTTPS==='J_ACTIVE_HTTPS';
  const testKey=env.SLS_ADDRESS_TEST_TLS_KEY,testCert=env.SLS_ADDRESS_TEST_TLS_CERT;
@@ -18,8 +20,9 @@ export function readTransportConfig(env:Environment):TransportConfig {
  if((testKey||testCert)&&!test)throw Error('Les paramètres TLS de test exigent SLS_ADDRESS_TEST_ONLY.');
  if(test&&(keyPath||certPath))throw Error('Ne pas mélanger certificats de test et certificats HTTPS.');
  if(privateHttp&&(keyPath||certPath))throw Error('Le mode HTTP privé ne peut pas être combiné avec le serveur HTTPS.');
+ if(requireHttps&&(privateHttp||test))throw Error('HTTPS obligatoire incompatible avec le mode HTTP privé ou le mode de test.');
  const keyFile=test?testKey:keyPath,certFile=test?testCert:certPath;
- if((keyFile&&!certFile)||(!keyFile&&certFile)||((test||addressHttps)&&(!keyFile||!certFile)))throw Error('Configurer ensemble une clé et un certificat TLS.');
+ if((keyFile&&!certFile)||(!keyFile&&certFile)||((test||addressHttps||requireHttps)&&(!keyFile||!certFile)))throw Error('Configurer ensemble une clé et un certificat TLS.');
  if(!keyFile||!certFile)return {tls:null,addressHttps:false};
  // Les fichiers PEM peuvent contenir la chaîne complète, certificat serveur en premier.
  const key=readFileSync(keyFile),cert=readFileSync(certFile),leaf=new X509Certificate(cert);
