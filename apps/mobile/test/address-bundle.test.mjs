@@ -20,6 +20,9 @@ test('bundle Android normal : bouton présent sans variable Expo publique', {tim
   const source=readFileSync(join(folder,files[0]),'utf8');
   assert.match(source,/var V5_TEST_ONLY = false/);
   assert.match(source,/var V5_BRIDGE_TEST_ONLY = false/);
+  assert.ok(source.includes('creditBridgeAvailable'));
+  assert.ok(source.includes('Passer aux avoirs'));
+  assert.ok(source.includes('v5ServerAvailable'));
   assert.match(source,/label: "Changer l\\u2019adresse du serveur"/);
   assert.doesNotMatch(source,/var ADDRESS_PRIVATE_HTTP = false/);
  }finally{rmSync(dir,{recursive:true,force:true});}

@@ -36,6 +36,7 @@ import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-protot
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import {readCreditMobileWorkspacePrototype} from './credit-mobile-workspace-reader-prototype';
 import {readLegacyRows} from './legacy-read-guard';
+import {inspectCreditStartup} from './credit-startup-guard';
 import {readClientRevisions} from './client-revisions';
 import {quarantineOnUpgrade} from './credit-protocol-quarantine';
 import type {CommercialSession} from './commercial-login';
@@ -315,6 +316,12 @@ export async function recordCreditProtocolUpgrade(identity:DeviceIdentity,status
  return blocked;
 }
 export async function getBoundIdentity():Promise<DeviceIdentity|null> {return getDeviceIdentity(await db());}
+/** Identité et transition lues ensemble ; aucune modification du stockage. */
+export async function getCreditStartupState(enabled:boolean) {
+ const database=await db();let result:Awaited<ReturnType<typeof inspectCreditStartup>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await inspectCreditStartup(tx,enabled);});
+ if(!result)throw Error('État du téléphone indisponible.');return result;
+}
 export async function getIdentifiedOutbox(identity:DeviceIdentity,creditAware=false):Promise<IdentifiedEntry[]> {
  const database=await db();let entries:IdentifiedEntry[]=[];
  await database.withExclusiveTransactionAsync(async tx=>{if(!creditAware)await assertLegacyMobileCreditSafe(tx,identity);entries=await readIdentifiedOutbox(tx,identity);});return entries;

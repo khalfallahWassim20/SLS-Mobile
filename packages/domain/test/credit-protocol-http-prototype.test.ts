@@ -38,6 +38,12 @@ test('protocole v5 isolé : ancienne version bloquée, nouvelles opérations et 
   const headers={Authorization:`Bearer ${session.token}`,'Content-Type':'application/json','X-SLS-Reference-Version':'5'};
   const get=(path:string,h=headers)=>fetch(url+path,{headers:h});
   const post=(path:string,data:unknown,h=headers)=>fetch(url+path,{method:'POST',headers:h,body:JSON.stringify(data)});
+  assert.equal((await get('/new/capabilities',{...headers,Authorization:'Bearer mauvais'})).status,401);
+  const oldCapabilities=await get('/old/capabilities');assert.equal(oldCapabilities.headers.get('cache-control'),'no-store');assert.deepEqual(await oldCapabilities.json(),{version:1,commercialId:c.id,creditBridgeTestOnly:false});
+  const capabilities=await get('/new/capabilities');assert.deepEqual(await capabilities.json(),{version:1,commercialId:c.id,creditBridgeTestOnly:true});
+  await db.query("UPDATE tour_sync_mode SET mode='legacy' WHERE id=1");
+  assert.deepEqual(await (await get('/new/capabilities')).json(),{version:1,commercialId:c.id,creditBridgeTestOnly:false});
+  await db.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
   assert.equal((await get('/new/reference',{...headers,Authorization:'Bearer mauvais'})).status,401);
   assert.equal((await post('/new/credit-notes/sales',{}, {...headers,'X-SLS-Reference-Version':'4'})).status,409);
   const saleId=randomUUID(),at='2026-11-08T09:00:00.000Z';

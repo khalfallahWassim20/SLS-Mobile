@@ -182,6 +182,7 @@ if(addressTestOnly||addressPrivateHttp||transport.addressHttps){
 app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly}));
 app.use('/api', auth);
 app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username,{allowCreditProtocol:creditV5TestOnly}));
+app.get('/api/credit-capabilities',async(_req,res,next)=>{try{res.set('Cache-Control','no-store').json({version:1,creditBridgeTestOnly:creditV5TestOnly&&(await readSyncMode(pool))==='identified'});}catch(error){next(error);}});
 app.get('/api/tour-sync-mode',async(_req,res)=>{res.set('Cache-Control','no-store').json({mode:await readSyncMode(pool)});});
 app.post('/api/tour-sync-mode/activate',async(req,res,next)=>{
  try {const data=z.object({confirmation:z.string()}).strict().parse(req.body);res.json(await activateIdentifiedTours(pool,username,data.confirmation));}

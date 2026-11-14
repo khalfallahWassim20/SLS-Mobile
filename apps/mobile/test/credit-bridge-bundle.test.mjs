@@ -18,5 +18,7 @@ test('bundle Android fictif : pont v4 vers avoirs explicitement activé, mode v5
   const source=readFileSync(join(folder,files[0]),'utf8');
   assert.match(source,/var V5_TEST_ONLY = false/);assert.match(source,/var V5_BRIDGE_TEST_ONLY = true/);
   assert.ok(source.includes("Passer aux avoirs"));assert.ok(source.includes("passage aux avoirs en cours"));
+  assert.ok(source.includes('v5StartupChecking'));
+  assert.ok(source.includes('v5BridgeBlocked'));
  }finally{rmSync(dir,{recursive:true,force:true});}
 });

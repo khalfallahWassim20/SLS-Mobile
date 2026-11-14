@@ -37,6 +37,8 @@ test('serveur réel : v5 uniquement sur option de test, authentification et avoi
   response=await fetch(`${base}/identified-tour/credit-snapshot`,{headers:{'X-SLS-Reference-Version':'5'}});assert.equal(response.status,401);
   const login=await fetch(`${base}/login`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:'testadmin',password:'password-fictif'})});assert.equal(login.status,200);const admin=(await login.json()).token;
   const adminHeaders={Authorization:`Bearer ${admin}`,'Content-Type':'application/json','X-SLS-Reference-Version':'5'};
+  assert.equal((await fetch(`${base}/credit-capabilities`)).status,401);
+  const adminCapability=await fetch(`${base}/credit-capabilities`,{headers:adminHeaders});assert.equal(adminCapability.headers.get('cache-control'),'no-store');assert.deepEqual(await adminCapability.json(),{version:1,creditBridgeTestOnly:true});
   // Même en v5, le changement d’adresse reste absent sans le second drapeau.
   assert.equal((await fetch(`${base}/address-approvals`,{method:'POST',headers:adminHeaders,body:'{}'})).status,404);
 
