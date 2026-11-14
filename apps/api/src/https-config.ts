@@ -4,7 +4,7 @@ import {isIP} from 'node:net';
 import type {ServerOptions} from 'node:https';
 
 type Environment=Record<string,string|undefined>;
-export type TransportConfig={tls:ServerOptions|null;addressHttps:boolean;hsts:{host:string;maxAge:number}|null};
+export type TransportConfig={tls:ServerOptions|null;addressHttps:boolean;expectedHost:string|null;hsts:{host:string;maxAge:number}|null};
 
 function validateExpectedHost(value:string):string {
  if(!value||value!==value.trim()||value.length>253)throw Error('Nom TLS attendu invalide : utilisez un nom DNS ou une IP, sans port.');
@@ -37,19 +37,19 @@ export function readTransportConfig(env:Environment):TransportConfig {
  if((keyFile&&!certFile)||(!keyFile&&certFile)||((test||addressHttps||requireHttps)&&(!keyFile||!certFile)))throw Error('Configurer ensemble une clé et un certificat TLS.');
  if(requireHttps&&!hostValue)throw Error('Configurer SLS_TLS_EXPECTED_HOST pour vérifier le nom du certificat.');
  if(hostValue!==undefined&&!keyFile)throw Error('Un nom TLS attendu exige une configuration TLS.');
- if(!keyFile||!certFile)return {tls:null,addressHttps:false,hsts:null};
+ if(!keyFile||!certFile)return {tls:null,addressHttps:false,expectedHost:null,hsts:null};
  // Les fichiers PEM peuvent contenir la chaîne complète, certificat serveur en premier.
  const key=readFileSync(keyFile),cert=readFileSync(certFile),leaf=new X509Certificate(cert);
  const now=Date.now();
  if(now<Date.parse(leaf.validFrom)||now>=Date.parse(leaf.validTo))throw Error('Certificat TLS expiré ou pas encore valide.');
  const a=createPublicKey(createPrivateKey(key)).export({type:'spki',format:'der'}),b=leaf.publicKey.export({type:'spki',format:'der'});
  if(!a.equals(b))throw Error('La clé TLS ne correspond pas au certificat.');
- let hsts:TransportConfig['hsts']=null;
+ let hsts:TransportConfig['hsts']=null,expectedHost:string|null=null;
  if(hostValue!==undefined){
-  const host=validateExpectedHost(hostValue);
+  const host=validateExpectedHost(hostValue);expectedHost=host;
   const match=isIP(host)?leaf.checkIP(host):leaf.checkHost(host,{subject:'never',partialWildcards:false,multiLabelWildcards:false,singleLabelSubdomains:false});
   if(!match)throw Error('Le certificat TLS ne couvre pas le nom ou l’adresse attendu dans son SAN.');
   if(hstsValue!==undefined){if(isIP(host))throw Error('HSTS exige un nom DNS, pas une adresse IP.');hsts={host,maxAge:Number(hstsValue)};}
  }
- return {tls:{key,cert,minVersion:'TLSv1.2'},addressHttps,hsts};
+ return {tls:{key,cert,minVersion:'TLSv1.2'},addressHttps,expectedHost,hsts};
 }

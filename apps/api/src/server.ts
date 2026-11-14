@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express, { type RequestHandler } from 'express';
 import {createServer as createHttpsServer} from 'node:https';
 import {readTransportConfig} from './https-config.js';
+import {mountHttpsAdmin} from './https-admin-static.js';
 import {addressApprovalAdminRoutes,addressApprovalCommercialRoutes} from './mobile-address-approval-routes.js';
 import { rateLimit } from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
@@ -31,7 +32,8 @@ const transport=readTransportConfig(process.env);
 const app = express();
 app.disable('x-powered-by');
 // HSTS est opt-in, propre au nom DNS configuré, sans sous-domaines ni preload.
-if(transport.hsts){const hsts=transport.hsts;app.use((req,res,next)=>{if(req.secure&&req.hostname.toLowerCase()===hsts.host)res.set('Strict-Transport-Security',`max-age=${hsts.maxAge}`);next();});}
+if(transport.hsts){const hsts=transport.hsts;app.use((req,res,next)=>{if(req.secure&&typeof req.hostname==='string'&&req.hostname.toLowerCase()===hsts.host)res.set('Strict-Transport-Security',`max-age=${hsts.maxAge}`);next();});}
+mountHttpsAdmin(app,process.env,transport);
 // Les réponses API peuvent contenir des sessions ou des données commerciales.
 // Ces en-têtes ne remplacent ni TLS ni la protection du stockage local.
 app.use('/api',(_req,res,next)=>{res.set('Cache-Control','no-store');res.set('X-Content-Type-Options','nosniff');next();});

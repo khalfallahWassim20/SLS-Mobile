@@ -2,7 +2,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {spawn,spawnSync,type ChildProcess} from 'node:child_process';
-import {mkdtempSync,readFileSync,rmSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,readFileSync,rmSync,writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {createServer as netServer,connect} from 'node:net';
@@ -71,7 +71,8 @@ test('API HTTPS réelle : certificat vérifié, nom contrôlé et pas de repli H
  try{
   const {key,cert}=makeCertificate(dir,'server'),port=await new Promise<number>((resolve,reject)=>{const s=netServer();s.on('error',reject);s.listen(0,'127.0.0.1',()=>{const a=s.address();if(!a||typeof a==='string')return reject(Error('port'));s.close(()=>resolve(a.port));});});
   const env={...process.env};for(const k of Object.keys(env))if(k.startsWith('SLS_')||k==='NODE_TLS_REJECT_UNAUTHORIZED'||k==='NODE_EXTRA_CA_CERTS')delete env[k];
-  Object.assign(env,{DATABASE_URL:'postgresql://invalid:invalid@127.0.0.1:1/isolated',PORT:String(port),API_HOST:'127.0.0.1',JWT_SECRET:'secret de test suffisamment long pour le serveur',ADMIN_USERNAME:'test',ADMIN_PASSWORD_HASH:bcrypt.hashSync('fictif',4),SLS_REQUIRE_HTTPS:'1',SLS_TLS_KEY:key,SLS_TLS_CERT:cert,SLS_TLS_EXPECTED_HOST:'localhost',SLS_HSTS_MAX_AGE:'300',SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS'});
+  const adminDir=join(dir,'admin-dist');mkdirSync(join(adminDir,'assets'),{recursive:true});writeFileSync(join(adminDir,'index.html'),'<html>Admin de test</html>');writeFileSync(join(adminDir,'assets','app.js'),'console.log("test")');
+  Object.assign(env,{DATABASE_URL:'postgresql://invalid:invalid@127.0.0.1:1/isolated',PORT:String(port),API_HOST:'127.0.0.1',JWT_SECRET:'secret de test suffisamment long pour le serveur',ADMIN_USERNAME:'test',ADMIN_PASSWORD_HASH:bcrypt.hashSync('fictif',4),SLS_REQUIRE_HTTPS:'1',SLS_TLS_KEY:key,SLS_TLS_CERT:cert,SLS_TLS_EXPECTED_HOST:'localhost',SLS_HSTS_MAX_AGE:'300',SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS',SLS_ADMIN_STATIC_DIR:adminDir});
   child=spawn(process.execPath,['--import','tsx','src/server.ts'],{cwd:resolve('apps/api'),env,stdio:['ignore','pipe','pipe']});
   await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Démarrage TLS expiré')),15000);child!.stdout!.on('data',d=>{if(String(d).includes('API de développement prête')){clearTimeout(timer);resolve();}});child!.once('exit',c=>{clearTimeout(timer);reject(Error(`API arrêtée ${c}`));});child!.stderr!.on('data',d=>process.stderr.write(d));});
   const query=(options:Record<string,unknown>)=>new Promise<{status:number;cache:string|undefined;nosniff:string|undefined;hsts:string|undefined}>((resolve,reject)=>{const req=request({hostname:'127.0.0.1',port,path:'/api/address-approvals',method:'POST',...options},res=>{res.resume();res.on('end',()=>resolve({status:res.statusCode??0,cache:res.headers['cache-control'],nosniff:res.headers['x-content-type-options'],hsts:res.headers['strict-transport-security']}));});req.on('error',reject);req.end();});
@@ -79,6 +80,8 @@ test('API HTTPS réelle : certificat vérifié, nom contrôlé et pas de repli H
   await assert.rejects(query({ca:readFileSync(cert),servername:'incorrect.example'}),/altname|certificate/i);
   assert.deepEqual(await query({ca:readFileSync(cert)}),{status:401,cache:'no-store',nosniff:'nosniff',hsts:undefined}); // une IP ne reçoit pas HSTS
   assert.deepEqual(await query({ca:readFileSync(cert),path:'/api/login',headers:{Host:`localhost:${port}`}}),{status:401,cache:'no-store',nosniff:'nosniff',hsts:'max-age=300'});
+  assert.deepEqual(await query({ca:readFileSync(cert),path:'/',method:'GET',headers:{Host:`localhost:${port}`}}),{status:200,cache:'no-store',nosniff:'nosniff',hsts:'max-age=300'});
+  assert.deepEqual(await query({ca:readFileSync(cert),path:'/',method:'GET'}),{status:421,cache:'no-store',nosniff:'nosniff',hsts:undefined});
   assert.deepEqual(await query({ca:readFileSync(cert),servername:'localhost',path:'/api/login',headers:{Host:'autre.example'}}),{status:401,cache:'no-store',nosniff:'nosniff',hsts:undefined});
   await assert.rejects(query({ca:readFileSync(cert),minVersion:'TLSv1.1',maxVersion:'TLSv1.1'}));
   const plain=await new Promise<string>((resolve,reject)=>{const socket=connect(port,'127.0.0.1',()=>socket.write('GET /api/address-approvals HTTP/1.1\r\nHost: localhost\r\n\r\n'));let data='';socket.setTimeout(3000,()=>socket.destroy());socket.on('data',d=>data+=d.toString());socket.on('end',()=>resolve(data));socket.on('close',()=>resolve(data));socket.on('error',reject);});
