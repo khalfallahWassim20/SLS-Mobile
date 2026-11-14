@@ -12,6 +12,7 @@ import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from 
 import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
 import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,acknowledgeAbandonedTourClose,observeVerifiedTourState,type Attempt} from './tour-close-queue';
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from './identified-outbox';
+import {acknowledgeDemoQueueEntry} from './demo-upload';
 import type {IdentifiedEntry} from './identified-upload';
 import {identifiedDeviceSchema,getDeviceIdentity,bindVerifiedDevice,saveVerifiedIdentifiedReference,assertDeviceWritable,recordDeviceOperation,assertKnownDeviceEntity,type DeviceIdentity} from './identified-device';
 import {validateIdentifiedReference} from './identified-reference';
@@ -198,8 +199,14 @@ export type OutboxEntry = { sequence: number; operationId: string; saleId: strin
 export async function getOutbox(): Promise<OutboxEntry[]> {
  return (await db()).getAllAsync<OutboxEntry>('SELECT sequence, operation_id AS operationId, sale_id AS saleId, version, payload, last_error AS lastError FROM sales_outbox ORDER BY sequence');
 }
-export async function acknowledgeOutbox(operationId: string): Promise<void> {
- await (await db()).runAsync('DELETE FROM sales_outbox WHERE operation_id = ?', operationId);
+export async function acknowledgeOutbox(entry: OutboxEntry): Promise<void> {
+ const database=await db();
+ await database.withExclusiveTransactionAsync(async tx=>{
+  const identity=await getDeviceIdentity(tx);
+  if(identity)throw Error('Téléphone lié à un commercial : accusé de démonstration refusé.');
+  await assertLegacyMobileCreditSafe(tx,identity);
+  await acknowledgeDemoQueueEntry(tx,entry);
+ });
 }
 export async function failOutbox(operationId: string, error: string): Promise<void> {
  await (await db()).runAsync('UPDATE sales_outbox SET last_error = ? WHERE operation_id = ?', error.slice(0, 300), operationId);

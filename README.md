@@ -23,6 +23,8 @@ Les calculs utilisent des millimes entiers et des taux en centièmes de pour cen
 
 Le prototype utilise Expo SDK 58. Lancer `npm run mobile` et ouvrir le projet avec une version d’Expo Go compatible SDK 58 sur Android. Voir `apps/mobile/README.md` pour ses limites. Un profil de construction d’APK interne est préparé : lire `docs/apk-android.md` avant toute installation, notamment parce que les données d’Expo Go ne sont pas transférées automatiquement.
 
+Pour l'ancienne synchronisation par jeton de démonstration, mettre à jour le serveur avant le mobile : le nouveau mobile exige un accusé contenant l'identifiant exact de l'opération. Avec un serveur plus ancien, l'envoi peut avoir été reçu mais l'accusé est refusé et l'opération reste en attente ; après mise à jour du serveur, sa reprise identique est reconnue sans doublon. Ne pas effacer la file. Cette protection ne s'applique pas aux anciens bundles mobiles ; elle ne sécurise pas HTTP et ne prouve pas l'identité de la base. Le parcours commercial individuel est distinct.
+
 ## Prototype administration
 
 Le serveur et l'espace web de gestion des clients et articles nécessitent PostgreSQL. Suivre les instructions de `apps/api/README.md` puis `apps/admin/README.md`. Ces composants sont en développement local et reliés au mobile pour les essais ; n'y saisir aucune donnée réelle. Un import spécifique du fichier articles est disponible côté serveur ; voir `apps/api/README.md`. Les données réelles ne doivent pas encore être utilisées en production.

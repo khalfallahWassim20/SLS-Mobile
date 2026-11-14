@@ -26,6 +26,7 @@ import { isIdentifiedDeviceBound } from './storage';
 import { openBoundCommercialSession, type CommercialSession } from './commercial-login';
 import { clearLocalTestOperations,bindAndCacheIdentified,getBoundIdentity,recordCreditProtocolUpgrade,getIdentifiedOutbox,acknowledgeIdentifiedEntry,observeIdentifiedTour,getLocalCloseAttempt,prepareLocalClose,acknowledgeLocalClose } from './storage';
 import { uploadTourExpenses } from './tour-expense-upload';
+import { uploadDemoQueue } from './demo-upload';
 import { uploadIdentifiedOperations, ClosedDaySyncError } from './identified-upload';
 import { sendPreparedTourClose } from './tour-close-queue';
 import { validateIdentifiedReference } from './identified-reference';
@@ -598,14 +599,11 @@ export default function App() {
       const url = new URL(serverUrl.trim());
       if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.pathname !== '/' || url.search || url.hash || url.hostname === 'localhost' || url.hostname === '127.0.0.1') throw Error('Saisissez l’adresse réseau de l’API, par exemple http://192.168.1.10:3001.');
       if (!syncToken.trim()) throw Error('Saisissez le jeton de démonstration mobile.');
-      const entries = await getOutbox(); let sent = 0;
-      for (const entry of entries) {
-        current = entry;
-        const response = await fetch(`${url.origin}/api/mobile/${'settlement' in JSON.parse(entry.payload) ? 'settlements' : 'sales'}`, { method: 'POST', headers: { Authorization: `Bearer ${syncToken.trim()}`, 'Content-Type': 'application/json', 'X-SLS-Reference-Version': String(reference?.version ?? '') }, body: entry.payload });
-        if (!response.ok) { const data = await response.json().catch(() => null); throw Error(data?.error || `Erreur serveur (${response.status}).`); }
-        await acknowledgeOutbox(entry.operationId);
-        sent++;
-      }
+      const entries = await getOutbox();
+      let sent = await uploadDemoQueue(entries,async(path,entry)=>{
+        current=entry;
+        return fetch(`${url.origin}/api/mobile/${path}`, { method:'POST',headers:{Authorization:`Bearer ${syncToken.trim()}`,'Content-Type':'application/json','X-SLS-Reference-Version':String(reference?.version ?? '')},body:entry.payload });
+      },acknowledgeOutbox);
       current = undefined;
       const journals = await getJournalOutbox();
       if (journals.length && reference?.version !== 3) {

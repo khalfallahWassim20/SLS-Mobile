@@ -126,7 +126,7 @@ app.post('/api/mobile/sales', rateLimit({windowMs: 15 * 60 * 1000, limit: 500, s
     const legacyMode=await lockSyncMode(db);
     await db.query('SELECT pg_advisory_xact_lock(hashtext($1))', [event.saleId]);
     const same = await db.query('SELECT payload_hash FROM demo_sale_events WHERE operation_id=$1', [event.operationId]);
-    if (same.rows.length) { await db.query('ROLLBACK'); if(same.rows[0].payload_hash !== hash) {res.status(409).json({error:'Opération déjà utilisée avec des données différentes.'});return;} res.json({status:'déjà reçue'}); return; }
+    if (same.rows.length) { await db.query('ROLLBACK'); if(same.rows[0].payload_hash !== hash) {res.status(409).json({error:'Opération déjà utilisée avec des données différentes.'});return;} res.json({status:'déjà reçue',operationId:event.operationId}); return; }
     assertLegacyMode(legacyMode);
     const last = await db.query('SELECT version,payload FROM demo_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1', [event.saleId]);
     if ((last.rows[0]?.version ?? 0) + 1 !== event.version) { await db.query('ROLLBACK'); res.status(409).json({error:'Version de vente manquante ou déjà utilisée.'}); return; }
@@ -134,7 +134,7 @@ app.post('/api/mobile/sales', rateLimit({windowMs: 15 * 60 * 1000, limit: 500, s
     const client = await db.query('SELECT id FROM clients WHERE id=$1', [event.sale.clientId]);
     if (!client.rows.length) { await db.query('ROLLBACK'); res.status(400).json({error:'Client introuvable sur le serveur.'}); return; }
     await db.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,$3,$4,$5::jsonb,$6)', [event.operationId,event.saleId,event.version,event.sale.clientId,payload,hash]);
-    await db.query('COMMIT'); res.status(201).json({status:'reçue'});
+    await db.query('COMMIT'); res.status(201).json({status:'reçue',operationId:event.operationId});
   } catch(error) { await db.query('ROLLBACK'); throw error; } finally { db.release(); }
 });
 // Règlement global de démonstration ; aucun transfert d'argent réel.
@@ -152,11 +152,11 @@ app.post('/api/mobile/settlements', rateLimit({windowMs: 15*60*1000,limit:500,st
     const legacyMode=await lockSyncMode(db);
     await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[event.operationId]);
     const existing=await db.query('SELECT payload_hash FROM demo_settlements WHERE operation_id=$1',[event.operationId]);
-    if(existing.rows.length) {await db.query('ROLLBACK'); if(existing.rows[0].payload_hash!==hash) {res.status(409).json({error:'Opération déjà utilisée avec des données différentes.'});return;} res.json({status:'déjà reçue'});return;}
+    if(existing.rows.length) {await db.query('ROLLBACK'); if(existing.rows[0].payload_hash!==hash) {res.status(409).json({error:'Opération déjà utilisée avec des données différentes.'});return;} res.json({status:'déjà reçue',operationId:event.operationId});return;}
     assertLegacyMode(legacyMode);
     if(!(await db.query('SELECT id FROM clients WHERE id=$1',[p.clientId])).rows.length) {await db.query('ROLLBACK');res.status(400).json({error:'Client introuvable sur le serveur.'});return;}
     await db.query('INSERT INTO demo_settlements(operation_id,client_id,payload,payload_hash) VALUES($1,$2,$3::jsonb,$4)',[event.operationId,p.clientId,data,hash]);
-    await db.query('COMMIT');res.status(201).json({status:'reçue'});
+    await db.query('COMMIT');res.status(201).json({status:'reçue',operationId:event.operationId});
   } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
 });
 // Démonstration uniquement : ne pas activer avant validation des tests PostgreSQL et multi-appareils.
