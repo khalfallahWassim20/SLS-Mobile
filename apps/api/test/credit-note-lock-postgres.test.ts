@@ -57,8 +57,8 @@ test('PostgreSQL : verrou avoir contre modification et clôture concurrentes',as
    const saleResult=await saleOutcome;assert.equal(saleResult.error,null);assert.equal(saleResult.value,'received');
    await a.query('BEGIN');await assert.rejects(lockCreditNoteSale(a,actor,cmd),/périmée/);await a.query('ROLLBACK');
    // Une clôture en cours verrouille la journée ; après son commit l'avoir est refusé.
-   await b.query('BEGIN');await lockTourClosure(b,commercial.id,'2026-11-07');
-   await b.query("UPDATE tour_closures SET status='closed',version=1,closed_at=now() WHERE commercial_id=$1 AND journal_date=$2",[commercial.id,'2026-11-07']);
+   await b.query('BEGIN');await lockTourClosure(b,commercial.id,'2026-11-08');
+   await b.query("UPDATE tour_closures SET status='closed',version=1,closed_at=now() WHERE commercial_id=$1 AND journal_date=$2",[commercial.id,'2026-11-08']);
    await a.query('BEGIN');const pending=lockCreditNoteSale(a,actor,{...cmd,operationId:randomUUID(),expectedVersion:2});
    const outcome=pending.then(()=>({error:null as unknown}),error=>({error}));
    await waitBlocked(pool,a.processID);await b.query('COMMIT');

@@ -13,3 +13,13 @@ test('PostgreSQL réel : ancien téléphone, deux avoirs et reprise après répo
   await runExistingDeviceBridgeScenario(db,pool);
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });
+
+test('PostgreSQL réel : ancien téléphone, journée clôturée et avoirs hors ligne',async()=>{
+ const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL manquante');
+ const root=new pg.Pool({connectionString:url}),schema='sls_old_closed_'+randomUUID().replaceAll('-','');let pool:pg.Pool|undefined,created=false;
+ try{
+  await root.query(`CREATE SCHEMA "${schema}"`);created=true;pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`,max:10});
+  const db={exec:(sql:string)=>pool!.query(sql),query:(sql:string,args?:unknown[])=>pool!.query(sql,args)} as BridgeDatabase;
+  await runExistingDeviceBridgeScenario(db,pool,true);
+ }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
+});

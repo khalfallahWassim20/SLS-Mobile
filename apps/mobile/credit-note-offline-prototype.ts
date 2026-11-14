@@ -3,7 +3,7 @@
  * transaction SQLite exclusive que les futures modifications de facture. */
 import {calculatePreInvoiceCancellation,prepareFullCreditNote,canonicalJson,type CreditNoteCommand} from '@sls/domain';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
-import {assertLocalTourWritable} from './tour-close-queue';
+import {assertLocalTourWritable,findTourCloseAttempt} from './tour-close-queue';
 import {tunisDay} from './journal';
 import {assertNoRemoteCreditNote} from './credit-note-local-guard';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
@@ -85,7 +85,16 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
    if(!pending||pending.n||!marker||marker.creditNote||marker.clientId!==snapshot.invoice?.clientId||!reference.eligibleJournalIds.includes(command.invoiceId)||!remote||remote.version!==command.expectedVersion||await digest(canonicalJson(source))!==remote.hash)throw Error('Facture sans preuve serveur concordante : rapprochement nécessaire.');
   }
  }
- for(const day of [...new Set([invoiceDay,tunisDay(new Date(command.recordedAt))])].sort())await assertLocalTourWritable(tx,identity.commercialId,day);
+ const operationDay=tunisDay(new Date(command.recordedAt));
+ if(operationDay<invoiceDay)throw Error('Date de l’avoir antérieure à la journée de la facture.');
+ // Une clôture déjà confirmée sur une journée antérieure ne bloque pas un
+ // avoir porté sur la journée courante. Une tentative sans réponse doit être
+ // résolue d'abord : son état serveur est inconnu et sa preuve figée.
+ if(invoiceDay!==operationDay){
+  const prior=await findTourCloseAttempt(tx,identity.commercialId,invoiceDay);
+  if(prior?.status==='closing')throw Error('Clôture de la facture en attente : vérifiez son résultat avant l’avoir.');
+ }
+ await assertLocalTourWritable(tx,identity.commercialId,operationDay);
  const note:Note={kind,commercialId:identity.commercialId,serverOrigin:identity.serverOrigin,command:{...command},source,balanceDelta,refund,retainedCredit};
  await tx.runAsync('INSERT INTO offline_credit_prototype(operation_id,invoice_id,kind,commercial_id,server_origin,payload,pending) VALUES(?,?,?,?,?,?,1)',command.operationId,command.invoiceId,kind,identity.commercialId,identity.serverOrigin,JSON.stringify(note));
  return note;

@@ -34,6 +34,13 @@ test('avoir mobile isolé : file persistante, dépendances, identité, clôture 
   await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',{...cmd,expectedVersion:2}),/Version/);
   db.prepare("INSERT INTO tour_known_server_states VALUES(?,?,'closed',1)").run(identity.commercialId,'2026-11-08');
   await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',cmd),/clôturée/);
+  const later={...cmd,recordedAt:'2026-11-09T10:00:00.000Z'};
+  db.exec('BEGIN');await prepareOfflineCreditPrototype(tx,identity,'sale',later);db.exec('ROLLBACK');
+  // Une clôture sans réponse reste un état incertain même pour une facture
+  // ancienne : ne pas créer d'avoir avant d'avoir récupéré le résultat.
+  db.prepare("INSERT INTO tour_close_attempts VALUES(?,?,?,0,'closing',NULL)").run(identity.commercialId,'2026-11-08',randomUUID());
+  await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',later),/Clôture.*en attente/);
+  db.prepare('DELETE FROM tour_close_attempts').run();
   db.prepare('DELETE FROM tour_known_server_states').run();
   db.exec('BEGIN');await prepareOfflineCreditPrototype(tx,identity,'sale',cmd);db.exec('ROLLBACK');
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,0);
@@ -77,6 +84,10 @@ test('avoir préétabli isolé : n’annule pas le paiement d’ancienne dette',
   db.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(journalOp,identity.commercialId,'journal',id,receipt.createdAt);
   db.prepare('INSERT INTO journal_sync_outbox VALUES(?,?,?)').run(journalOp,id,'{}');
   const cmd={operationId:randomUUID(),invoiceId:id,expectedVersion:2,recordedAt:'2026-11-08T11:00:00.000Z',choice:'refund' as const};
+  db.prepare("INSERT INTO tour_known_server_states VALUES(?,?,'closed',1)").run(identity.commercialId,'2026-11-08');
+  await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'preinvoice',cmd),/clôturée/);
+  db.exec('BEGIN');const later=await prepareOfflineCreditPrototype(tx,identity,'preinvoice',{...cmd,recordedAt:'2026-11-09T11:00:00.000Z'});assert.equal(later.refund,200000);db.exec('ROLLBACK');
+  db.prepare('DELETE FROM tour_known_server_states').run();
   const note=await prepareOfflineCreditPrototype(tx,identity,'preinvoice',cmd);assert.equal(note.refund,200000);assert.equal(note.balanceDelta,-400000);
   db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify({...note,source:{...snapshot,receipts:[{...receipt,createdAt:'2026-11-08T12:00:00.000Z'}]}}));
   await assert.rejects(readAllOfflineCreditPrototype(tx,identity),/Chronologie/);

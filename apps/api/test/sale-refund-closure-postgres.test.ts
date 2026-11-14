@@ -61,3 +61,32 @@ test('PostgreSQL : remboursement intercommercial et clôtures concurrentes reste
   }
  }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
 });
+
+test('PostgreSQL : clôturer deux journées après remboursement intercommercial exige les deux preuves exactes',async()=>{
+ const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL manquante');
+ const root=new pg.Pool({connectionString:url}),schema='sls_refund_proof_'+randomUUID().replaceAll('-','');let pool:pg.Pool|undefined,created=false;
+ try{
+  await root.query(`CREATE SCHEMA "${schema}"`);created=true;pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`,max:10});await pool.query(schemaSql);await pool.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+  const a=await saveCommercial(pool,'admin',{name:'Créateur fictif',active:true}),b=await saveCommercial(pool,'admin',{name:'Auteur fictif',active:true});
+  await setCommercialCredentials(pool,'admin',a.id,{login:'refund.proof.a',password:'mot de passe fictif'});await setCommercialCredentials(pool,'admin',b.id,{login:'refund.proof.b',password:'mot de passe fictif'});
+  const secret='secret fictif assez long pour les tests',sa=await loginCommercial(pool,secret,{login:'refund.proof.a',password:'mot de passe fictif'}),sb=await loginCommercial(pool,secret,{login:'refund.proof.b',password:'mot de passe fictif'});assert.ok(sa&&sb);
+  const authA={secret,token:sa.token,enforceMode:true,creditAware:true},authB={secret,token:sb.token,enforceMode:true,creditAware:true};
+  const principalA={kind:'commercial' as const,secret,token:sa.token},principalB={kind:'commercial' as const,secret,token:sb.token};
+  const day='2026-09-20',refundDay='2026-09-21',at=`${day}T09:00:00.000Z`,clientId=randomUUID(),saleId=randomUUID();
+  await pool.query('INSERT INTO clients(id,name) VALUES($1,$2)',[clientId,'Fictif']);
+  const line={name:'Huile',code:'X',quantity:1,unitPrice:100000,discount:0,vat:1900};
+  const sale={createdAt:at,clientId,clientName:'Fictif',syncSaleId:saleId,syncVersion:1,lines:[line],total:119000,paid:50000,remaining:69000,paymentMode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
+  await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0},authA);
+  const beforeA=await matchingCashProof(pool,a.id,day),beforeB=await matchingCashProof(pool,b.id,refundDay);
+  const revision={operationId:randomUUID(),saleId,version:2,recordedAt:`${refundDay}T10:00:00.000Z`,sale:{...sale,syncVersion:2,lines:[{...line,unitPrice:10000}],total:11900,paid:11900,remaining:0},refund:38100};
+  assert.equal(await storeIdentifiedSale(pool,revision,authB),'received');
+  await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day,expectedVersion:0,cashProof:beforeA},principalA,true,true),/Caisse différente/);
+  await assert.rejects(requestTourTransition(pool,{requestId:randomUUID(),day:refundDay,expectedVersion:0,cashProof:beforeB},principalB,true,true),/Caisse différente/);
+  const closeA={requestId:randomUUID(),day,expectedVersion:0,cashProof:await matchingCashProof(pool,a.id,day)};
+  const closeB={requestId:randomUUID(),day:refundDay,expectedVersion:0,cashProof:await matchingCashProof(pool,b.id,refundDay)};
+  assert.equal((await requestTourTransition(pool,closeA,principalA,true,true)).status,'received');
+  assert.equal((await requestTourTransition(pool,closeB,principalB,true,true)).status,'received');
+  assert.equal((await requestTourTransition(pool,closeA,principalA,true,true)).status,'duplicate');
+  assert.equal(await storeIdentifiedSale(pool,revision,authB),'duplicate');
+ }finally{if(pool)await pool.end();if(created)await root.query(`DROP SCHEMA "${schema}" CASCADE`);await root.end();}
+});

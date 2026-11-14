@@ -8,7 +8,8 @@ import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/com
 import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
 import {identifiedCommercialRoutes} from '../../../apps/api/src/identified-tour-routes.js';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
-import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
+import {tourCloseQueueSchema,acknowledgeTourClose} from '../../../apps/mobile/tour-close-queue.js';
+import {prepareVerifiedPrototypeClose} from '../../../apps/mobile/credit-note-verified-close-prototype.js';
 import {offlineCreditPrototypeSchema,readAllOfflineCreditPrototype,readReadyOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {creditSourcesPrototypeSchema} from '../../../apps/mobile/credit-note-sources-prototype.js';
@@ -24,7 +25,7 @@ import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototy
 import {assertLegacyMobileCreditSafe} from '../../../apps/mobile/credit-note-write-guard-prototype.js';
 
 export type BridgeDatabase={exec:(sql:string)=>Promise<unknown>;query:<T extends Record<string,unknown>=Record<string,unknown>>(sql:string,args?:unknown[])=>Promise<{rows:T[]}>};
-export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Pool){
+export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Pool,closedOriginalDay=false){
  const phone=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
  try{
   await db.exec(schemaSql);await db.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
@@ -80,7 +81,15 @@ export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Poo
   phone.prepare('UPDATE tour_journal_receipts SET payload=?').run(JSON.stringify(receipt));
   await controller.connect();await assert.rejects(transaction(()=>assertLegacyMobileCreditSafe(tx,identity)),/v5/);
   assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:489000,conflict:false});
-  const first={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T11:00:00.000Z',choice:'refund' as const};
+  if(closedOriginalDay){
+   // La preuve provient réellement du SQLite mobile, pas d'une copie du
+   // serveur. Elle est acceptée et son accusé est conservé avant les avoirs.
+   const close=await transaction(()=>prepareVerifiedPrototypeClose(tx,identity,day,0,randomUUID,digest));
+   const response=await post('close',{requestId:close.requestId,day,expectedVersion:0,adminRefundProof:close.adminRefundProof,cashProof:close.cashProof});assert.equal(response.status,201);
+   await transaction(async()=>acknowledgeTourClose(tx,identity.commercialId,day,await response.json()));
+  }
+  const noteDay=closedOriginalDay?'2026-11-09':'2026-11-08';
+  const first={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:`${noteDay}T11:00:00.000Z`,choice:'refund' as const};
   const preview=await transaction(()=>previewLocalCredit(tx,identity,clientId,'sale',first,digest));assert.equal(preview.beforeBalance,489000);assert.equal(preview.afterBalance,420000);
   await transaction(()=>confirmLocalCreditReview(tx,identity,preview,first,digest));
   // Réponse perdue après commit local : même confirmation, même UUID et
@@ -88,13 +97,20 @@ export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Poo
   const replay=await transaction(()=>confirmLocalCreditReview(tx,identity,preview,first,digest));assert.equal(replay.note.command.operationId,first.operationId);
   assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).length,1);
   await assert.rejects(transaction(()=>confirmLocalCreditReview(tx,identity,{...preview,refund:preview.refund+1},first,digest)),/autre aperçu/);
-  await assert.rejects(transaction(()=>confirmLocalCreditReview(tx,identity,preview,{...first,recordedAt:'2026-11-08T11:01:00.000Z'},digest)),/autre aperçu/);
-  const second={operationId:randomUUID(),invoiceId,expectedVersion:2,recordedAt:'2026-11-08T11:00:00.000Z',choice:'credit' as const};
+  await assert.rejects(transaction(()=>confirmLocalCreditReview(tx,identity,preview,{...first,recordedAt:`${noteDay}T11:01:00.000Z`},digest)),/autre aperçu/);
+  const second={operationId:randomUUID(),invoiceId,expectedVersion:2,recordedAt:`${noteDay}T11:00:00.000Z`,choice:'credit' as const};
   const pre=await transaction(()=>previewLocalCredit(tx,identity,clientId,'preinvoice',second,digest));assert.equal(pre.afterBalance,-180000);
   await transaction(()=>confirmLocalCreditReview(tx,identity,pre,second,digest));assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
   await assert.rejects(controller.synchronize(),/réponse perdue/);assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
   assert.deepEqual(await controller.synchronize(),{operations:0,credits:2});assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:-180000,conflict:false});
   assert.deepEqual(await controller.synchronize(),{operations:0,credits:0});
+  if(closedOriginalDay){
+   // Après synchronisation des deux avoirs, la caisse du lendemain doit
+   // concorder elle aussi, depuis le vrai snapshot SQLite jusqu'au serveur.
+   const close=await transaction(()=>prepareVerifiedPrototypeClose(tx,identity,noteDay,0,randomUUID,digest));
+   const response=await post('close',{requestId:close.requestId,day:noteDay,expectedVersion:0,adminRefundProof:close.adminRefundProof,cashProof:close.cashProof});assert.equal(response.status,201);
+   await transaction(async()=>acknowledgeTourClose(tx,identity.commercialId,noteDay,await response.json()));
+  }
   // Un téléphone resté hors ligne ne doit pas pouvoir modifier une facture
   // déjà annulée, même s'il annonce le protocole qui connaît les avoirs.
   // En revanche la reprise exacte d'une opération déjà reçue est idempotente.
@@ -105,7 +121,7 @@ export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Poo
   const rejectedSale=await post('sales',staleSale);
   assert.equal(rejectedSale.status,409);assert.match((await rejectedSale.json()).error,/Facture annulée/);
   const rejectedJournal=await post('journal',{...snapshot,operationId:randomUUID(),version:3});
-  assert.equal(rejectedJournal.status,409);assert.match((await rejectedJournal.json()).error,/Facture annulée/);
+  assert.equal(rejectedJournal.status,409);assert.match((await rejectedJournal.json()).error,closedOriginalDay?/clôturé/:/Facture annulée/);
   // Une ancienne référence ne doit jamais publier un solde qui ignore les avoirs.
   const staleReference=await fetch(origin+'/v5/reference',{headers:{Authorization:`Bearer ${session.token}`}});
   assert.equal(staleReference.status,409);assert.equal((await staleReference.json()).code,'CREDIT_PROTOCOL_UPGRADE_REQUIRED');
