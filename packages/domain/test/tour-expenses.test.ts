@@ -66,6 +66,11 @@ test('dépenses : hors ligne, synchronisation idempotente, journal et clôture',
   await assert.rejects(acknowledgeExpenseCancellation(tx,identity,cancellation,{...cancelAck,operationId:randomUUID()}),/invalide/);
   await acknowledgeExpenseCancellation(tx,identity,cancellation,cancelAck);assert.equal((await readTourExpenses(tx,identity))[0].pending,0);
   const afterCancel=await readIdentifiedJournalDay(pool,commercial.id,'2026-11-08',true);assert.equal(afterCancel.expenseTotal,0);assert.equal(afterCancel.expenses.length,0);assert.equal(afterCancel.expenseCancellations[0].reason,'Saisie en double');assert.equal(afterCancel.expenseHistory.length,1);
+  const snapshotUrl=url.replace('/expenses','/expense-snapshot/2026-11-08');
+  assert.equal((await fetch(snapshotUrl)).status,401);
+  const snapshotResponse=await fetch(snapshotUrl,{headers:{Authorization:`Bearer ${session.token}`}});assert.equal(snapshotResponse.status,200);assert.equal(snapshotResponse.headers.get('cache-control'),'no-store');const snapshot=await snapshotResponse.json();assert.equal(snapshot.commercialId,commercial.id);assert.equal(snapshot.expenses[0].cancellation.reason,'Saisie en double');
+  const otherActor=await saveCommercial(pool,'admin',{name:'Autre commercial',active:true});await setCommercialCredentials(pool,'admin',otherActor.id,{login:'other.expense',password:'autre mot de passe fictif'});const otherSession=await loginCommercial(pool,secret,{login:'other.expense',password:'autre mot de passe fictif'});assert.ok(otherSession);
+  const otherSnapshot=await (await fetch(snapshotUrl,{headers:{Authorization:`Bearer ${otherSession.token}`}})).json();assert.equal(otherSnapshot.commercialId,otherActor.id);assert.equal(otherSnapshot.expenses.length,0);
   assert.equal((await postRevision({...payload,operationId:randomUUID(),version:3,previousAmount:30000,previousDescription:'Carburant corrigé'})).status,409);
   await db.query("UPDATE tour_closures SET status='closed',version=3,closed_at=now() WHERE commercial_id=$1 AND journal_date='2026-11-08'",[commercial.id]);
   assert.equal((await postCancel(cancelPayload)).status,200);assert.equal((await postCancel({...cancelPayload,reason:'autre'})).status,409);

@@ -8,6 +8,7 @@ import {loginCommercial} from '../src/commercial-session.js';
 import {storeTourExpense} from '../src/tour-expenses.js';
 import {storeExpenseRevision} from '../src/tour-expense-revisions.js';
 import {storeExpenseCancellation} from '../src/tour-expense-cancellations.js';
+import {readExpenseSnapshot} from '../src/tour-expense-snapshot.js';
 import {requestTourTransition} from '../src/tour-closure-store.js';
 import {readIdentifiedJournalDay} from '../src/identified-journal-day.js';
 
@@ -39,6 +40,8 @@ test('PostgreSQL : dépense et clôture concurrentes, reprise sans doublon',asyn
   if(racing[0].status==='fulfilled'){assert.equal(await storeExpenseCancellation(pool,cancel,credentials),'duplicate');const j=await readIdentifiedJournalDay(pool,person.id,'2026-11-07',true);assert.equal(j.expenseTotal,0);assert.equal(j.expenseCancellations.length,1);}
   else {const updated={...cancel,operationId:randomUUID(),version:4,description:concurrentRevision.description,amount:41000};assert.equal(await storeExpenseCancellation(pool,updated,credentials),'received');const j=await readIdentifiedJournalDay(pool,person.id,'2026-11-07',true);assert.equal(j.expenseTotal,0);assert.equal(j.expenseCancellations.length,1);}
   assert.equal(Number((await pool.query('SELECT count(*) n FROM identified_tour_expenses WHERE operation_id=$1',[original.operationId])).rows[0].n),1);
+  const snapshot=await readExpenseSnapshot(pool,'2026-11-07',credentials);assert.equal(snapshot.commercialId,person.id);assert.equal(snapshot.expenses.length,1);assert.equal(snapshot.expenses[0].operationId,original.operationId);assert.ok(snapshot.expenses[0].cancellation);assert.equal(snapshot.expenses[0].cancellation.reason,'Doublon');
+  await assert.rejects(readExpenseSnapshot(pool,'2026-11-07',{...credentials,token:'incorrect'}),/Session invalide/);
   const [write,close]=await Promise.allSettled([storeTourExpense(pool,op,credentials),requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0},{kind:'commercial',token:session.token,secret},true)]);
   assert.equal(close.status,'fulfilled');const n=Number((await pool.query("SELECT count(*) AS n FROM identified_tour_expenses WHERE journal_date='2026-11-08'")).rows[0].n);
   if(write.status==='fulfilled'){assert.equal(write.value,'received');assert.equal(n,1);assert.equal(await storeTourExpense(pool,op,credentials),'duplicate');}else{assert.match(String(write.reason),/clôturé/);assert.equal(n,0);}

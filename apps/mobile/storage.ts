@@ -37,6 +37,7 @@ import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import {readCreditMobileWorkspacePrototype} from './credit-mobile-workspace-reader-prototype';
 import {readLegacyRows} from './legacy-read-guard';
 import {tourExpenseSchema,addTourExpense,readTourExpenses,readOriginalExpenses,readExpenseRevisions,readExpenseCancellations,reviseTourExpense,cancelTourExpense,acknowledgeTourExpense,acknowledgeExpenseRevision,acknowledgeExpenseCancellation,type TourExpense,type ExpenseRevision,type ExpenseCancellation} from './tour-expenses';
+import {reconcileExpenseSnapshot} from './tour-expense-snapshot';
 import {inspectCreditStartup} from './credit-startup-guard';
 import {readClientRevisions} from './client-revisions';
 import {quarantineOnUpgrade} from './credit-protocol-quarantine';
@@ -322,6 +323,9 @@ export async function hasTourExpenses(identity:DeviceIdentity):Promise<boolean> 
 }
 export async function getTourExpenses(identity:DeviceIdentity):Promise<TourExpense[]> {
  const database=await db();let rows:TourExpense[]=[];await database.withExclusiveTransactionAsync(async tx=>{rows=await readTourExpenses(tx,identity);});return rows;
+}
+export async function importTourExpenseSnapshot(identity:DeviceIdentity,day:string,input:unknown):Promise<number> {
+ const database=await db();let count=0;await database.withExclusiveTransactionAsync(async tx=>{count=await reconcileExpenseSnapshot(tx,identity,day,input);});return count;
 }
 export async function getTourExpenseSnapshot(identity:DeviceIdentity):Promise<{expenses:TourExpense[];history:ExpenseRevision[];cancellations:ExpenseCancellation[]}> {
  const database=await db();let result:{expenses:TourExpense[];history:ExpenseRevision[];cancellations:ExpenseCancellation[]}|undefined;

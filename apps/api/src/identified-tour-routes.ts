@@ -14,6 +14,7 @@ import {storeIdentifiedSale,storeIdentifiedSettlement} from './identified-operat
 import {storeTourExpense} from './tour-expenses.js';
 import {storeExpenseRevision} from './tour-expense-revisions.js';
 import {storeExpenseCancellation} from './tour-expense-cancellations.js';
+import {readExpenseSnapshot} from './tour-expense-snapshot.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
 import {readIdentifiedJournalDay} from './identified-journal-day.js';
 import {IdentifiedOverlap} from './identified-overlap.js';
@@ -112,6 +113,7 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  r.post('/expenses',async(req,res,next)=>{try{const status=await storeTourExpense(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
  r.post('/expense-revisions',async(req,res,next)=>{try{const status=await storeExpenseRevision(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
  r.post('/expense-cancellations',async(req,res,next)=>{try{const status=await storeExpenseCancellation(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
+ r.get('/expense-snapshot/:day',async(req,res,next)=>{try{res.json(await readExpenseSnapshot(pool,req.params.day,{secret,token:bearer(req.get('Authorization')),enforceMode}));}catch(e){errorHandler(e,res,next);}});
  for(const kind of ['journal','sales','settlements'] as const) r.post('/'+kind,async(req,res,next)=>{try{
   const session={secret,token:bearer(req.get('Authorization')),enforceMode,creditAware:supportsCredit(req)};
   const status=kind==='journal'?await storeJournalSnapshot(pool,req.body,'identified',session):kind==='sales'?await storeIdentifiedSale(pool,req.body,session):await storeIdentifiedSettlement(pool,req.body,session);
