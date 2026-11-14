@@ -23,6 +23,13 @@ test('avoir mobile isolé : file persistante, dépendances, identité, clôture 
   db.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(saleOp,identity.commercialId,'sale',id,sale.createdAt);
   db.prepare('INSERT INTO sales_outbox VALUES(?,?,?)').run(saleOp,id,'{}');
   const cmd={operationId,invoiceId:id,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'credit' as const};
+  // Un premier marqueur correct ne doit pas masquer une autre identité dans
+  // le même historique local ; aucune écriture ne doit être effectuée.
+  const foreignOp=randomUUID();
+  db.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(foreignOp,randomUUID(),'sale',id,sale.createdAt);
+  await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',cmd),/autre identité/);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM offline_credit_prototype').get()?.n,0);
+  db.prepare('DELETE FROM identified_local_operations WHERE operation_id=?').run(foreignOp);
   await assert.rejects(prepareOfflineCreditPrototype(tx,{...identity,serverOrigin:'https://other.test'},'sale',cmd),/identité/i);
   await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',{...cmd,expectedVersion:2}),/Version/);
   db.prepare("INSERT INTO tour_known_server_states VALUES(?,?,'closed',1)").run(identity.commercialId,'2026-11-08');
@@ -35,6 +42,10 @@ test('avoir mobile isolé : file persistante, dépendances, identité, clôture 
   db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify({...note,balanceDelta:0}));
   await assert.rejects(readAllOfflineCreditPrototype(tx,identity),/Montants/);
   await assert.rejects(acknowledgeOfflineCreditPrototype(tx,identity,{...note,balanceDelta:0},{status:'received',operationId}),/Montants/);
+  // Une corruption chronologique doit bloquer la lecture et l'envoi, même si
+  // les montants enregistrés restent arithmétiquement cohérents.
+  db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify({...note,source:{...sale,createdAt:'2026-11-08T11:00:00.000Z'}}));
+  await assert.rejects(readAllOfflineCreditPrototype(tx,identity),/Chronologie/);
   db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify(note));
   await assert.rejects(prepareOfflineCreditPrototype(tx,identity,'sale',{...cmd,operationId:randomUUID()}),/déjà annulée/);
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,0);
@@ -67,6 +78,11 @@ test('avoir préétabli isolé : n’annule pas le paiement d’ancienne dette',
   db.prepare('INSERT INTO journal_sync_outbox VALUES(?,?,?)').run(journalOp,id,'{}');
   const cmd={operationId:randomUUID(),invoiceId:id,expectedVersion:2,recordedAt:'2026-11-08T11:00:00.000Z',choice:'refund' as const};
   const note=await prepareOfflineCreditPrototype(tx,identity,'preinvoice',cmd);assert.equal(note.refund,200000);assert.equal(note.balanceDelta,-400000);
+  db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify({...note,source:{...snapshot,receipts:[{...receipt,createdAt:'2026-11-08T12:00:00.000Z'}]}}));
+  await assert.rejects(readAllOfflineCreditPrototype(tx,identity),/Chronologie/);
+  db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify({...note,source:{...snapshot,invoice:{...invoice,createdAt:'date invalide'}}}));
+  await assert.rejects(readAllOfflineCreditPrototype(tx,identity),/Chronologie/);
+  db.prepare('UPDATE offline_credit_prototype SET payload=?').run(JSON.stringify(note));
   assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,0);
   db.prepare('DELETE FROM journal_sync_outbox').run();assert.equal((await readReadyOfflineCreditPrototype(tx,identity)).length,1);
  }finally{db.close();}

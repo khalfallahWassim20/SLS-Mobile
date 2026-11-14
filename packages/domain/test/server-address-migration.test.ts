@@ -55,7 +55,7 @@ test('migration isolée : erreur au milieu des écritures restaure tout',async()
 test('migration v5 : avoir en attente et archive gardent montants, UUID et reçus',async()=>{
  const {db,tx,old,target}=fixture();try{
   const invoiceId=randomUUID(),operationId=randomUUID();
-  const note={kind:'sale',commercialId:old.commercialId,serverOrigin:old.serverOrigin,command:{operationId,invoiceId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'credit'},source:{syncSaleId:invoiceId,syncVersion:1,total:600000,paid:200000},balanceDelta:-600000,refund:0,retainedCredit:200000};
+  const note={kind:'sale',commercialId:old.commercialId,serverOrigin:old.serverOrigin,command:{operationId,invoiceId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'credit'},source:{createdAt:'2026-11-08T09:00:00.000Z',syncSaleId:invoiceId,syncVersion:1,total:600000,paid:200000},balanceDelta:-600000,refund:0,retainedCredit:200000};
   const archiveOp=randomUUID(),archived={...note,command:{...note.command,operationId:archiveOp}};
   const receipt=JSON.stringify({invoiceId,kind:'sale',operationId:archiveOp,status:'abandoned'});
   db.prepare('INSERT INTO offline_credit_prototype VALUES(?,?,?,?,?,?,?)').run(operationId,invoiceId,'sale',old.commercialId,old.serverOrigin,JSON.stringify(note),1);
