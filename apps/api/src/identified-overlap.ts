@@ -1,6 +1,6 @@
 import type {PoolClient} from 'pg';
 export class IdentifiedOverlap extends Error {}
-type Kind='sale'|'settlement'|'journal';
+type Kind='sale'|'settlement'|'journal'|'expense'|'expense-revision'|'expense-cancellation';
 /** Toujours verrouiller l'UUID avant les autres verrous d'opération identifiée. */
 export async function lockIdentifiedOperation(db:PoolClient,id:string):Promise<void> {
  await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['identified-operation-global',id]);
@@ -15,6 +15,9 @@ export async function assertOperationUnambiguous(db:PoolClient,id:string,kind:Ki
  OR EXISTS(SELECT 1 FROM sync_journal_events WHERE operation_id=$1)
  OR ($2<>'sale' AND EXISTS(SELECT 1 FROM identified_sale_events WHERE operation_id=$1))
  OR ($2<>'settlement' AND EXISTS(SELECT 1 FROM identified_settlements WHERE operation_id=$1))
- OR ($2<>'journal' AND EXISTS(SELECT 1 FROM identified_journal_events WHERE operation_id=$1)) AS conflict`,[id,kind]);
+ OR ($2<>'journal' AND EXISTS(SELECT 1 FROM identified_journal_events WHERE operation_id=$1))
+ OR ($2<>'expense' AND EXISTS(SELECT 1 FROM identified_tour_expenses WHERE operation_id=$1))
+ OR ($2<>'expense-revision' AND EXISTS(SELECT 1 FROM identified_tour_expense_revisions WHERE operation_id=$1))
+ OR ($2<>'expense-cancellation' AND EXISTS(SELECT 1 FROM identified_tour_expense_cancellations WHERE operation_id=$1)) AS conflict`,[id,kind]);
  if(r.rows[0]?.conflict!==false)throw new IdentifiedOverlap('Identifiant d’opération déjà présent dans un autre espace : rapprochement nécessaire.');
 }

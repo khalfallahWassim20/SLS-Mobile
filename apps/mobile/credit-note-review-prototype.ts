@@ -3,7 +3,7 @@
  * échec de confirmation doit entraîner l'annulation de cette transaction. */
 import {canonicalJson,type CreditNoteCommand} from '@sls/domain';
 import type {DeviceIdentity} from './identified-device';
-import type {Kind,Note} from './credit-note-offline-prototype';
+import {readAllOfflineCreditPrototype,type Kind,type Note} from './credit-note-offline-prototype';
 import {readPrototypeCreditBalance,prepareBalancedLocalCredit} from './credit-note-balance-storage-prototype';
 import {tunisDay} from './journal';
 type Bind=string|number|null;
@@ -32,6 +32,16 @@ export async function previewLocalCredit(tx:Tx,identity:DeviceIdentity,clientId:
  * facture, le solde, le choix ou le jour ont changé, rien ne doit être créé. */
 export async function confirmLocalCreditReview(tx:Tx,identity:DeviceIdentity,preview:CreditReview,command:CreditNoteCommand,digest:(data:string)=>Promise<string>) {
  if(!preview||preview.identity?.commercialId!==identity.commercialId||preview.identity?.serverOrigin!==identity.serverOrigin||preview.invoiceId!==command.invoiceId||preview.expectedVersion!==command.expectedVersion||preview.choice!==command.choice||preview.day!==day(command.recordedAt))throw Error('Aperçu périmé : vérifiez à nouveau l’avoir.');
+ // Un commit SQLite peut réussir même si son résultat ne parvient pas à
+ // l'écran. Reprendre uniquement la même commande et le même aperçu ; ne pas
+ // créer un second avoir ni répéter un remboursement déjà enregistré.
+ const previous=(await readAllOfflineCreditPrototype(tx,identity)).find(x=>x.note.command.operationId===command.operationId);
+ if(previous){
+  const note=previous.note,source=note.source as {clientId?:unknown;invoice?:{clientId?:unknown}};
+  const client=note.kind==='sale'?source.clientId:source.invoice?.clientId;
+  if(client!==preview.clientId||canonicalJson(note.command)!==canonicalJson(command)||!Number.isSafeInteger(preview.beforeBalance)||!Number.isSafeInteger(preview.afterBalance)||BigInt(preview.beforeBalance)+BigInt(note.balanceDelta)!==BigInt(preview.afterBalance)||canonicalJson(review(identity,preview.clientId,note,preview.beforeBalance,preview.afterBalance))!==canonicalJson(preview))throw Error('Identifiant d’avoir déjà utilisé avec un autre aperçu.');
+  return {note,balance:preview.afterBalance};
+ }
  const before=await readPrototypeCreditBalance(tx,identity,preview.clientId,digest);
  if(before.conflict)throw Error('Solde en conflit : avoir refusé.');
  const result=await prepareBalancedLocalCredit(tx,identity,preview.clientId,preview.kind,command,digest);

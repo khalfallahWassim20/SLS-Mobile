@@ -23,7 +23,7 @@ export async function resetTestOperations(pool:Pool):Promise<void> {
    'identified_journal_events','identified_journal_receipt_ids','identified_journal_invoices',
    'sync_journal_events','sync_journal_receipt_ids','sync_journal_invoices',
    'demo_journal_events','demo_journal_receipt_ids','demo_journal_invoices',
-   'identified_sale_events','identified_settlements','demo_sale_events','demo_settlements'
+   'identified_tour_expense_cancellations','identified_tour_expense_revisions','identified_tour_expenses','identified_sale_events','identified_settlements','demo_sale_events','demo_settlements'
   ]) await db.query(`DELETE FROM ${table}`);
   await db.query(`INSERT INTO audit_log(id,actor,action,entity,entity_id,entity_name,changed_fields)
    VALUES($1,'maintenance locale','nettoyage','opérations fictives',$2,'Historique des opérations','{}')`,[randomUUID(),randomUUID()]);

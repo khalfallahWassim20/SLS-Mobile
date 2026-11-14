@@ -1,13 +1,14 @@
 import type {OwnedCredit} from './credit-owned-reference-prototype';
 import type {LocalSaleRefund,InitialSalePayment} from './credit-sale-refund-journal-prototype';
 import type { JournalRow } from './journal.js';
-import type { TourJournalReceipt } from './storage.js';
+import type {TourExpense} from './tour-expenses';
+import type { Settlement, TourJournalReceipt } from './storage.js';
 import type {Note} from './credit-note-offline-prototype';
 import {canonicalJson,prepareFullCreditNote,calculatePreInvoiceCancellation} from '@sls/domain';
 import {tunisDay} from './journal';
 
 /** Instantané local, distinct du journal consolidé reçu sur le serveur. */
-export type JournalExport = { day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; credits?: {note:Note;pending:boolean}[]; remoteOwnedCredits?:OwnedCredit[]; ownedLocalCreditOperationIds?:string[]; creditOwnersKnown?:boolean; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[]; initialSalePayments?:InitialSalePayment[]; adminRefundAssignmentsKnown?:boolean; adminCreditRefunds?:{noteOperationId:string;assignmentId:string;invoiceId:string;kind:'sale'|'preinvoice';clientId:string;clientName:string;recordedAt:string;assignedAt:string;refund:number}[]; remoteSaleRefunds?: {operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[] };
+export type JournalExport = { expenses?: TourExpense[]; day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; settlements?: Settlement[]; clientSectors?: Record<string,string>; credits?: {note:Note;pending:boolean}[]; remoteOwnedCredits?:OwnedCredit[]; ownedLocalCreditOperationIds?:string[]; creditOwnersKnown?:boolean; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[]; initialSalePayments?:InitialSalePayment[]; adminRefundAssignmentsKnown?:boolean; adminCreditRefunds?:{noteOperationId:string;assignmentId:string;invoiceId:string;kind:'sale'|'preinvoice';clientId:string;clientName:string;recordedAt:string;assignedAt:string;refund:number}[]; remoteSaleRefunds?: {operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[] };
 const amount = (value: number) => {
  if (!Number.isSafeInteger(value)) throw new Error('Montant invalide dans le journal.');
  const n = BigInt(value), abs = n < 0n ? -n : n;
@@ -52,7 +53,16 @@ export function initialSalePaymentMap(data:JournalExport):Map<number,number>|nul
  if(map.size!==sales.length||sales.some(s=>!map.has(s.id)))throw Error('Paiements initiaux incomplets.');
  return map;
 }
+function expenseEntries(data:JournalExport):TourExpense[] {
+ const seen=new Set<string>();return (data.expenses??[]).filter(e=>{
+  const date=new Date(e.createdAt);
+  if(!e.operationId||seen.has(e.operationId)||!Number.isFinite(date.getTime())||date.toISOString()!==e.createdAt||tunisDay(date)!==e.day||typeof e.description!=='string'||!e.description.trim()||!Number.isSafeInteger(e.amount)||e.amount<=0||![0,1].includes(e.pending))throw Error('Dépense du journal invalide.');
+  if(e.cancelled!==undefined&&typeof e.cancelled!=='boolean')throw Error('Statut de dépense invalide.');
+  seen.add(e.operationId);return e.day===data.day&&!e.cancelled;
+ });
+}
 function lines(data: JournalExport): string[][] {
+ const expenses=expenseEntries(data);
  const initial=initialSalePaymentMap(data);
  const allEvents=creditEvents(data),byInvoice=new Map(allEvents.map(e=>[`${e.note.kind}:${e.note.command.invoiceId}`,e]));
  const remoteByInvoice=new Map<string,NonNullable<JournalExport['remoteCancellations']>[number]>();
@@ -166,12 +176,70 @@ function lines(data: JournalExport): string[][] {
  }
  if(updates.size)rows.push(['Modifications enregistrées ailleurs','Les ventes indiquées ont été actualisées depuis un autre appareil. Les remboursements effectués ailleurs ne sont pas déduits de la caisse de ce téléphone.']);
  if(remoteByInvoice.size)rows.push(['Annulations enregistrées ailleurs','Les factures sont signalées comme annulées. Les avoirs reçus sur les factures de ce commercial sont déduits à leur date de création ; seuls les remboursements attribués à cette caisse sont déduits de l’encaissé. Consultez le journal serveur.']);
+ for(const expense of expenses)rows.push(['Dépense de tournée','',expense.description,expense.createdAt,amount(expense.amount),'','',expense.pending?'En attente':'Synchronisée']);
+ rows.push(['TOTAL CHARGES',expenses.length||(data.expenses??[]).some(e=>e.day===data.day&&e.cancelled)?amount(sum(expenses.map(e=>e.amount))):'Non renseigné']);
  rows.push(['NOMBRE DE CLIENTS',String(data.rows.length)]);
  rows.push(['Note','Le total facturé ne représente pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.']);
  return rows;
 }
 export function journalCsv(data: JournalExport): string { return '\uFEFF'+lines(data).map(r=>r.map(cell).join(';')).join('\r\n')+'\r\n'; }
+/** PDF synthétique : un client par ligne. Le CSV détaillé reste inchangé.
+ * Les charges absentes restent non renseignées, jamais inventées. */
 export function journalHtml(data: JournalExport): string {
- const dataRows=lines(data);
- return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;color:#193c35;font-size:10px}h1{font-size:22px}p{font-size:11px}table{width:100%;border-collapse:collapse}td,th{border:1px solid #b7c9bf;padding:5px;text-align:left;overflow-wrap:anywhere}th{background:#d8eee2}tr{page-break-inside:avoid}</style></head><body><h1>Journal de tournée — instantané local</h1><p>Date : ${escapeHtml(data.day)} · Commercial : ${escapeHtml(data.commercial)}</p><p>Données fictives. Opérations présentes sur ce téléphone, avoirs sur les factures du commercial et remboursements administrateur attribués reçus à la dernière synchronisation. Les autres opérations ne sont pas incluses. Le total facturé n’est pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.</p><table><thead><tr>${dataRows[3].map(x=>`<th>${escapeHtml(x)}</th>`).join('')}</tr></thead><tbody>${dataRows.slice(4,-1).map(r=>`<tr>${r.map(x=>`<td>${escapeHtml(x)}</td>`).join('')}</tr>`).join('')}</tbody></table></body></html>`;
+ lines(data); // Conserve les validations des avoirs, remboursements et références.
+ const initial=initialSalePaymentMap(data),rows=new Map<string,JournalRow>();
+ for(const row of data.rows){
+  if(!row.clientId||rows.has(row.clientId)||!row.clientName?.trim())throw Error('Client du journal invalide ou dupliqué.');
+  const calculated=sum([row.preInvoice?.amount??0,...row.sales.map(s=>s.total)]);
+  if(calculated!==row.total||row.sales.some(s=>s.clientId!==row.clientId)||row.preInvoice&&row.preInvoice.clientId!==row.clientId)throw Error('Total ou client du journal incohérent.');
+  rows.set(row.clientId,{...row});
+ }
+ const selectedSettlements:NonNullable<JournalExport['settlements']>=[],seenSettlements=new Set<number>();
+ for(const payment of data.settlements??[]){
+  if(!Number.isSafeInteger(payment.id)||payment.id<1||seenSettlements.has(payment.id)||!payment.clientId||!payment.clientName?.trim()||!Number.isSafeInteger(payment.amount)||payment.amount<=0||!['Espèces','Chèque','Virement'].includes(payment.mode)||!Number.isFinite(Date.parse(payment.createdAt)))throw Error('Règlement de dette invalide dans le journal.');
+  seenSettlements.add(payment.id);if(tunisDay(new Date(payment.createdAt))!==data.day)continue;
+  selectedSettlements.push(payment);
+  if(!rows.has(payment.clientId))rows.set(payment.clientId,{clientId:payment.clientId,clientName:payment.clientName,sector:data.clientSectors?.[payment.clientId]??'',preInvoice:null,sales:[],total:0});
+ }
+ const receipts=data.receipts.filter(r=>r.journalDate===data.day);
+ const seenReceipts=new Set<string>();
+ for(const p of receipts){
+  const row=rows.get(p.clientId);
+  if(!p.id||seenReceipts.has(p.id)||!row?.preInvoice||row.preInvoice.id!==p.preInvoiceId||!Number.isSafeInteger(p.prePaid)||p.prePaid<0||!Number.isSafeInteger(p.oldDebtPaid)||p.oldDebtPaid<0||!['Espèces','Chèque','Virement'].includes(p.mode))throw Error('Règlement du journal incohérent.');
+  seenReceipts.add(p.id);
+ }
+ const ordered=[...rows.values()].sort((a,b)=>a.clientName.localeCompare(b.clientName));
+ const sectors=[...new Set(ordered.map(r=>r.sector.trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+ const unknownSector=ordered.some(r=>!r.sector.trim());
+ const sectorText=sectors.length?sectors.join(', ')+(unknownSector?' · secteur non renseigné pour certains clients':''):'Non renseigné';
+ const byMode=(entries:{mode:string;value:number}[])=>{
+  const grouped=new Map<string,number[]>();
+  for(const {mode,value} of entries){if(!Number.isSafeInteger(value)||value<0||!['Espèces','Chèque','Virement','Crédit'].includes(mode)||value>0&&mode==='Crédit')throw Error('Mode ou montant de paiement invalide.');if(value>0){const list=grouped.get(mode)??[];list.push(value);grouped.set(mode,list);}}
+  return [...grouped].map(([mode,values])=>`${mode} ${amount(sum(values))}`).join(' · ');
+ };
+ let billed=0,preTotal=0,saleTotal=0,oldTotal=0;
+ const table=ordered.map(row=>{
+  const clientReceipts=receipts.filter(p=>p.clientId===row.clientId),clientSettlements=selectedSettlements.filter(p=>p.clientId===row.clientId);
+  const prePaid=sum(clientReceipts.map(p=>p.prePaid)),salePaid=sum(row.sales.map(s=>initial?.get(s.id)??s.paid)),old=sum([...clientReceipts.map(p=>p.oldDebtPaid),...clientSettlements.map(p=>p.amount)]);
+  const supplementary=sum(row.sales.map(s=>s.total)),bill=row.total;
+  billed=sum([billed,bill]);preTotal=sum([preTotal,prePaid]);saleTotal=sum([saleTotal,salePaid]);oldTotal=sum([oldTotal,old]);
+  const paymentMode=byMode([...clientReceipts.map(p=>({mode:p.mode,value:p.prePaid})),...row.sales.map(s=>({mode:s.paymentMode,value:initial?.get(s.id)??s.paid}))]);
+  const oldMode=byMode([...clientReceipts.map(p=>({mode:p.mode,value:p.oldDebtPaid})),...clientSettlements.map(p=>({mode:p.mode,value:p.amount}))]);
+  const payment=`${amount(sum([prePaid,salePaid]))}${paymentMode?` · ${paymentMode}`:''}`;
+  const debt=`${amount(old)}${oldMode?` · ${oldMode}`:''}${data.settlements===undefined?' · règlements séparés indisponibles':''}`;
+  return [row.clientName,amount(row.preInvoice?.amount??0),amount(supplementary),payment,debt,amount(bill)];
+ });
+ const gross=sum([preTotal,saleTotal,oldTotal]);
+ const notices:string[]=[];
+ if(data.settlements===undefined)notices.push('Règlements séparés de dette indisponibles : les montants affichés ne comprennent que les paiements du journal.');
+ if(!initial)notices.push('Paiements de ventes : montants nets actuellement enregistrés ; les remboursements de modification peuvent y être déjà inclus.');
+ if(data.remoteSaleUpdates?.length)notices.push('Modifications enregistrées ailleurs : consultez le CSV détaillé.');
+ if(data.credits?.length||data.remoteCancellations?.length||data.remoteOwnedCredits?.length||data.saleRefunds?.length||data.remoteSaleRefunds?.length||data.adminCreditRefunds?.length){
+  notices.push('Ce récapitulatif est avant déduction des avoirs et remboursements. Consultez le CSV détaillé pour les mouvements et leur statut ; leur enregistrement ne prouve pas le versement physique.');
+  if(data.credits?.some(x=>x.note.kind==='preinvoice')||data.remoteCancellations?.some(x=>x.kind==='preinvoice')||data.remoteOwnedCredits?.some(x=>x.kind==='preinvoice'))notices.push('Une facture préétablie annulée doit être corrigée séparément dans le système principal.');
+ }
+ const headers=['Client','Mt FC préétablie','Mt FC supplémentaire','Paiement FC du jour · mode','Ancienne dette réglée · mode','Total client'];
+ const expenses=expenseEntries(data);
+ const summary=[['Total facturé (préétablie + supplémentaire)',amount(billed)],['Total paiements facture préétablie',amount(preTotal)],['Total paiements facture supplémentaire',amount(saleTotal)],['Total charges',expenses.length||(data.expenses??[]).some(e=>e.day===data.day&&e.cancelled)?amount(sum(expenses.map(e=>e.amount))):'Non renseigné'],['Total encaissé local avant avoirs et remboursements distants',amount(gross)],['Nombre de clients',String(ordered.length)]];
+ return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>@page{size:A4 landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#193c35;font-size:10px}h1{font-size:20px}p{font-size:10px}table{width:100%;border-collapse:collapse;table-layout:fixed}td,th{border:1px solid #b7c9bf;padding:5px;text-align:left;overflow-wrap:anywhere}th{background:#d8eee2}tr{page-break-inside:avoid}.totals{margin-top:12px;width:68%}.totals td:last-child{text-align:right;font-weight:bold}.notice{color:#754b20}</style></head><body><h1>Journal de tournée — instantané local</h1><p>Date : ${escapeHtml(data.day)} · Commercial : ${escapeHtml(data.commercial)}<br>Secteur(s) des clients du jour : ${escapeHtml(sectorText)}</p><p>Opérations présentes sur ce téléphone. Les autres appareils ne sont pas inclus. Les charges de ce téléphone ne sont pas déduites de l’encaissé ; consultez le CSV pour leur détail et leur statut.</p><table><thead><tr>${headers.map(x=>`<th>${escapeHtml(x)}</th>`).join('')}</tr></thead><tbody>${table.map(row=>`<tr>${row.map(x=>`<td>${escapeHtml(x)}</td>`).join('')}</tr>`).join('')}</tbody></table><table class="totals"><tbody>${summary.map(row=>`<tr><td>${escapeHtml(row[0])}</td><td>${escapeHtml(row[1])}</td></tr>`).join('')}</tbody></table>${notices.map(text=>`<p class="notice">${escapeHtml(text)}</p>`).join('')}</body></html>`;
 }

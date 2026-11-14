@@ -11,6 +11,7 @@ import {issueAddressApproval,redeemAddressApproval} from '../../../apps/api/src/
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {creditSourcesPrototypeSchema} from '../../../apps/mobile/credit-note-sources-prototype.js';
+import {tourExpenseSchema} from '../../../apps/mobile/tour-expenses.js';
 import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {recoverAddressPrototype} from '../../../apps/mobile/server-address-recovery-prototype.js';
 
@@ -21,7 +22,7 @@ test('essai fictif complet : approbation, comparaison et migration, sans envoi d
   const secret='secret fictif assez long pour les tests',login=await loginCommercial(pool,secret,{login:'recovery.test',password:'mot de passe fictif'});assert.ok(login);
   const lineageId=(await db.query<{id:string}>('SELECT lineage_id::text AS id FROM server_lineage_identity')).rows[0].id;
   const old={commercialId:person.id,serverOrigin:'http://192.168.43.101:3001'},target='https://api.example.test',session={id:person.id,name:person.name,serverOrigin:target,token:login.token,expiresAt:login.expiresAt};
-  phone.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${offlineCreditPrototypeSchema} CREATE TABLE sales_outbox(operation_id TEXT,payload TEXT);`);
+  phone.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${offlineCreditPrototypeSchema}${tourExpenseSchema} CREATE TABLE sales_outbox(operation_id TEXT,payload TEXT);`);
   phone.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(person.id,old.serverOrigin);phone.prepare('INSERT INTO sales_outbox VALUES(?,?)').run('pending','{"facture":1}');
   const client=randomUUID(),sale=randomUUID();const reference={version:4,clients:[{id:client,name:'Test',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[],saleStates:[{saleId:sale,clientId:client,version:1,total:'1000',paid:'500'}],settlementStates:[],journalStates:[],journalProofs:[]};
   phone.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(person.id,old.serverOrigin,JSON.stringify(reference));

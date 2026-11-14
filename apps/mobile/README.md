@@ -30,3 +30,7 @@ L’extrait de solde mobile présente aussi les factures préétablies locales e
 
 ## Synchronisation du journal en préparation
 Une synchronisation manuelle de démonstration est reliée, mais désactivée par défaut sur le serveur tant que les tests PostgreSQL et multi-appareils ne sont pas validés. Les versions du journal restent en attente si ce mode n'est pas activé. Avant tout essai, mettre à jour tous les appareils, migrer la base et utiliser uniquement des données fictives. Le journal reçu apparaît dans la vue web de démonstration et le solde serveur v3 ; une actualisation mobile est nécessaire après l'envoi. Ne pas basculer vers un autre serveur ou restaurer une ancienne base en gardant le même cache mobile. Pas de garantie globale des limites ou soldes en cas d'appareils hors ligne ; ne pas utiliser en production.
+
+### Listes locales
+
+Les recherches parcourent toutes les données téléchargées, y compris les codes-barres des articles. Les listes affichent 40 éléments à la fois ; « Afficher plus » révèle les suivants sans supprimer ni limiter les données. L'historique du solde est lui aussi présenté par blocs. Les soldes et contrôles utilisent toujours l'ensemble des opérations locales et la dernière référence reçue, pas seulement les lignes affichées. Les index SQLite ajoutés à l'ouverture sont non destructifs. Les performances réelles restent à vérifier sur le téléphone, avec son historique et sa connexion.

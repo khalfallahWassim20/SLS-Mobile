@@ -10,8 +10,8 @@ import {validateRemoteSaleConfirm,type RemoteSaleConfirmRow} from './credit-remo
 
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...params:Bind[]):Promise<T[]>;runAsync(sql:string,...params:Bind[]):Promise<unknown>};
-const columnTables=['identified_device','credit_protocol_quarantine','identified_reference_cache','credit_reference_prototype_cache','credit_sources_prototype_cache','offline_credit_prototype','credit_abandoned_note_prototype','credit_remote_sale_draft_prototype','credit_remote_sale_confirm_prototype'] as const;
-const simpleTables=['credit_protocol_quarantine','identified_reference_cache','credit_reference_prototype_cache','credit_sources_prototype_cache'] as const;
+const columnTables=['tour_expense_cancellations','tour_expense_revisions','tour_expenses','identified_device','credit_protocol_quarantine','identified_reference_cache','credit_reference_prototype_cache','credit_sources_prototype_cache','offline_credit_prototype','credit_abandoned_note_prototype','credit_remote_sale_draft_prototype','credit_remote_sale_confirm_prototype'] as const;
+const simpleTables=['tour_expense_cancellations','tour_expense_revisions','tour_expenses','credit_protocol_quarantine','identified_reference_cache','credit_reference_prototype_cache','credit_sources_prototype_cache'] as const;
 const identifier=(name:string)=>'"'+name.replace(/"/g,'""')+'"';
 
 /** Préserve toutes les opérations et vérifie tout avant écriture. Le savepoint

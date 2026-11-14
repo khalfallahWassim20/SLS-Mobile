@@ -20,6 +20,7 @@ import {identifiedDeviceSchema,assertKnownDeviceEntity} from '../../../apps/mobi
 import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,observeVerifiedTourState,assertLocalTourWritable} from '../../../apps/mobile/tour-close-queue.js';
 import {prepareVerifiedPrototypeClose} from '../../../apps/mobile/credit-note-verified-close-prototype.js';
 import {preparePrototypeClose} from '../../../apps/mobile/credit-note-close-prototype.js';
+import {tourExpenseSchema} from '../../../apps/mobile/tour-expenses.js';
 import {offlineCreditPrototypeSchema,readReadyOfflineCreditPrototype,readAllOfflineCreditPrototype,acknowledgeOfflineCreditPrototype,type Note} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {creditSourcesPrototypeSchema,saveCreditSourcesPrototype,readCreditSourcesPrototype} from '../../../apps/mobile/credit-note-sources-prototype.js';
@@ -97,7 +98,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
    CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
-   ${saleEventTimeSchema}${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema}`);
+   ${saleEventTimeSchema}${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${tourExpenseSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema}`);
   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>mobile.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{mobile.prepare(sql).run(...args)}};
   const transaction=async<T>(action:()=>Promise<T>)=>{mobile.exec('BEGIN');try{const v=await action();mobile.exec('COMMIT');return v;}catch(e){mobile.exec('ROLLBACK');throw e;}};
   const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');mobile.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(second.id,identity.serverOrigin);
@@ -109,6 +110,24 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,{...reference,version:3},digest,()=>{})),/Référence/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,{...identity,commercialId:randomUUID()},reference,digest,()=>{})),/Session/);
+  // Sans identité, un historique local ne doit jamais être attribué
+  // silencieusement au compte qui tente de se lier.
+  mobile.prepare('INSERT INTO settlements(client_id,payload) VALUES(?,?)').run(clientId,'historique fictif');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Historique local sans identité/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
+  assert.equal(mobile.prepare('SELECT payload FROM settlements').get()?.payload,'historique fictif');
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  mobile.exec('DELETE FROM settlements');
+  mobile.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(second.id,identity.serverOrigin,'{}');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Historique local sans identité/);
+  assert.equal(mobile.prepare('SELECT payload FROM identified_reference_cache').get()?.payload,'{}');
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
+  mobile.exec('DELETE FROM identified_reference_cache');
+  mobile.prepare('INSERT INTO credit_remote_sale_draft_prototype VALUES(?,?,?,?,?,?)').run(randomUUID(),saleId,second.id,identity.serverOrigin,'{}','{}');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Historique local sans identité/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_remote_sale_draft_prototype').get()?.n,1);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
+  mobile.exec('DELETE FROM credit_remote_sale_draft_prototype');
   mobile.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,1,'{}');
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/opérations en attente/);mobile.exec('DELETE FROM sales_outbox');
   // Un téléphone déjà lié en v3 ne peut pas basculer pendant un envoi
@@ -118,7 +137,48 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/opérations en attente/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales_outbox').get()?.n,1);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
-  mobile.exec('DELETE FROM sales_outbox;DELETE FROM identified_device');
+  mobile.exec('DELETE FROM sales_outbox');
+  // Une clôture v3 en vol ou dont la réponse est perdue ne doit pas être
+  // remplacée par une clôture v5 ni disparaître lors de la première liaison.
+  const closeId=randomUUID();mobile.prepare("INSERT INTO tour_close_attempts VALUES(?,?,?,0,'closing',NULL)").run(second.id,'2026-11-08',closeId);
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Clôture en attente/);
+  assert.equal(mobile.prepare('SELECT request_id FROM tour_close_attempts').get()?.request_id,closeId);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  assert.equal(mobile.prepare('SELECT commercial_id FROM identified_device').get()?.commercial_id,second.id);
+  mobile.prepare('UPDATE tour_close_attempts SET status=?,closed_version=1 WHERE request_id=?').run('closed',closeId);
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Ancienne référence indisponible/);
+  const oldReference={...reference,version:4};
+  const badReference={...oldReference,journalProofs:oldReference.journalProofs.map((p:any,index:number)=>index? p:{...p,hash:'f'.repeat(64)})};
+  mobile.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(second.id,identity.serverOrigin,JSON.stringify(badReference));
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})),/Preuve de journal différente/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  mobile.prepare('UPDATE identified_reference_cache SET payload=?').run(JSON.stringify(oldReference));
+  // Une ancienne ligne locale illisible ne doit pas être masquée par la
+  // nouvelle référence. Le cache v5 est annulé avec toute la transaction.
+  mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,'{invalide');
+  await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{})));
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,0);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM sales').get()?.n,1);
+  mobile.exec('DELETE FROM sales');
+  // Une vente locale identique et déjà reçue peut être conservée.
+  mobile.prepare('INSERT INTO sales(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(sale));
+  // Le même contrôleur que l'interface récupère la référence v5 par HTTP et
+  // la lie sous transaction. Si la session change juste après le commit,
+  // l'appel échoue mais le cache déjà validé demeure et une reprise est sûre.
+  let active=true,loseAfterCommit=true;const calls:string[]=[];
+  const bridge=createCreditTransportPrototype({id:second.id,name:second.name,serverOrigin:identity.serverOrigin,token:b.token,expiresAt:b.expiresAt},identity,{
+   request:(url,options)=>{calls.push(options.method+' '+url);assert.equal(options.method,'GET');assert.equal(options.headers['X-SLS-Reference-Version'],'5');return fetch(url.replace(`${identity.serverOrigin}/api/mobile/identified/`,`${origin}/v5/`),options);},
+   cacheReference:async()=>{},cacheSources:async()=>{},synchronize:async()=>({operations:0,credits:0}),isCurrentSession:()=>active,
+   bindReference:async(id,verified,value,guard)=>{await transaction(()=>bindAndCacheCreditReferencePrototype(tx,id,verified,value,digest,guard));if(loseAfterCommit){loseAfterCommit=false;active=false;}}
+  });
+  await assert.rejects(bridge.connect(),/Session expirée/);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,1);
+  assert.equal(mobile.prepare('SELECT payload FROM sales').get()?.payload,JSON.stringify(sale));
+  active=true;await bridge.connect();assert.ok(calls.every(call=>call.endsWith('/reference')));assert.equal(calls.length,2);
+  assert.equal(mobile.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,1);
+  assert.equal(mobile.prepare('SELECT payload FROM sales').get()?.payload,JSON.stringify(sale));
+  // Nettoyage de cet appareil fictif uniquement pour poursuivre le scénario.
+  mobile.exec('DELETE FROM sales;DELETE FROM credit_reference_prototype_cache;DELETE FROM identified_reference_cache;DELETE FROM tour_close_attempts;DELETE FROM identified_device');
   let checks=0;await assert.rejects(transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{if(++checks===2)throw Error('session expirée');})),/session expirée/);
   assert.equal(mobile.prepare('SELECT count(*) AS n FROM identified_device').get()?.n,0);
   await transaction(()=>bindAndCacheCreditReferencePrototype(tx,identity,identity,reference,digest,()=>{}));
@@ -260,6 +320,11 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   for(const [id,kind] of [[localSaleId,'sale'],[localInvoiceId,'journal']])mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(randomUUID(),identity.commercialId,kind,id,at);
   mobile.exec('DELETE FROM credit_sources_prototype_cache');
   const localChoices=await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest));assert.equal(localChoices.remoteAvailable,false);assert.equal(localChoices.items.length,2);assert.ok(localChoices.items.every(x=>x.origin==='local'&&!x.blocked));assert.equal(localChoices.items.find(x=>x.kind==='preinvoice')?.paid,250000);assert.equal(localChoices.items.find(x=>x.kind==='preinvoice')?.oldDebtPaid,400000);
+  // La liste ne doit pas proposer une facture dont une révision locale a été
+  // attribuée à une autre identité, même si le premier marqueur est correct.
+  const foreignMarker=randomUUID();mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(foreignMarker,randomUUID(),'sale',localSaleId,at);
+  await assert.rejects(transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest)),/autre identité/);
+  mobile.prepare('DELETE FROM identified_local_operations WHERE operation_id=?').run(foreignMarker);
   const localHistory=await transaction(()=>readCreditHistoryPrototype(tx,identity,clientId,digest));assert.equal(localHistory.sales.length,1);assert.equal(localHistory.sales[0].sale.syncSaleId,localSaleId);assert.equal(localHistory.receipts.length,1);assert.equal(localHistory.receipts[0].oldDebtPaid,400000);
   mobile.prepare('UPDATE tour_journal_receipts SET payload=? WHERE id=?').run(JSON.stringify({...localReceipt,oldDebtPaid:1}),localReceipt.id);await assert.rejects(transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest)),/Historique local/);mobile.prepare('UPDATE tour_journal_receipts SET payload=? WHERE id=?').run(JSON.stringify(localReceipt),localReceipt.id);
   await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));
@@ -339,7 +404,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   // Les exports proviennent de la même capture que le modèle et ne nécessitent
   // aucun réseau ; PDF et CSV restent disponibles en attente de synchronisation.
   const writes:{uri:string;content:string;encoding:string}[]=[],shares:string[]=[];
-  const shareIO={cacheDirectory:'file:///cache/',available:async()=>true,write:async(uri:string,content:string,encoding:'utf8'|'base64')=>{writes.push({uri,content,encoding});},print:async(html:string)=>{assert.match(html,/Avoir/);return {base64:'UEZG'};},share:async(uri:string)=>{shares.push(uri);},now:()=>1};
+  const shareIO={cacheDirectory:'file:///cache/',available:async()=>true,write:async(uri:string,content:string,encoding:'utf8'|'base64')=>{writes.push({uri,content,encoding});},print:async(html:string)=>{assert.match(html,/avoir/i);return {base64:'UEZG'};},share:async(uri:string)=>{shares.push(uri);},now:()=>1};
   await shareCreditJournalPrototype(workspace.journal,'csv',shareIO);await shareCreditJournalPrototype(workspace.journal,'pdf',shareIO);
   assert.equal(writes.length,2);assert.match(writes[0].content,/50,000/);assert.equal(writes[1].encoding,'base64');assert.equal(shares.length,2);
   await assert.rejects(shareCreditJournalPrototype({...workspace.journal,credits:undefined},'csv',shareIO),/v5 invalide/);
@@ -506,7 +571,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);
    CREATE TABLE tour_pre_invoices(id TEXT PRIMARY KEY,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT PRIMARY KEY,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);
    CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
-   ${saleEventTimeSchema}${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema}`);
+   ${saleEventTimeSchema}${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${tourExpenseSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema}`);
    const isolatedTx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>isolated.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>isolated.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{isolated.prepare(sql).run(...args)}};
    const isolatedTransaction=async<T>(fn:()=>Promise<T>)=>{isolated.exec('BEGIN');try{const v=await fn();isolated.exec('COMMIT');return v;}catch(e){isolated.exec('ROLLBACK');throw e;}};
    const referenceBeforeEdit=await get('reference');await isolatedTransaction(()=>bindAndCacheCreditReferencePrototype(isolatedTx,identity,identity,referenceBeforeEdit,digest,()=>{}));
@@ -519,6 +584,16 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
    assert.equal(preview.balanceAfter,0);assert.equal(preview.refund,2400);
    const draft={operationId:remoteEvent.operationId,context:context2,key,recordedAt:remoteEvent.recordedAt,lines:editLines,choice:'refund' as const,preview};
    await isolatedTransaction(()=>stageRemoteSaleEditDraftPrototype(isolatedTx,draft,digest));await isolatedTransaction(()=>confirmRemoteSaleEditPrototype(isolatedTx,draft,digest));
+   // Une révision peut apparaître après le contrôle initial de la file. Même
+   // si le client n'a aucune vente locale, la validation finale ne doit pas
+   // annoncer une synchronisation complète ; le cache est aussi restauré.
+   const beforeFinal=isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload;
+   await assert.rejects(isolatedTransaction(()=>saveAndVerifyFinalCreditReference(isolatedTx,identity,identity,referenceBeforeEdit,digest)),/modification distante reste en attente/);
+   assert.equal(isolated.prepare('SELECT payload FROM credit_reference_prototype_cache').get()?.payload,beforeFinal);
+   assert.equal(isolated.prepare('SELECT acknowledged FROM credit_remote_sale_confirm_prototype').get()?.acknowledged,0);
+   isolated.prepare('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=1').run();
+   await assert.rejects(isolatedTransaction(()=>saveAndVerifyFinalCreditReference(isolatedTx,identity,identity,referenceBeforeEdit,digest)),/modification distante reste en attente/);
+   isolated.prepare('UPDATE credit_remote_sale_confirm_prototype SET acknowledged=0').run();
    assert.deepEqual(await isolatedTransaction(()=>readRemoteEditBalancePrototype(isolatedTx,identity,client2,digest)),{balance:0,conflict:false});
    // Hors ligne, la révision bloque seulement son client. Un autre client
    // peut encore recevoir une vente, qui sera envoyée après la révision.

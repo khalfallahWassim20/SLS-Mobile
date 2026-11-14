@@ -61,14 +61,18 @@ export async function storePrototypePreInvoiceCredit(pool:Pool,raw:unknown,princ
   if(!meta||!meta.commercial_id)throw new IdentifiedOverlap('Facture préétablie non identifiée : rapprochement nécessaire.');
   const legacy=await db.query('SELECT 1 FROM sync_journal_invoices WHERE id=$1',[command.invoiceId]);
   if(legacy.rows.length)throw new IdentifiedOverlap('Ancienne facture préétablie : rapprochement nécessaire.');
-  const keys=new Map<string,{id:string;day:string}>();
-  const add=(id:string,day:string)=>keys.set(`${id}:${day}`,{id,day});
-  add(meta.commercial_id,meta.day);add(meta.commercial_id,tunisDay(command.recordedAt));
-  if(actor.role==='commercial'){add(actor.id,meta.day);add(actor.id,tunisDay(command.recordedAt));}
+  const operationDay=tunisDay(command.recordedAt);
+  if(operationDay<meta.day)throw new JournalConflict('Date de l’avoir antérieure à la journée de la facture.');
+  const keys=new Map<string,{id:string;day:string;mustBeOpen:boolean}>();
+  const add=(id:string,day:string,mustBeOpen:boolean)=>{const key=`${id}:${day}`,old=keys.get(key);keys.set(key,{id,day,mustBeOpen:mustBeOpen||!!old?.mustBeOpen});};
+  add(meta.commercial_id,meta.day,false);add(meta.commercial_id,operationDay,true);
+  if(actor.role==='commercial')add(actor.id,operationDay,true);
   // Même ordre que l'écriture de journal : clôtures avant verrou de facture.
+  // Le jour d'origine est verrouillé mais peut être déjà clôturé ; l'avoir et
+  // son éventuel remboursement sont portés sur le jour courant, qui doit être ouvert.
   for(const key of [...keys.keys()].sort()){
    const k=keys.get(key)!;const state=await lockTourClosure(db,k.id,k.day);
-   if(state.status!=='open')throw new TourDayClosed(k.day,k.id);
+   if(k.mustBeOpen&&state.status!=='open')throw new TourDayClosed(k.day,k.id);
   }
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))',['journal-invoice',command.invoiceId]);
   const prior=await db.query('SELECT 1 FROM pre_invoice_credit_prototype_events WHERE invoice_id=$1',[command.invoiceId]);

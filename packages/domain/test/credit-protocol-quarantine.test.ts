@@ -13,7 +13,7 @@ test('refus serveur explicite : blocage persistant sans effacer données ou file
  const db=new DatabaseSync(':memory:'),id={commercialId:'a1000000-0000-4000-8000-000000000001',serverOrigin:'https://sls.example.test'};
  try{
   db.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}`);
-  const others=['credit_sources_prototype_cache','sales_outbox','sale_event_times','sale_revisions','sales','settlements','journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices','tour_close_cash_proofs','tour_close_admin_refund_proofs','tour_close_attempts','tour_known_server_states','reference_snapshot'];
+  const others=['tour_expense_cancellations','tour_expense_revisions','tour_expenses','credit_sources_prototype_cache','sales_outbox','sale_event_times','sale_revisions','sales','settlements','journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices','tour_close_cash_proofs','tour_close_admin_refund_proofs','tour_close_attempts','tour_known_server_states','reference_snapshot'];
   for(const table of others)db.exec(`CREATE TABLE ${table}(id TEXT)`);
   db.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(id.commercialId,id.serverOrigin);
   db.exec("INSERT INTO sales VALUES('facture'); INSERT INTO sales_outbox VALUES('operation')");
@@ -38,5 +38,19 @@ test('refus serveur explicite : blocage persistant sans effacer données ou file
   db.exec('BEGIN');await resetLocalTestOperations(tx);db.exec('COMMIT');
   assert.deepEqual(await readLegacyRows(tx,'SELECT id FROM sales'),[]);
   assert.equal(db.prepare('SELECT count(*) n FROM identified_device').get()?.n,1);
+ }finally{db.close();}
+});
+
+test('cache v5 orphelin : anciens écrans bloqués sans effacer les données',async()=>{
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}CREATE TABLE sales(id TEXT);INSERT INTO sales VALUES('facture');`);
+  const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{db.prepare(sql).run(...args)}};
+  assert.equal((await readLegacyRows(tx,'SELECT id FROM sales')).length,1);
+  db.prepare('INSERT INTO credit_reference_prototype_cache VALUES(1,?,?,?)').run('commercial','https://example.test','{}');
+  await assert.rejects(assertLegacyMobileCreditSafe(tx,null),/sans identité/);
+  await assert.rejects(readLegacyRows(tx,'SELECT id FROM sales'),/sans identité/);
+  assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,1);
+  assert.equal(db.prepare('SELECT count(*) n FROM credit_reference_prototype_cache').get()?.n,1);
  }finally{db.close();}
 });

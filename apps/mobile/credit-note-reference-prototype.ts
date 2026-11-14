@@ -89,9 +89,20 @@ export function validatePrototypeCreditReference(value:unknown) {
   });
   if(ownersSeen.size!==seen.size)throw Error('Propriétaires des avoirs incomplets.');
  }
+ // Les anciens caches peuvent ne pas contenir ces preuves : ils ne sont pas
+ // suffisants pour migrer un règlement local sans nouvelle référence vérifiée.
+ let settlementProofs:null|{operationId:string;hash:string}[]=null;
+ if(raw.settlementProofs!==undefined&&raw.settlementProofs!==null){
+  if(!Array.isArray(raw.settlementProofs))throw Error('Preuves de règlement invalides.');
+  const ids=new Set<string>(),known=new Set(base.settlementStates?.map(x=>x.operationId)??[]);
+  settlementProofs=raw.settlementProofs.map(value=>{const p=obj(value);
+   if(!p||Object.keys(p).sort().join(',')!=='hash,operationId'||!uuid(p.operationId)||!known.has(p.operationId)||ids.has(p.operationId)||typeof p.hash!=='string'||!/^[0-9a-f]{64}$/.test(p.hash))throw Error('Preuve de règlement invalide.');
+   ids.add(p.operationId);return {operationId:p.operationId,hash:p.hash};
+  });
+ }
  // Vérifie aussi les identifiants de reçus et d'avoirs entre préétablies.
  reconcilePreInvoiceCredits(0,[],journals);
- return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,eligibleSaleProofs,eligibleJournalIds,journalStates:journals,cashAssignments,creditOwners};
+ return {...base,version:5 as const,experimental:true as const,clients,saleStates:sales,saleProofs,eligibleSaleProofs,eligibleJournalIds,journalStates:journals,settlementProofs,cashAssignments,creditOwners};
 }
 
 /** Seule cette liste est destinée au choix d'un client pour une nouvelle

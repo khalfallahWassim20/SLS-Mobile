@@ -5,18 +5,22 @@ import {DatabaseSync} from 'node:sqlite';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
 import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
 import {creditSourcesPrototypeSchema} from '../../../apps/mobile/credit-note-sources-prototype.js';
+import {tourExpenseSchema} from '../../../apps/mobile/tour-expenses.js';
 import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {remoteSaleDraftPrototypeSchema,remoteSaleConfirmPrototypeSchema} from '../../../apps/mobile/credit-remote-sale-schema-prototype.js';
 import {migrateDeviceOriginPrototype} from '../../../apps/mobile/server-address-migration.js';
 
 function fixture(){
- const db=new DatabaseSync(':memory:');db.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${offlineCreditPrototypeSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema} CREATE TABLE sales_outbox(operation_id TEXT,payload TEXT);CREATE TABLE sales(id INTEGER,payload TEXT);`);
+ const db=new DatabaseSync(':memory:');db.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema}${offlineCreditPrototypeSchema}${tourExpenseSchema}${remoteSaleDraftPrototypeSchema}${remoteSaleConfirmPrototypeSchema} CREATE TABLE sales_outbox(operation_id TEXT,payload TEXT);CREATE TABLE sales(id INTEGER,payload TEXT);`);
  const tx={getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).all(...args) as T[],getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).get(...args) as T||null,runAsync:async(sql:string,...args:(string|number|null)[])=>{db.prepare(sql).run(...args)}};
  const old={commercialId:randomUUID(),serverOrigin:'http://192.168.43.101:3001'},target='http://192.168.100.23:3001';
  db.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(old.commercialId,old.serverOrigin);
  db.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(old.commercialId,old.serverOrigin,'{"keep":true}');
  db.prepare('INSERT INTO credit_protocol_quarantine VALUES(1,?,?)').run(old.commercialId,old.serverOrigin);
  db.prepare('INSERT INTO sales_outbox VALUES(?,?)').run('pending','{"money":123}');db.prepare('INSERT INTO sales VALUES(1,?)').run('{"sale":true}');
+ const expenseId=randomUUID();db.prepare('INSERT INTO tour_expenses VALUES(?,?,?,?,?,?,?,?)').run(expenseId,old.commercialId,old.serverOrigin,'2026-11-08','2026-11-08T09:00:00.000Z','Carburant',25350,1);
+ db.prepare('INSERT INTO tour_expense_revisions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),expenseId,old.commercialId,old.serverOrigin,2,'2026-11-08T10:00:00.000Z','Carburant',25350,'Carburant corrigé',30000,1);
+ db.prepare('INSERT INTO tour_expense_cancellations VALUES(?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),expenseId,old.commercialId,old.serverOrigin,2,'2026-11-08T11:00:00.000Z','Carburant corrigé',30000,'Doublon',1);
  return {db,tx,old,target};
 }
 test('migration isolée : préserve files, historique et cache, et reste annulable',async()=>{
@@ -25,6 +29,12 @@ test('migration isolée : préserve files, historique et cache, et reste annulab
   assert.equal(db.prepare('SELECT server_origin FROM identified_device').get()?.server_origin,target);
   assert.equal(db.prepare('SELECT server_origin FROM identified_reference_cache').get()?.server_origin,target);
   assert.equal(db.prepare('SELECT server_origin FROM credit_protocol_quarantine').get()?.server_origin,target);
+  assert.equal(db.prepare('SELECT server_origin FROM tour_expenses').get()?.server_origin,target);
+  assert.equal(db.prepare('SELECT server_origin FROM tour_expense_revisions').get()?.server_origin,target);
+  assert.equal(db.prepare('SELECT server_origin FROM tour_expense_cancellations').get()?.server_origin,target);
+  assert.equal(db.prepare('SELECT reason FROM tour_expense_cancellations').get()?.reason,'Doublon');
+  assert.equal(db.prepare('SELECT amount FROM tour_expense_revisions').get()?.amount,30000);
+  assert.equal(db.prepare('SELECT amount FROM tour_expenses').get()?.amount,25350);
   assert.equal(db.prepare('SELECT payload FROM sales_outbox').get()?.payload,'{"money":123}');
   assert.equal(db.prepare('SELECT payload FROM sales').get()?.payload,'{"sale":true}');
   db.exec('ROLLBACK');assert.equal(db.prepare('SELECT server_origin FROM identified_device').get()?.server_origin,old.serverOrigin);
@@ -34,6 +44,9 @@ test('migration isolée : identité, tables inconnues et avoir incohérent bloqu
  const {db,tx,old,target}=fixture();try{
   await assert.rejects(migrateDeviceOriginPrototype(tx,{...old,commercialId:randomUUID()},target),/Liaison/);
   db.exec('CREATE TABLE future(server_origin TEXT)');await assert.rejects(migrateDeviceOriginPrototype(tx,old,target),/Nouvelle table/);db.exec('DROP TABLE future');
+  db.prepare('UPDATE tour_expenses SET server_origin=?').run('http://192.168.1.99:3001');
+  await assert.rejects(migrateDeviceOriginPrototype(tx,old,target),/autre identité/);
+  db.prepare('UPDATE tour_expenses SET server_origin=?').run(old.serverOrigin);
   db.prepare('INSERT INTO offline_credit_prototype VALUES(?,?,?,?,?,?,?)').run(randomUUID(),randomUUID(),'sale',old.commercialId,old.serverOrigin,'{}',1);
   await assert.rejects(migrateDeviceOriginPrototype(tx,old,target),/incohérent/);
   assert.equal(db.prepare('SELECT server_origin FROM identified_reference_cache').get()?.server_origin,old.serverOrigin);
@@ -55,7 +68,7 @@ test('migration isolée : erreur au milieu des écritures restaure tout',async()
 test('migration v5 : avoir en attente et archive gardent montants, UUID et reçus',async()=>{
  const {db,tx,old,target}=fixture();try{
   const invoiceId=randomUUID(),operationId=randomUUID();
-  const note={kind:'sale',commercialId:old.commercialId,serverOrigin:old.serverOrigin,command:{operationId,invoiceId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'credit'},source:{syncSaleId:invoiceId,syncVersion:1,total:600000,paid:200000},balanceDelta:-600000,refund:0,retainedCredit:200000};
+  const note={kind:'sale',commercialId:old.commercialId,serverOrigin:old.serverOrigin,command:{operationId,invoiceId,expectedVersion:1,recordedAt:'2026-11-08T10:00:00.000Z',choice:'credit'},source:{createdAt:'2026-11-08T09:00:00.000Z',syncSaleId:invoiceId,syncVersion:1,total:600000,paid:200000},balanceDelta:-600000,refund:0,retainedCredit:200000};
   const archiveOp=randomUUID(),archived={...note,command:{...note.command,operationId:archiveOp}};
   const receipt=JSON.stringify({invoiceId,kind:'sale',operationId:archiveOp,status:'abandoned'});
   db.prepare('INSERT INTO offline_credit_prototype VALUES(?,?,?,?,?,?,?)').run(operationId,invoiceId,'sale',old.commercialId,old.serverOrigin,JSON.stringify(note),1);

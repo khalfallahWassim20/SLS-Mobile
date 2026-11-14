@@ -33,9 +33,10 @@ test('préparation serveur : montant et version proviennent de la facture, clôt
   await assert.rejects(run({...command,recordedAt:'2026-11-07T20:00:00.000Z'}),/antérieure/);
   await assert.rejects(run({...command,operationId:event.operationId}),/utilisé/);
   await changeTourClosure(pool,c.id,'2026-11-08','close',{id:c.id,role:'commercial'},0);
-  await assert.rejects(run(),/clôturé/);
-  await assert.rejects(run(command,{id:'admin',role:'admin'}),/clôturé/);
-  await changeTourClosure(pool,c.id,'2026-11-08','reopen',{id:'admin',role:'admin'},1);
+  // Une clôture antérieure reste intacte : le nouvel avoir appartient au 9.
+  assert.equal((await run()).invoiceDay,'2026-11-08');
+  assert.equal((await run(command,{id:'admin',role:'admin'})).invoiceDay,'2026-11-08');
+  await assert.rejects(run({...command,recordedAt:'2026-11-08T10:00:00.000Z'}),/clôturé/);
   await changeTourClosure(pool,other.id,'2026-11-09','close',{id:other.id,role:'commercial'},0);
   await assert.rejects(run(),/clôturé/);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events')).rows[0].n,1);

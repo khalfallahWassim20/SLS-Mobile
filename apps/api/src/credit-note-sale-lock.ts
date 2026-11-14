@@ -41,13 +41,17 @@ export async function lockCreditNoteSale(db:PoolClient,actor:CreditNoteActor,inp
  if(sale.syncSaleId!==command.invoiceId || sale.syncVersion!==last.version || rows.rows.some((r,i)=>r.version!==i+1 || r.day!==first.day) || day(sale.createdAt)!==first.day)throw new JournalConflict('Historique de facture incohérent.');
  const lastTime=last.payload?.recordedAt;
  if(typeof lastTime!=='string' || !Number.isFinite(Date.parse(lastTime)) || Date.parse(command.recordedAt)<Date.parse(lastTime))throw new JournalConflict('Date de l’avoir antérieure à la dernière version.');
- const keys=new Map<string,{id:string;day:string}>();
- const add=(id:string,date:string)=>keys.set(`${id}:${date}`,{id,day:date});
- add(first.commercial_id,first.day);add(first.commercial_id,day(command.recordedAt));
- if(actor.role==='commercial'){add(actor.id,first.day);add(actor.id,day(command.recordedAt));}
+ const operationDay=day(command.recordedAt);
+ const keys=new Map<string,{id:string;day:string;mustBeOpen:boolean}>();
+ const add=(id:string,date:string,mustBeOpen:boolean)=>{const key=`${id}:${date}`,old=keys.get(key);keys.set(key,{id,day:date,mustBeOpen:mustBeOpen||!!old?.mustBeOpen});};
+ // L'avoir est un mouvement du jour de sa création, pas une modification de
+ // l'ancienne clôture. On verrouille toutefois la journée d'origine pour la
+ // sérialiser avec une clôture concurrente et les écritures de la vente.
+ add(first.commercial_id,first.day,false);add(first.commercial_id,operationDay,true);
+ if(actor.role==='commercial')add(actor.id,operationDay,true);
  for(const key of [...keys.keys()].sort()){
   const k=keys.get(key)!;const closure=await lockTourClosure(db,k.id,k.day);
-  if(closure.status!=='open')throw new TourDayClosed(k.day,k.id);
+  if(k.mustBeOpen&&closure.status!=='open')throw new TourDayClosed(k.day,k.id);
  }
  return {invoiceId:command.invoiceId,version:last.version as number,total:sale.total,netPaid:sale.paid,clientId:sale.clientId,ownerId:first.commercial_id as string,invoiceDay:first.day as string};
 }

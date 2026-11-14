@@ -12,6 +12,7 @@ import {randomUUID,createHash} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {recoverAddressPrototype} from '../../mobile/server-address-recovery-prototype.js';
 import {identifiedDeviceSchema} from '../../mobile/identified-device.js';
+import {tourExpenseSchema} from '../../mobile/tour-expenses.js';
 import {offlineCreditPrototypeSchema} from '../../mobile/credit-note-offline-prototype.js';
 import {creditReferencePrototypeSchema} from '../../mobile/credit-note-reference-cache-prototype.js';
 import {creditSourcesPrototypeSchema} from '../../mobile/credit-note-sources-prototype.js';
@@ -57,7 +58,7 @@ for(const mode of ['test-v5','https-direct'] as const)test(`serveur HTTPS isolé
   };
   const refResponse=await network(input.targetOrigin+'/api/mobile/identified/reference',{method:'GET',headers:{Authorization:`Bearer ${mobile.body.token}`}});assert.equal(refResponse.status,200);const reference=await refResponse.json();
   const phone=new DatabaseSync(':memory:');try{
-   phone.exec(`${identifiedDeviceSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema} CREATE TABLE sales_outbox(operation_id TEXT,payload TEXT);`);
+   phone.exec(`${identifiedDeviceSchema}${offlineCreditPrototypeSchema}${tourExpenseSchema}${creditReferencePrototypeSchema}${creditSourcesPrototypeSchema} CREATE TABLE sales_outbox(operation_id TEXT,payload TEXT);`);
    phone.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(person.id,input.previousOrigin);phone.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(person.id,input.previousOrigin,JSON.stringify(reference));phone.prepare('INSERT INTO sales_outbox VALUES(?,?)').run(randomUUID(),'{"operation":"conserver"}');
    const newInput={...input,requestId:randomUUID()},approved=await post('/address-approvals',{...newInput,confirmation:'J_AI_VERIFIE_LA_BASE_ET_LE_TELEPHONE'},admin.body.token);assert.equal(approved.status,201);
    const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>phone.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>phone.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{phone.prepare(sql).run(...args)}};

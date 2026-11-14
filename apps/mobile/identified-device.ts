@@ -47,9 +47,15 @@ export async function recordDeviceOperation(tx:Tx,identity:DeviceIdentity|null,o
 /** Ne jamais réattribuer silencieusement une ancienne vente ou facture à la nouvelle identité. */
 export async function assertKnownDeviceEntity(tx:Tx,identity:DeviceIdentity|null,kind:'sale'|'journal',entityId:string|undefined,previousSale?:{clientId:string;version:number;total:number;paid:number;payload?:string;digest?:(text:string)=>Promise<string>},previousJournal?:{version:number;payload:string;digest:(text:string)=>Promise<string>},creditAware=false):Promise<void> {
  if(!identity)return;
+ const linked=await getDeviceIdentity(tx);
+ if(!linked||linked.commercialId!==identity.commercialId||linked.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur différent du téléphone : rapprochement nécessaire.');
  if(!entityId)throw Error('Ancienne opération sans identité : rapprochement nécessaire.');
- const row=await tx.getFirstAsync<{commercialId:string}>('SELECT commercial_id AS commercialId FROM identified_local_operations WHERE operation_kind=? AND entity_id=? LIMIT 1',kind,entityId);
- if(row){if(row.commercialId!==identity.commercialId)throw Error('Ancienne opération liée à un autre commercial : rapprochement nécessaire.');return;}
+ // Toute l'histoire locale doit appartenir au téléphone lié : LIMIT 1 peut
+ // masquer une révision attribuée à un autre compte après une ligne valide.
+ const markers=await tx.getFirstAsync<{present:number;foreignIdentity:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_kind=? AND entity_id=?) AS present,
+  EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_kind=? AND entity_id=? AND commercial_id<>?) AS foreignIdentity`,kind,entityId,kind,entityId,identity.commercialId);
+ if(!markers||markers.foreignIdentity)throw Error('Ancienne opération liée à un autre commercial : rapprochement nécessaire.');
+ if(markers.present)return;
  if(creditAware) {
   // En v5, ne jamais retomber sur une ancienne preuve v3 : elle pourrait
   // ignorer une annulation ou une modification reçue d'un autre appareil.

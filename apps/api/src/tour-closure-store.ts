@@ -7,7 +7,6 @@ import {initialTourClosure,transitionTourClosure,canonicalJson,cashClosureCanoni
 import {journalDateSchema} from './journal-protocol.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
-import {assertSaleRefundJournalSafe} from './sale-refund-journal-guard-prototype.js';
 import {readPrototypeCreditHistoryInTransaction} from './credit-note-history-prototype.js';
 import {JournalConflict} from './journal-store.js';
 import {readSaleCashPreview} from './sale-cash-preview-prototype.js';
@@ -97,7 +96,10 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
   // Les écritures de vente prennent ce même verrou avant insertion ; une
   // clôture ne peut donc pas dépasser un remboursement reçu simultanément.
   if(creditAware&&action==='close'){
-   await assertSaleRefundJournalSafe(db,commercialId,day);
+   // Un remboursement entre commerciaux ou journées n'interdit pas à lui
+   // seul la clôture. La preuve complète ci-dessous doit cependant inclure
+   // tous les événements et la dernière version de la vente ; les verrous de
+   // journée empêchent qu'une révision passe entre le contrôle et le commit.
    // Un avoir saisi par l'administrateur ne dit pas quelle caisse a payé.
    // Bloquer plutôt que clôturer un montant commercial considéré à tort complet.
    let history:Awaited<ReturnType<typeof readPrototypeCreditHistoryInTransaction>>;

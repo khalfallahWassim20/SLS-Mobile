@@ -190,6 +190,27 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       operation_id uuid PRIMARY KEY, invoice_id uuid NOT NULL UNIQUE, event jsonb NOT NULL,
       received_at timestamptz NOT NULL DEFAULT now()
     );
+    CREATE TABLE IF NOT EXISTS identified_tour_expenses (
+      operation_id uuid PRIMARY KEY, commercial_id uuid NOT NULL REFERENCES commercials(id),
+      journal_date date NOT NULL, created_at timestamptz NOT NULL, description text NOT NULL,
+      amount bigint NOT NULL CHECK(amount>0), payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE INDEX IF NOT EXISTS identified_tour_expenses_by_day ON identified_tour_expenses(commercial_id,journal_date);
+    CREATE TABLE IF NOT EXISTS identified_tour_expense_revisions (
+      operation_id uuid PRIMARY KEY, expense_id uuid NOT NULL REFERENCES identified_tour_expenses(operation_id),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), version integer NOT NULL CHECK(version>=2), recorded_at timestamptz NOT NULL,
+      previous_description text NOT NULL, previous_amount bigint NOT NULL CHECK(previous_amount>0),
+      description text NOT NULL, amount bigint NOT NULL CHECK(amount>0), payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(expense_id,version)
+    );
+    CREATE INDEX IF NOT EXISTS expense_revisions_by_expense ON identified_tour_expense_revisions(expense_id,version DESC);
+    CREATE TABLE IF NOT EXISTS identified_tour_expense_cancellations (
+      operation_id uuid PRIMARY KEY, expense_id uuid NOT NULL UNIQUE REFERENCES identified_tour_expenses(operation_id),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), version integer NOT NULL CHECK(version>=1), recorded_at timestamptz NOT NULL,
+      description text NOT NULL, amount bigint NOT NULL CHECK(amount>0), reason text NOT NULL, payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS credit_note_prototype_movements (
       operation_id uuid NOT NULL REFERENCES credit_note_prototype_events(operation_id),
       kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')), balance_delta bigint NOT NULL,

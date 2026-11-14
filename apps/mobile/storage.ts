@@ -36,6 +36,10 @@ import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-protot
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import {readCreditMobileWorkspacePrototype} from './credit-mobile-workspace-reader-prototype';
 import {readLegacyRows} from './legacy-read-guard';
+import {tourExpenseSchema,addTourExpense,readTourExpenses,readOriginalExpenses,readExpenseRevisions,readExpenseCancellations,reviseTourExpense,cancelTourExpense,acknowledgeTourExpense,acknowledgeExpenseRevision,acknowledgeExpenseCancellation,type TourExpense,type ExpenseRevision,type ExpenseCancellation} from './tour-expenses';
+import {reconcileExpenseSnapshot} from './tour-expense-snapshot';
+import {inspectCreditStartup} from './credit-startup-guard';
+import {readClientRevisions} from './client-revisions';
 import {quarantineOnUpgrade} from './credit-protocol-quarantine';
 import type {CommercialSession} from './commercial-login';
 import {validateCreditSaleEdit} from './credit-sale-edit-prototype';
@@ -60,7 +64,9 @@ async function db() {
     ); CREATE TABLE IF NOT EXISTS sale_revisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL, created_at TEXT NOT NULL,
       previous_payload TEXT NOT NULL, new_payload TEXT NOT NULL, refund INTEGER NOT NULL
-    ); CREATE TABLE IF NOT EXISTS settlements (
+    ); CREATE INDEX IF NOT EXISTS sale_revisions_by_sale ON sale_revisions(sale_id,id);
+    CREATE INDEX IF NOT EXISTS sales_by_client ON sales(client_id,id);
+    CREATE TABLE IF NOT EXISTS settlements (
       id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, client_id TEXT NOT NULL, payload TEXT NOT NULL
     ); CREATE TABLE IF NOT EXISTS sales_outbox (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL UNIQUE, sale_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, last_error TEXT
@@ -69,7 +75,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -110,6 +116,11 @@ export async function getRevisions(saleId: number): Promise<Revision[]> {
   const rows = await legacyReadAll<{id: number; created_at: string; previous_payload: string; new_payload: string; refund: number}>(
     'SELECT id, created_at, previous_payload, new_payload, refund FROM sale_revisions WHERE sale_id = ? ORDER BY id DESC', saleId);
   return rows.map(r => ({ id: r.id, createdAt: r.created_at, previous: JSON.parse(r.previous_payload), current: JSON.parse(r.new_payload), refund: r.refund }));
+}
+export async function getClientRevisions(clientId:string):Promise<Revision[]> {
+ const database=await db();let rows:Revision[]=[];
+ await database.withExclusiveTransactionAsync(async tx=>{rows=await readClientRevisions(tx,clientId);});
+ return rows;
 }
 export async function updateSale(previous: SavedSale, updated: SavedSale, refund: number, credit?:CreditWriteContext): Promise<void> {
   const database = await db();
@@ -307,6 +318,47 @@ export async function recordCreditProtocolUpgrade(identity:DeviceIdentity,status
  return blocked;
 }
 export async function getBoundIdentity():Promise<DeviceIdentity|null> {return getDeviceIdentity(await db());}
+export async function hasTourExpenses(identity:DeviceIdentity):Promise<boolean> {
+ const database=await db();let present=true;await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);const row=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_expenses) AS n');if(!row)throw Error('État des dépenses indisponible.');present=!!row.n;});return present;
+}
+export async function getTourExpenses(identity:DeviceIdentity):Promise<TourExpense[]> {
+ const database=await db();let rows:TourExpense[]=[];await database.withExclusiveTransactionAsync(async tx=>{rows=await readTourExpenses(tx,identity);});return rows;
+}
+export async function importTourExpenseSnapshot(identity:DeviceIdentity,day:string,input:unknown):Promise<number> {
+ const database=await db();let count=0;await database.withExclusiveTransactionAsync(async tx=>{count=await reconcileExpenseSnapshot(tx,identity,day,input);});return count;
+}
+export async function getTourExpenseSnapshot(identity:DeviceIdentity):Promise<{expenses:TourExpense[];history:ExpenseRevision[];cancellations:ExpenseCancellation[]}> {
+ const database=await db();let result:{expenses:TourExpense[];history:ExpenseRevision[];cancellations:ExpenseCancellation[]}|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result={expenses:await readTourExpenses(tx,identity),history:await readExpenseRevisions(tx,identity),cancellations:await readExpenseCancellations(tx,identity)};});return result!;
+}
+export async function getPendingTourExpenseOperations(identity:DeviceIdentity):Promise<{originals:TourExpense[];revisions:ExpenseRevision[];cancellations:ExpenseCancellation[]}> {
+ const database=await db();let result:{originals:TourExpense[];revisions:ExpenseRevision[];cancellations:ExpenseCancellation[]}|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{const originals=await readOriginalExpenses(tx,identity),revisions=await readExpenseRevisions(tx,identity,originals),cancellations=await readExpenseCancellations(tx,identity,originals,revisions);result={originals:originals.filter(x=>x.pending===1),revisions:revisions.filter(x=>x.pending===1),cancellations:cancellations.filter(x=>x.pending===1)};});return result!;
+}
+export async function saveExpenseCancellation(identity:DeviceIdentity,expected:TourExpense,reason:string):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await cancelTourExpense(tx,identity,expected,{operationId:randomUUID(),recordedAt:new Date().toISOString(),reason});});
+}
+export async function confirmExpenseCancellation(identity:DeviceIdentity,cancellation:ExpenseCancellation,response:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeExpenseCancellation(tx,identity,cancellation,response);});
+}
+export async function saveExpenseRevision(identity:DeviceIdentity,expected:TourExpense,description:string,amount:number):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await reviseTourExpense(tx,identity,expected,{operationId:randomUUID(),recordedAt:new Date().toISOString(),description,amount});});
+}
+export async function confirmExpenseRevision(identity:DeviceIdentity,revision:ExpenseRevision,response:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeExpenseRevision(tx,identity,revision,response);});
+}
+export async function saveTourExpense(identity:DeviceIdentity,description:string,amount:number,expectedDay:string):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{const createdAt=new Date().toISOString();if(tunisDay(new Date(createdAt))!==expectedDay)throw Error('La date de tournée a changé : actualisez le journal.');await addTourExpense(tx,identity,{operationId:randomUUID(),createdAt,description,amount});});
+}
+export async function confirmTourExpense(identity:DeviceIdentity,expense:TourExpense,response:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeTourExpense(tx,identity,expense,response);});
+}
+/** Identité et transition lues ensemble ; aucune modification du stockage. */
+export async function getCreditStartupState(enabled:boolean) {
+ const database=await db();let result:Awaited<ReturnType<typeof inspectCreditStartup>>|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await inspectCreditStartup(tx,enabled);});
+ if(!result)throw Error('État du téléphone indisponible.');return result;
+}
 export async function getIdentifiedOutbox(identity:DeviceIdentity,creditAware=false):Promise<IdentifiedEntry[]> {
  const database=await db();let entries:IdentifiedEntry[]=[];
  await database.withExclusiveTransactionAsync(async tx=>{if(!creditAware)await assertLegacyMobileCreditSafe(tx,identity);entries=await readIdentifiedOutbox(tx,identity);});return entries;
@@ -327,7 +379,7 @@ export async function getLocalCloseAttempt(identity:DeviceIdentity,day:string):P
 }
 export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number,creditAware=false):Promise<Attempt> {
  const database=await db();let result:Attempt|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);if(!creditAware){await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);}else result=await prepareVerifiedPrototypeClose(tx,identity,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);const pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_expenses WHERE pending=1) OR EXISTS(SELECT 1 FROM tour_expense_revisions WHERE pending=1) OR EXISTS(SELECT 1 FROM tour_expense_cancellations WHERE pending=1) AS n');if(!pending||pending.n)throw Error('Synchronisez les dépenses en attente avant la clôture.');if(!creditAware){await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);}else result=await prepareVerifiedPrototypeClose(tx,identity,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
 }
 export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
@@ -408,9 +460,9 @@ export async function previewCreditReviewPrototype(identity:DeviceIdentity,clien
  await database.withExclusiveTransactionAsync(async tx=>{result=await previewLocalCredit(tx,identity,clientId,kind,{operationId:randomUUID(),invoiceId,expectedVersion,recordedAt:new Date().toISOString(),choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
  return result!;
 }
-export async function confirmCreditReviewPrototype(identity:DeviceIdentity,preview:CreditReview) {
+export async function confirmCreditReviewPrototype(identity:DeviceIdentity,preview:CreditReview,command:import('@sls/domain').CreditNoteCommand) {
  const database=await db();let result:Awaited<ReturnType<typeof confirmLocalCreditReview>>|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{result=await confirmLocalCreditReview(tx,identity,preview,{operationId:randomUUID(),invoiceId:preview.invoiceId,expectedVersion:preview.expectedVersion,recordedAt:new Date().toISOString(),choice:preview.choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmLocalCreditReview(tx,identity,preview,command,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
  return result!;
 }
 

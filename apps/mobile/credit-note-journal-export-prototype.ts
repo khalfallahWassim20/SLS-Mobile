@@ -5,7 +5,7 @@ import {readConfirmedRemoteSaleRefunds} from './credit-remote-sale-confirm-proto
 import {readLocalSaleCashLedger} from './credit-sale-refund-journal-prototype';
 import {assertImportedSaleRevision} from './credit-local-revision-audit-prototype';
 import type {DeviceIdentity} from './identified-device';
-import type {SavedSale,TourPreInvoice,TourJournalReceipt} from './storage';
+import type {SavedSale,Settlement,TourPreInvoice,TourJournalReceipt} from './storage';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
 import {readAllOfflineCreditPrototype} from './credit-note-offline-prototype';
 import {loadCreditBalanceSnapshotPrototype} from './credit-note-balance-storage-prototype';
@@ -61,6 +61,8 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   if(marker?.n===1)ownedLocalCreditOperationIds.push(note.command.operationId);
  }
 
+ const settlementRows=await tx.getAllAsync<{id:number;payload:string}>('SELECT id,payload FROM settlements ORDER BY id');
+ const settlements=settlementRows.map(row=>({...value<Omit<Settlement,'id'>>(row.payload),id:row.id}));
  const sectors=new Map(reference.clients.map(c=>[c.id,c.sector]));
  const rows=buildJournal(day,invoices,sales,sectors),clientIds=new Set(rows.map(r=>r.clientId));
  const cash=await readLocalSaleCashLedger(tx,identity,sales,day);
@@ -72,6 +74,7 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
  }
  for(const {note} of credits){const src=note.source as {clientId?:string;invoice?:{clientId?:string}};const id=note.kind==='sale'?src.clientId:src.invoice?.clientId;if(!id)throw Error('Client de l’avoir indisponible.');if(tunisDay(new Date(note.command.recordedAt))===day)clientIds.add(id);}
  for(const refund of [...saleRefunds,...remoteSaleRefunds,...adminCreditRefunds,...remoteOwnedCredits])clientIds.add(refund.clientId);
+ for(const payment of settlements){if(tunisDay(new Date(payment.createdAt))===day)clientIds.add(payment.clientId);}
  const snapshot=await loadCreditBalanceSnapshotPrototype(tx,identity,digest);
  for(const id of clientIds){const balance=snapshot.balanceFor(id);if(balance.conflict)throw Error('Solde en conflit : export refusé.');}
  const remoteSaleUpdates:NonNullable<JournalExport['remoteSaleUpdates']>=[];
@@ -102,5 +105,5 @@ export async function readCreditJournalExportPrototype(tx:Tx,identity:DeviceIden
   if(source.version!==local.version||canonicalJson(source.invoice)!==canonicalJson(invoice)||canonicalJson(source.receipts)!==canonicalJson(receipts.filter(r=>r.preInvoiceId===invoice.id))||await digest(canonicalJson(source))!==proof.hash)throw Error('Annulation distante non confirmée : rapprochement nécessaire.');
   remoteCancellations.push({kind:'preinvoice',invoiceId:invoice.id,day:tunisDay(new Date(state.creditNote.recordedAt)),source});
  }
- return {day,commercial,rows,receipts,credits,ownedLocalCreditOperationIds,remoteOwnedCredits,creditOwnersKnown:reference.creditOwners!==null,remoteCancellations,remoteSaleUpdates,saleRefunds,remoteSaleRefunds,initialSalePayments:cash.initialPayments,adminCreditRefunds,adminRefundAssignmentsKnown:reference.cashAssignments!==null};
+ return {day,commercial,rows,receipts,settlements,clientSectors:Object.fromEntries(sectors),credits,ownedLocalCreditOperationIds,remoteOwnedCredits,creditOwnersKnown:reference.creditOwners!==null,remoteCancellations,remoteSaleUpdates,saleRefunds,remoteSaleRefunds,initialSalePayments:cash.initialPayments,adminCreditRefunds,adminRefundAssignmentsKnown:reference.cashAssignments!==null};
 }

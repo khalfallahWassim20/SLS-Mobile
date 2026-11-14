@@ -13,6 +13,11 @@ type Tx={getFirstAsync<T>(sql:string,...params:Bind[]):Promise<T|null>;getAllAsy
  * incompatible empêche d'annoncer une synchronisation complète. */
 export async function saveAndVerifyFinalCreditReference(tx:Tx,identity:DeviceIdentity,verified:DeviceIdentity,value:unknown,digest:(data:string)=>Promise<string>) {
  await saveVerifiedCreditReference(tx,identity,verified,value,digest);
+ // Une révision distante peut être confirmée après le contrôle initial de la
+ // synchronisation. La dernière vérification doit être atomique avec le cache,
+ // y compris lorsque ce client n'a aucune facture dans les tables locales.
+ const remote=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n');
+ if(!remote||remote.n)throw Error('Une modification distante reste en attente : synchronisation incomplète.');
  if((await readIdentifiedOutbox(tx,identity)).length)throw Error('Une opération reste en attente : synchronisation incomplète.');
  const notes=await readAllOfflineCreditPrototype(tx,identity);
  if(notes.some(n=>n.pending))throw Error('Un avoir reste en attente : synchronisation incomplète.');

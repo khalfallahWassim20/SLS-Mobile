@@ -3,7 +3,7 @@
  * transaction SQLite exclusive que les futures modifications de facture. */
 import {calculatePreInvoiceCancellation,prepareFullCreditNote,canonicalJson,type CreditNoteCommand} from '@sls/domain';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
-import {assertLocalTourWritable} from './tour-close-queue';
+import {assertLocalTourWritable,findTourCloseAttempt} from './tour-close-queue';
 import {tunisDay} from './journal';
 import {assertNoRemoteCreditNote} from './credit-note-local-guard';
 import {readPrototypeCreditReferenceCache} from './credit-note-reference-cache-prototype';
@@ -34,8 +34,10 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
  if(kind!=='sale'&&kind!=='preinvoice')throw Error('Type de facture invalide.');
  if(!command||!uuid(command.operationId)||!uuid(command.invoiceId)||!Number.isSafeInteger(command.expectedVersion)||command.expectedVersion<1||command.expectedVersion>=1000000||!['refund','credit',null].includes(command.choice)||typeof command.recordedAt!=='string'||!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(command.recordedAt)||!Number.isFinite(Date.parse(command.recordedAt))||new Date(command.recordedAt).toISOString()!==command.recordedAt)throw Error('Demande invalide.');
  await assertNoRemoteCreditNote(tx,identity,kind,command.invoiceId);
- const proof=await tx.getFirstAsync<{commercialId:string}>(`SELECT commercial_id AS commercialId FROM identified_local_operations WHERE entity_id=? AND operation_kind=? LIMIT 1`,command.invoiceId,kind==='sale'?'sale':'journal');
- if(proof&&proof.commercialId!==identity.commercialId)throw Error('Facture liée à une autre identité : rapprochement nécessaire.');
+ const proof=await tx.getFirstAsync<{present:number;foreignIdentity:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE entity_id=? AND operation_kind=?) AS present,
+  EXISTS(SELECT 1 FROM identified_local_operations WHERE entity_id=? AND operation_kind=? AND commercial_id<>?) AS foreignIdentity`,command.invoiceId,kind==='sale'?'sale':'journal',command.invoiceId,kind==='sale'?'sale':'journal',identity.commercialId);
+ if(!proof||proof.foreignIdentity)throw Error('Facture liée à une autre identité : rapprochement nécessaire.');
+ const hasLocalProof=proof.present===1;
  const taken=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_id=?) OR EXISTS(SELECT 1 FROM offline_credit_prototype WHERE operation_id=?) OR EXISTS(SELECT 1 FROM credit_abandoned_note_prototype WHERE operation_id=?) AS n`,command.operationId,command.operationId,command.operationId);
  if(!taken||taken.n)throw Error('Identifiant d’opération déjà utilisé.');
  const previous=await tx.getFirstAsync<{n:number}>(`SELECT count(*) AS n FROM offline_credit_prototype WHERE invoice_id=? AND kind=?`,command.invoiceId,kind);
@@ -43,12 +45,12 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
  let source:unknown,balanceDelta:number,refund:number,retainedCredit:number,invoiceDay:string;
  if(kind==='sale') {
   const row=await tx.getFirstAsync<{payload:string}>(`SELECT payload FROM sales WHERE json_valid(payload) AND json_extract(payload,'$.syncSaleId')=?`,command.invoiceId);
-  if(!row&&(!remoteSource||proof))throw Error('Vente locale introuvable.');
+  if(!row&&(!remoteSource||hasLocalProof))throw Error('Vente locale introuvable.');
   const sale=row?JSON.parse(row.payload):remoteSource as Record<string,any>;
   if(sale.syncSaleId!==command.invoiceId||sale.syncVersion!==command.expectedVersion||!Number.isFinite(Date.parse(sale.createdAt)))throw Error('Version ou date de vente incohérente.');
   invoiceDay=tunisDay(new Date(sale.createdAt));
   const lastChange=await tx.getFirstAsync<{at:string|null}>('SELECT MAX(recorded_at) AS at FROM identified_local_operations WHERE entity_id=? AND operation_kind=?',command.invoiceId,'sale');
-  const latest=lastChange?.at??(!proof?sale.createdAt:null);
+  const latest=lastChange?.at??(!hasLocalProof?sale.createdAt:null);
   if(!latest||!Number.isFinite(Date.parse(latest))||Date.parse(command.recordedAt)<Math.max(Date.parse(sale.createdAt),Date.parse(latest)))throw Error('Date de l’avoir antérieure à la dernière version.');
   const event=prepareFullCreditNote({actor:{id:identity.commercialId,role:'commercial'},command,source:{invoiceId:command.invoiceId,version:sale.syncVersion,total:sale.total,netPaid:sale.paid,cancelled:false},daysOpen:true,previous:null}).event;
   source=sale;balanceDelta=event.balanceDelta;refund=event.refund;retainedCredit=event.retainedCredit;
@@ -56,7 +58,7 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
   const row=await tx.getFirstAsync<{payload:string;version:number}>(`SELECT payload,version FROM journal_sync_state WHERE invoice_id=?`,command.invoiceId);
   const invoice=await tx.getFirstAsync<{payload:string}>(`SELECT payload FROM tour_pre_invoices WHERE id=?`,command.invoiceId);
   const receipts=await tx.getAllAsync<{payload:string}>(`SELECT payload FROM tour_journal_receipts WHERE pre_invoice_id=? ORDER BY rowid`,command.invoiceId);
-  if((!row||!invoice)&&(row||invoice||receipts.length||!remoteSource||proof))throw Error('Version de facture préétablie incohérente.');
+  if((!row||!invoice)&&(row||invoice||receipts.length||!remoteSource||hasLocalProof))throw Error('Version de facture préétablie incohérente.');
   const snapshot=row?JSON.parse(row.payload):remoteSource as Record<string,any>;
   const localInvoice=invoice?JSON.parse(invoice.payload):snapshot.invoice,localReceipts=row?receipts.map(r=>JSON.parse(r.payload)):snapshot.receipts;
   if(!Array.isArray(localReceipts)||snapshot.version!==command.expectedVersion||(row&&snapshot.version!==row.version)||snapshot.invoice?.id!==command.invoiceId||canonicalJson(snapshot.invoice)!==canonicalJson(localInvoice)||canonicalJson(snapshot.receipts)!==canonicalJson(localReceipts))throw Error('Historique du journal incohérent.');
@@ -69,7 +71,7 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
  }
  // Une facture connue uniquement depuis un autre appareil exige une preuve
  // serveur du contenu complet et l'absence de toute écriture locale en attente.
- if(!proof){
+ if(!hasLocalProof){
   if(!digest)throw Error('Facture sans identité locale confirmée : rapprochement nécessaire.');
   const reference=await readPrototypeCreditReferenceCache(tx,identity);
   if(!reference)throw Error('Référence de facture indisponible : rapprochement nécessaire.');
@@ -83,7 +85,16 @@ export async function prepareOfflineCreditPrototype(tx:Tx,identity:DeviceIdentit
    if(!pending||pending.n||!marker||marker.creditNote||marker.clientId!==snapshot.invoice?.clientId||!reference.eligibleJournalIds.includes(command.invoiceId)||!remote||remote.version!==command.expectedVersion||await digest(canonicalJson(source))!==remote.hash)throw Error('Facture sans preuve serveur concordante : rapprochement nécessaire.');
   }
  }
- for(const day of [...new Set([invoiceDay,tunisDay(new Date(command.recordedAt))])].sort())await assertLocalTourWritable(tx,identity.commercialId,day);
+ const operationDay=tunisDay(new Date(command.recordedAt));
+ if(operationDay<invoiceDay)throw Error('Date de l’avoir antérieure à la journée de la facture.');
+ // Une clôture déjà confirmée sur une journée antérieure ne bloque pas un
+ // avoir porté sur la journée courante. Une tentative sans réponse doit être
+ // résolue d'abord : son état serveur est inconnu et sa preuve figée.
+ if(invoiceDay!==operationDay){
+  const prior=await findTourCloseAttempt(tx,identity.commercialId,invoiceDay);
+  if(prior?.status==='closing')throw Error('Clôture de la facture en attente : vérifiez son résultat avant l’avoir.');
+ }
+ await assertLocalTourWritable(tx,identity.commercialId,operationDay);
  const note:Note={kind,commercialId:identity.commercialId,serverOrigin:identity.serverOrigin,command:{...command},source,balanceDelta,refund,retainedCredit};
  await tx.runAsync('INSERT INTO offline_credit_prototype(operation_id,invoice_id,kind,commercial_id,server_origin,payload,pending) VALUES(?,?,?,?,?,?,1)',command.operationId,command.invoiceId,kind,identity.commercialId,identity.serverOrigin,JSON.stringify(note));
  return note;
@@ -100,12 +111,15 @@ export function validateOfflineCreditRow(row:LocalRow,identity:DeviceIdentity):N
  let delta:number,refund:number,retained:number;
  if(note.kind==='sale') {
   if(source.syncSaleId!==row.invoiceId||source.syncVersion!==note.command.expectedVersion)throw Error('Version de vente incohérente.');
+  if(typeof source.createdAt!=='string'||!Number.isFinite(Date.parse(source.createdAt))||Date.parse(source.createdAt)>Date.parse(note.command.recordedAt))throw Error('Chronologie de l’avoir incohérente.');
   const result=prepareFullCreditNote({actor:{id:identity.commercialId,role:'commercial'},command:note.command,source:{invoiceId:row.invoiceId,version:source.syncVersion,total:source.total,netPaid:source.paid,cancelled:false},daysOpen:true,previous:null}).event;
   delta=result.balanceDelta;refund=result.refund;retained=result.retainedCredit;
  }else if(note.kind==='preinvoice'){
   if(source.invoice?.id!==row.invoiceId||source.version!==note.command.expectedVersion||!Array.isArray(source.receipts))throw Error('Version de facture préétablie incohérente.');
   // Valider aussi la forme de la commande (identifiant et date) via le calcul de vente.
   prepareFullCreditNote({actor:{id:identity.commercialId,role:'commercial'},command:{...note.command,choice:null},source:{invoiceId:row.invoiceId,version:source.version,total:0,netPaid:0,cancelled:false},daysOpen:true,previous:null});
+  const times=[source.invoice.createdAt,...source.receipts.map((r:unknown)=>(r as {createdAt?:unknown}|null)?.createdAt)];
+  if(times.some(t=>typeof t!=='string'||!Number.isFinite(Date.parse(t))||Date.parse(t)>Date.parse(note.command.recordedAt)))throw Error('Chronologie de l’avoir incohérente.');
   const result=calculatePreInvoiceCancellation({balance:0,invoiceTotal:source.invoice.amount,receipts:source.receipts,alreadyCancelled:false,choice:note.command.choice??undefined});
   delta=result.balanceDelta;refund=result.refund;retained=result.retainedCredit;
  }else throw Error('Type d’avoir invalide.');

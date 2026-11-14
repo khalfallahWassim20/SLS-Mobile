@@ -23,7 +23,7 @@ test('flux mobile v5 : paiement initial, remboursement sur deux jours et origine
   const report={day:'2026-11-08',commercial:'Test',rows:[{clientId,clientName:'<Client>',sector:'',preInvoice:null,sales:[sale],total:11900}],receipts:[],credits:[],saleRefunds:first.refunds,initialSalePayments:first.initialPayments};
   assert.equal(describeCreditJournalPrototype(report).totals.collectedAfterLocalRefunds,50000);
   const later={...report,day:'2026-11-09',rows:[],saleRefunds:next.refunds,initialSalePayments:[]};
-  assert.equal(describeCreditJournalPrototype(later).totals.collectedAfterLocalRefunds,-38100);assert.match(journalCsv(later),/-38,100/);assert.match(journalHtml(later),/&lt;Client&gt;/);
+  assert.equal(describeCreditJournalPrototype(later).totals.collectedAfterLocalRefunds,-38100);assert.match(journalCsv(later),/-38,100/);assert.match(journalHtml(later),/CSV détaillé/);
   assert.throws(()=>journalCsv({...later,saleRefunds:[next.refunds[0],next.refunds[0]]}),/invalide/);
   // Une date partagée entre plusieurs marqueurs ne prouve pas quelle opération
   // correspond à la révision : ne jamais attribuer une sortie par supposition.
@@ -48,7 +48,7 @@ test('vente d’un autre téléphone : sortie de caisse distincte, sans vendre d
  const clientId=randomUUID(),invoiceId=randomUUID(),remote={operationId:randomUUID(),invoiceId,clientId,clientName:'<Client>',recordedAt:'2026-11-08T09:00:00.000Z',refund:2400};
  const report={day:'2026-11-08',commercial:'Test',rows:[],receipts:[],credits:[],remoteSaleRefunds:[remote],initialSalePayments:[],saleRefunds:[]};
  const model=describeCreditJournalPrototype(report);assert.equal(model.remoteSaleRefundTotal,2400);assert.equal(model.totals.collectedGross,0);assert.equal(model.totals.collectedAfterLocalRefunds,-2400);
- assert.match(journalCsv(report),/REMBOURSEMENTS SUR VENTES D’AUTRES APPAREILS/);assert.match(journalCsv(report),/2,400/);assert.match(journalHtml(report),/&lt;Client&gt;/);
+ assert.match(journalCsv(report),/REMBOURSEMENTS SUR VENTES D’AUTRES APPAREILS/);assert.match(journalCsv(report),/2,400/);assert.match(journalHtml(report),/CSV détaillé/);
  assert.throws(()=>journalCsv({...report,remoteSaleRefunds:[remote,remote]}),/invalide/);
  assert.throws(()=>journalCsv({...report,remoteSaleRefunds:[{...remote,recordedAt:'2026-11-09T09:00:00.000Z'}]}),/invalide/);
  assert.throws(()=>journalCsv({...report,credits:undefined}),/Avoirs locaux indisponibles/);

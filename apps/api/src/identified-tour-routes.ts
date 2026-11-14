@@ -11,6 +11,10 @@ import {readRemoteSaleReceiptPrototype} from './remote-sale-receipt-prototype.js
 import {abandonRemoteSalePrototype} from './remote-sale-abandon-prototype.js';
 import {abandonCreditNotePrototype} from './credit-note-abandon-prototype.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from './identified-operations.js';
+import {storeTourExpense} from './tour-expenses.js';
+import {storeExpenseRevision} from './tour-expense-revisions.js';
+import {storeExpenseCancellation} from './tour-expense-cancellations.js';
+import {readExpenseSnapshot} from './tour-expense-snapshot.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
 import {readIdentifiedJournalDay} from './identified-journal-day.js';
 import {IdentifiedOverlap} from './identified-overlap.js';
@@ -41,6 +45,14 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  const r=Router();r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
  r.use(rateLimit({windowMs:15*60*1000,limit:500,standardHeaders:'draft-8',legacyHeaders:false}));
  const supportsCredit=(req:import('express').Request)=>options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5';
+ // La disponibilité est déterminée par le serveur authentifié, jamais par
+ // une variable intégrée dans le bundle Android. Cette réponse n'active rien.
+ r.get('/capabilities',async(req,res,next)=>{try{
+  const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));
+  if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
+  const mode=await readSyncMode(pool);
+  res.json({version:1,commercialId:actor.id,creditBridgeTestOnly:options.allowCreditProtocol===true&&mode==='identified'});
+ }catch(e){errorHandler(e,res,next);}});
  // Lecture uniquement : cet identifiant ne permet pas de changer une liaison.
  // Il n'est exploitable qu'après enregistrement préalable auprès d'un serveur
  // connu ; une ancienne installation non épinglée reste à rapprocher.
@@ -98,6 +110,10 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}if(enforceMode)assertIdentifiedMode(await readSyncMode(pool));res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});
  if(options.allowCreditProtocol===true)r.post('/close/abandon',async(req,res,next)=>{try{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}res.json(await abandonTourClose(pool,req.body,{secret,token:bearer(req.get('Authorization'))}));}catch(e){errorHandler(e,res,next);}});
  r.post('/close',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))},enforceMode,supportsCredit(req),options.allowCreditProtocol===true);res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
+ r.post('/expenses',async(req,res,next)=>{try{const status=await storeTourExpense(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
+ r.post('/expense-revisions',async(req,res,next)=>{try{const status=await storeExpenseRevision(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
+ r.post('/expense-cancellations',async(req,res,next)=>{try{const status=await storeExpenseCancellation(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
+ r.get('/expense-snapshot/:day',async(req,res,next)=>{try{res.json(await readExpenseSnapshot(pool,req.params.day,{secret,token:bearer(req.get('Authorization')),enforceMode}));}catch(e){errorHandler(e,res,next);}});
  for(const kind of ['journal','sales','settlements'] as const) r.post('/'+kind,async(req,res,next)=>{try{
   const session={secret,token:bearer(req.get('Authorization')),enforceMode,creditAware:supportsCredit(req)};
   const status=kind==='journal'?await storeJournalSnapshot(pool,req.body,'identified',session):kind==='sales'?await storeIdentifiedSale(pool,req.body,session):await storeIdentifiedSettlement(pool,req.body,session);
