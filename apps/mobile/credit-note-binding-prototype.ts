@@ -50,7 +50,16 @@ export async function bindAndCacheCreditReferencePrototype(tx:Tx,identity:Device
    // modifie silencieusement ses marqueurs. Une évolution même légitime doit
    // d'abord être rapprochée ; ceci ne prouve pas l'authenticité de la base.
    const candidate=validatePrototypeCreditReference(value);
-   await inspectAddressContinuity(tx,identity,4,{...candidate,version:4},digest);guard();
+   // Une annulation distante peut être rapprochée lorsque son avoir prouve
+   // exactement la dernière version v4 connue. Les factures locales sont en
+   // plus vérifiées par empreinte ci-dessous, puis les soldes sous transaction.
+   const cancelled=new Map(candidate.saleStates.filter(s=>s.creditNote).map(s=>[s.saleId,s]));
+   await inspectAddressContinuity(tx,identity,4,{...candidate,version:4},digest,previous=>{
+    const current=cancelled.get(previous.saleId),note=current?.creditNote,source=note?.source;
+    return !!current&&!!note&&!!source&&current.clientId===previous.clientId&&source.invoiceId===previous.saleId&&
+     source.version===previous.version&&String(source.total)===previous.total&&String(source.netPaid)===previous.paid&&
+     candidate.saleProofs.some(p=>p.saleId===previous.saleId&&p.version===previous.version);
+   });guard();
    await assertTransitionLocalHistory(tx,candidate,digest);guard();
    // Installer la référence et vérifier toutes les données locales sous la
    // même transaction : un solde incohérent annule également son installation.

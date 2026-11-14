@@ -14,8 +14,12 @@ function parse(payload:string):Record<string,unknown>{
 export async function assertTransitionLocalHistory(tx:Tx,reference:Reference,digest:(text:string)=>Promise<string>):Promise<void>{
  const sales=await tx.getAllAsync<{clientId:string;payload:string}>('SELECT client_id AS clientId,payload FROM sales ORDER BY id');
  for(const row of sales){
-  const sale=parse(row.payload),state=reference.saleStates.find(s=>s.saleId===sale.syncSaleId),proof=reference.eligibleSaleProofs.find(p=>p.saleId===sale.syncSaleId);
-  if(sale.clientId!==row.clientId||!state||state.clientId!==row.clientId||state.creditNote||!proof||proof.version!==sale.syncVersion||state.version!==sale.syncVersion||String(sale.total)!==state.total||String(sale.paid)!==state.paid||await digest(canonicalJson(sale))!==proof.hash)throw Error('Vente locale sans preuve serveur identique : rapprochement nécessaire.');
+  const sale=parse(row.payload),state=reference.saleStates.find(s=>s.saleId===sale.syncSaleId);
+  const proof=state?.creditNote?reference.saleProofs.find(p=>p.saleId===sale.syncSaleId):reference.eligibleSaleProofs.find(p=>p.saleId===sale.syncSaleId);
+  const source=state?.creditNote?.source;
+  const sameVersion=source?source.version===sale.syncVersion&&source.total===sale.total&&source.netPaid===sale.paid:
+   state?.version===sale.syncVersion&&String(sale.total)===state?.total&&String(sale.paid)===state?.paid;
+  if(sale.clientId!==row.clientId||!state||state.clientId!==row.clientId||!proof||proof.version!==sale.syncVersion||!sameVersion||await digest(canonicalJson(sale))!==proof.hash)throw Error('Vente locale sans preuve serveur identique : rapprochement nécessaire.');
  }
  const payments=await tx.getAllAsync<{clientId:string;payload:string}>('SELECT client_id AS clientId,payload FROM settlements ORDER BY id');
  for(const row of payments){const payment=parse(row.payload),state=reference.settlementStates?.find(s=>s.operationId===payment.syncOperationId);
@@ -28,7 +32,7 @@ export async function assertTransitionLocalHistory(tx:Tx,reference:Reference,dig
  if(states.some(s=>!journals.some(j=>j.id===s.invoiceId))||receipts.some(r=>!journals.some(j=>j.id===r.invoiceId)))throw Error('Journal local orphelin : rapprochement nécessaire.');
  for(const row of journals){
   const state=reference.journalStates.find(s=>s.id===row.id),proof=reference.journalProofs.find(p=>p.id===row.id);
-  if(!row.payload||!state||state.clientId!==row.clientId||state.creditNote||!proof||proof.version!==row.version)throw Error('Préétablie locale sans preuve serveur identique : rapprochement nécessaire.');
+  if(!row.payload||!state||state.clientId!==row.clientId||!proof||proof.version!==row.version)throw Error('Préétablie locale sans preuve serveur identique : rapprochement nécessaire.');
   const snapshot=parse(row.payload),invoice=parse(row.invoicePayload),localReceipts=receipts.filter(r=>r.invoiceId===row.id);
   if(snapshot.version!==row.version||invoice.id!==row.id||invoice.clientId!==row.clientId||invoice.journalDate!==row.day||canonicalJson(invoice)!==canonicalJson(snapshot.invoice)||!Array.isArray(snapshot.receipts)||localReceipts.some(r=>{const value=parse(r.payload);return value.id!==r.id||value.preInvoiceId!==row.id||value.clientId!==row.clientId||value.journalDate!==row.day||r.clientId!==row.clientId||r.day!==row.day;})||canonicalJson(localReceipts.map(r=>parse(r.payload)))!==canonicalJson(snapshot.receipts)||await digest(canonicalJson(snapshot))!==proof.hash)throw Error('Préétablie locale sans preuve serveur identique : rapprochement nécessaire.');
  }

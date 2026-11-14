@@ -13,7 +13,7 @@ type Cache={commercialId:string;serverOrigin:string;payload:string};
 /** Tous les marqueurs déjà confirmés doivent toujours exister avec le même
  * contenu et la même version. Même une progression légitime est refusée si
  * elle ne peut être prouvée ici. Aucun cache n'est enregistré ou supprimé. */
-export async function inspectAddressContinuity(tx:Tx,identity:DeviceIdentity,version:4|5,value:unknown,digest:(s:string)=>Promise<string>):Promise<{anchors:number;version:4|5}>{
+export async function inspectAddressContinuity(tx:Tx,identity:DeviceIdentity,version:4|5,value:unknown,digest:(s:string)=>Promise<string>,allowTransitionSale?:(previous:NonNullable<ReturnType<typeof validateIdentifiedReference>['saleStates']>[number])=>boolean):Promise<{anchors:number;version:4|5}>{
  const bound=await getDeviceIdentity(tx);
  if(!bound||bound.commercialId!==identity.commercialId||bound.serverOrigin!==identity.serverOrigin)throw Error('Liaison modifiée : rapprochement nécessaire.');
  const cacheTable=version===5?'credit_reference_prototype_cache':'identified_reference_cache';
@@ -24,7 +24,7 @@ export async function inspectAddressContinuity(tx:Tx,identity:DeviceIdentity,ver
  const next=version===5?validatePrototypeCreditReference(value):validateIdentifiedReference(value);
  const nextSales=new Map(next.saleStates?.map(s=>[s.saleId,s])??[]),nextSettlements=new Map(next.settlementStates?.map(s=>[s.operationId,s])??[]);
  const nextJournal=new Map(next.journalStates?.map(j=>[j.id,j])??[]),nextProofs=new Map(next.journalProofs.map(p=>[p.id,p]));
- for(const sale of old.saleStates??[]){const candidate=nextSales.get(sale.saleId);if(!candidate||canonicalJson(candidate)!==canonicalJson(sale))throw Error('Historique de vente différent ou avancé : rapprochement nécessaire.');}
+ for(const sale of old.saleStates??[]){const candidate=nextSales.get(sale.saleId);if(!candidate||(canonicalJson(candidate)!==canonicalJson(sale)&&!(version===4&&allowTransitionSale?.(sale))))throw Error('Historique de vente différent ou avancé : rapprochement nécessaire.');}
  for(const item of old.settlementStates??[]){const candidate=nextSettlements.get(item.operationId);if(!candidate||canonicalJson(candidate)!==canonicalJson(item))throw Error('Historique de règlement différent : rapprochement nécessaire.');}
  for(const item of old.journalStates??[]){const candidate=nextJournal.get(item.id);if(!candidate||canonicalJson(candidate)!==canonicalJson(item))throw Error('Historique de journal différent ou avancé : rapprochement nécessaire.');}
  for(const proof of old.journalProofs){const candidate=nextProofs.get(proof.id);if(!candidate||canonicalJson(candidate)!==canonicalJson(proof))throw Error('Preuve de journal différente : rapprochement nécessaire.');}

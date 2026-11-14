@@ -163,6 +163,7 @@ export default function App() {
   const [v5Ready,setV5Ready]=useState(false);
   const [v5BridgeBusy,setV5BridgeBusy]=useState(false);
   const [v5BridgeBlocked,setV5BridgeBlocked]=useState(false);
+  const [v5UpgradeRequired,setV5UpgradeRequired]=useState(false);
   // Ne jamais afficher les anciens écrans avant de savoir si la transition
   // irréversible a déjà été enregistrée sur ce téléphone.
   const [v5StartupChecking,setV5StartupChecking]=useState(true);
@@ -182,9 +183,9 @@ export default function App() {
     let alive=true;commercialBusyRef.current=true;setCommercialBusy(true);
     void (async()=>{
       try {
-        const {identity,ready}=await getCreditStartupState(true);
+        const {identity,ready,quarantined}=await getCreditStartupState(true);
         if(!alive)return;setBoundCommercial(!!identity);setV5Identity(identity);if(identity)setServerUrl(identity.serverOrigin);
-        setV5Ready(ready);setV5StartupChecking(false);
+        setV5UpgradeRequired(quarantined);setV5Ready(ready);setV5StartupChecking(false);
         try {
           const session=await secureSessions.restore(identity);
           if(alive && session){setServerUrl(session.serverOrigin);setIndividual(session);setClosureLabel('État serveur à actualiser');setSessionNotice('Session restaurée sur ce téléphone. Sa validité serveur sera vérifiée lors du prochain échange.');}
@@ -228,7 +229,7 @@ export default function App() {
     setSelectedSale(null);setBalanceClient(null);setClient(null);setCart([]);setJournalClientId(null);
     setStorageError(true);setReferenceError('Mise à jour et rapprochement v5 nécessaires. Les données restent sur ce téléphone.');
     setJournalError('Mise à jour et rapprochement v5 nécessaires. Les données restent sur ce téléphone.');
-    await recordCreditProtocolUpgrade({commercialId:session.id,serverOrigin:session.serverOrigin},response.status,body);
+    if(await recordCreditProtocolUpgrade({commercialId:session.id,serverOrigin:session.serverOrigin},response.status,body))setV5UpgradeRequired(true);
   };
   const individualRequest=async(session:NonNullable<typeof individual>,path:string,body?:unknown)=> {
     const response=await fetch(`${session.serverOrigin}/api/mobile/identified/${path}`,{method:body===undefined?'GET':'POST',headers:{Authorization:`Bearer ${session.token}`,...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)})});
@@ -257,12 +258,21 @@ export default function App() {
         await transport.connect();setV5Identity(identity);setV5Ready(true);setBoundCommercial(true);
         state=await transport.refreshDay(journalDate);
       }else{
-        state=await readIndividual(session,`day/${journalDate}`);
-        await refreshIndividual(session);await observeIdentifiedTour(identity,journalDate,state);
+        try{
+          state=await readIndividual(session,`day/${journalDate}`);
+          await refreshIndividual(session);await observeIdentifiedTour(identity,journalDate,state);
+        }catch(error){
+          // Un refus explicite a pu être reçu après un avoir d'un autre appareil.
+          // Autoriser seulement la connexion au parcours de rapprochement, sans
+          // réactiver les anciennes lectures ni envoyer les files en attente.
+          const local=await getCreditStartupState(true);
+          if(!local.quarantined||!local.identity||local.identity.commercialId!==identity.commercialId||local.identity.serverOrigin!==identity.serverOrigin||!await creditBridgeAvailable(session,fetch))throw error;
+          setV5Identity(identity);setBoundCommercial(true);setV5UpgradeRequired(true);setV5ServerAvailable(true);state={status:'unknown'};
+        }
       }
       if(!validSession(session,{commercialId:session.id,serverOrigin:session.serverOrigin}))throw Error('Session expirée : reconnectez-vous.');
       let notice='';try{await secureSessions.save(session);}catch{notice='Session active mais non sauvegardée : reconnectez-vous après fermeture de l’application.';}
-      setSessionNotice(notice);setClosureLabel(state.status==='closed'?'Journée clôturée':'Journée ouverte');setIndividual(session);setCommercialResult(session.name);setV5Login(false);setScreen('journal');
+      setSessionNotice(state.status==='unknown'?'Avoirs reçus depuis un autre appareil : effectuez le rapprochement avant toute opération. '+notice:notice);setClosureLabel(state.status==='closed'?'Journée clôturée':state.status==='open'?'Journée ouverte':'État à actualiser');setIndividual(session);setCommercialResult(session.name);setV5Login(false);setScreen('journal');
     } catch(error){setCommercialError(error instanceof Error?error.message:'Connexion impossible.');}
     finally{commercialBusyRef.current=false;setCommercialBusy(false);}
   };
@@ -271,7 +281,7 @@ export default function App() {
   const activateV5Bridge=async()=>{
     const session=individual,identity=v5Identity;
     if((!V5_BRIDGE_TEST_ONLY&&!v5ServerAvailable)||V5_TEST_ONLY||!session||!identity||commercialBusyRef.current)return;
-    if(isCreditTransportBusy()||syncRef.current||savingRef.current||loading||journalLoading||storageError){Alert.alert('Passage indisponible','Attendez la fin des opérations et vérifiez les erreurs avant de réessayer.');return;}
+    if(isCreditTransportBusy()||syncRef.current||savingRef.current||loading||journalLoading||(storageError&&!v5UpgradeRequired)){Alert.alert('Passage indisponible','Attendez la fin des opérations et vérifiez les erreurs avant de réessayer.');return;}
     if(!validSession(session,identity)){Alert.alert('Session indisponible','Reconnectez le commercial lié.');return;}
     commercialBusyRef.current=true;syncRef.current=true;savingRef.current=true;setV5BridgeBusy(true);setCommercialError('');
     const stillCurrent=()=>{const live=liveIndividual.current;return !!live&&live.token===session.token&&live.id===session.id&&live.serverOrigin===session.serverOrigin&&live.expiresAt===session.expiresAt;};

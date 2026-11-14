@@ -23,10 +23,12 @@ import {saveVerifiedCreditReference} from '../../../apps/mobile/credit-note-sync
 import {saveAndVerifyFinalCreditReference} from '../../../apps/mobile/credit-note-sync-final-prototype.js';
 import {syncCreditPrototype} from '../../../apps/mobile/credit-note-sync-prototype.js';
 import {assertLegacyMobileCreditSafe} from '../../../apps/mobile/credit-note-write-guard-prototype.js';
+import {quarantineOnUpgrade} from '../../../apps/mobile/credit-protocol-quarantine.js';
+import {inspectCreditStartup} from '../../../apps/mobile/credit-startup-guard.js';
 
 export type BridgeDatabase={exec:(sql:string)=>Promise<unknown>;query:<T extends Record<string,unknown>=Record<string,unknown>>(sql:string,args?:unknown[])=>Promise<{rows:T[]}>};
 export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Pool,closedOriginalDay=false){
- const phone=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
+ const phone=new DatabaseSync(':memory:'),stalePhone=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
  try{
   await db.exec(schemaSql);await db.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
   const person=await saveCommercial(pool,'admin',{name:'Commercial fictif',active:true});await setCommercialCredentials(pool,'admin',person.id,{login:'bridge.test',password:'mot de passe fictif'});
@@ -57,6 +59,14 @@ export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Poo
   phone.prepare('INSERT INTO settlements(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(settlement));
   phone.prepare('INSERT INTO tour_journal_receipts VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,clientId,day,JSON.stringify(receipt));phone.prepare('INSERT INTO journal_sync_state VALUES(?,?,?)').run(invoiceId,2,JSON.stringify(snapshot));
   for(const [op,kind,id,time] of [[saleOp,'sale',saleId,at],[settlementOp,'settlement',settlementOp,settlement.createdAt],[invoiceOp,'journal',invoiceId,at],[receiptOp,'journal',invoiceId,receipt.createdAt]])phone.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(op,person.id,kind,id,time);
+  // Copie SQLite de test restée en v4 pendant que l'autre appareil annule.
+  for(const table of phone.prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as {name:string;sql:string}[]){
+   stalePhone.exec(table.sql);
+   const columns=phone.prepare(`PRAGMA table_info("${table.name}")`).all() as {name:string}[];
+   const rows=phone.prepare(`SELECT * FROM "${table.name}"`).all();
+   const insert=stalePhone.prepare(`INSERT INTO "${table.name}" VALUES(${columns.map(()=>'?').join(',')})`);
+   for(const row of rows)insert.run(...columns.map(c=>row[c.name]) as (string|number|null)[]);
+  }
   const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>phone.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>phone.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{phone.prepare(sql).run(...args)}};
   const transaction=async<T>(fn:()=>Promise<T>)=>{phone.exec('BEGIN');try{const value=await fn();phone.exec('COMMIT');return value;}catch(e){phone.exec('ROLLBACK');throw e;}};
   const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');let lose=true;
@@ -125,6 +135,38 @@ export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Poo
   // Une ancienne référence ne doit jamais publier un solde qui ignore les avoirs.
   const staleReference=await fetch(origin+'/v5/reference',{headers:{Authorization:`Bearer ${session.token}`}});
   assert.equal(staleReference.status,409);assert.equal((await staleReference.json()).code,'CREDIT_PROTOCOL_UPGRADE_REQUIRED');
+  // Le second téléphone n'a aucune écriture en attente et possède les deux
+  // originaux exacts. Les avoirs distants doivent être rapprochés sans créer
+  // une seconde annulation ni modifier les lignes locales.
+  const latestResponse=await fetch(origin+'/v5/reference',{headers});assert.equal(latestResponse.status,200);const latest=await latestResponse.json();
+  const staleTx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>stalePhone.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>stalePhone.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{stalePhone.prepare(sql).run(...args)}};
+  const staleTransaction=async<T>(fn:()=>Promise<T>)=>{stalePhone.exec('BEGIN');try{const value=await fn();stalePhone.exec('COMMIT');return value;}catch(e){stalePhone.exec('ROLLBACK');throw e;}};
+  assert.equal(await staleTransaction(()=>quarantineOnUpgrade(staleTx,identity,409,{code:'CREDIT_PROTOCOL_UPGRADE_REQUIRED'})),true);
+  assert.equal((await staleTransaction(()=>inspectCreditStartup(staleTx,true))).quarantined,true);
+  await assert.rejects(staleTransaction(()=>assertLegacyMobileCreditSafe(staleTx,identity)),/rapprochement v5/);
+  stalePhone.prepare('UPDATE sales SET payload=?').run(JSON.stringify({...sale,clientName:'contenu divergent'}));
+  await assert.rejects(staleTransaction(()=>bindAndCacheCreditReferencePrototype(staleTx,identity,identity,latest,digest,()=>{})),/Vente locale/);
+  assert.equal(stalePhone.prepare('SELECT count(*) n FROM credit_reference_prototype_cache').get()?.n,0);
+  stalePhone.prepare('UPDATE sales SET payload=?').run(JSON.stringify(sale));
+  stalePhone.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(randomUUID(),saleId,2,'{}');
+  await assert.rejects(staleTransaction(()=>bindAndCacheCreditReferencePrototype(staleTx,identity,identity,latest,digest,()=>{})),/opérations en attente/);
+  assert.equal(stalePhone.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
+  stalePhone.exec('DELETE FROM sales_outbox');
+  const changedOld={...oldReference,saleStates:oldReference.saleStates.map((s:any)=>s.saleId===saleId?{...s,total:'119001'}:s)};
+  stalePhone.prepare('UPDATE identified_reference_cache SET payload=?').run(JSON.stringify(changedOld));
+  await assert.rejects(staleTransaction(()=>bindAndCacheCreditReferencePrototype(staleTx,identity,identity,latest,digest,()=>{})),/Historique de vente/);
+  stalePhone.prepare('UPDATE identified_reference_cache SET payload=?').run(JSON.stringify(oldReference));
+  stalePhone.prepare('UPDATE tour_journal_receipts SET payload=?').run(JSON.stringify({...receipt,prePaid:249000}));
+  await assert.rejects(staleTransaction(()=>bindAndCacheCreditReferencePrototype(staleTx,identity,identity,latest,digest,()=>{})),/Préétablie locale/);
+  assert.equal(stalePhone.prepare('SELECT count(*) n FROM credit_reference_prototype_cache').get()?.n,0);
+  stalePhone.prepare('UPDATE tour_journal_receipts SET payload=?').run(JSON.stringify(receipt));
+  await staleTransaction(()=>bindAndCacheCreditReferencePrototype(staleTx,identity,identity,latest,digest,()=>{}));
+  assert.deepEqual(await staleTransaction(()=>readPrototypeCreditBalance(staleTx,identity,clientId,digest)),{balance:-180000,conflict:false});
+  assert.equal(stalePhone.prepare('SELECT payload FROM sales').get()?.payload,JSON.stringify(sale));
+  assert.equal(stalePhone.prepare('SELECT payload FROM journal_sync_state').get()?.payload,JSON.stringify(snapshot));
+  assert.equal(stalePhone.prepare('SELECT count(*) n FROM offline_credit_prototype').get()?.n,0);
+  assert.equal((await staleTransaction(()=>inspectCreditStartup(staleTx,true))).ready,true);
+  assert.equal(stalePhone.prepare('SELECT count(*) n FROM credit_protocol_quarantine').get()?.n,1);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_journal_events WHERE invoice_id=$1',[invoiceId])).rows[0].n,2);
   await transaction(()=>confirmLocalCreditReview(tx,identity,preview,first,digest));
@@ -134,5 +176,5 @@ export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Poo
   assert.equal(phone.prepare('SELECT payload FROM settlements').get()?.payload,JSON.stringify(settlement));
   assert.equal(phone.prepare('SELECT payload FROM tour_journal_receipts').get()?.payload,JSON.stringify(receipt));
   assert.equal(phone.prepare('SELECT payload FROM sales').get()?.payload,JSON.stringify(sale));assert.equal(phone.prepare('SELECT payload FROM journal_sync_state').get()?.payload,JSON.stringify(snapshot));
- }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));phone.close();}
+ }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));phone.close();stalePhone.close();}
 }
