@@ -9,6 +9,7 @@ import * as SQLite from 'expo-sqlite';
 import { validatePreInvoiceReceipt,type FullCreditChoice } from '@sls/domain';
 import { randomUUID, digestStringAsync, CryptoDigestAlgorithm } from 'expo-crypto';
 import { bootstrapJournalQueue, journalQueueSchema, queueJournalSnapshot } from './journal-queue';
+import {acknowledgeJournalQueueEntry} from './journal-upload';
 import {saleEventTimeSchema,recordSaleEventTime} from './sale-event-time';
 import {tourCloseQueueSchema,findTourCloseAttempt,acknowledgeTourClose,acknowledgeAbandonedTourClose,observeVerifiedTourState,type Attempt} from './tour-close-queue';
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from './identified-outbox';
@@ -298,8 +299,14 @@ export type JournalOutboxEntry = { sequence:number; operationId:string; invoiceI
 export async function getJournalOutbox(): Promise<JournalOutboxEntry[]> {
  return (await db()).getAllAsync<JournalOutboxEntry>('SELECT sequence,operation_id AS operationId,invoice_id AS invoiceId,version,payload FROM journal_sync_outbox ORDER BY sequence');
 }
-export async function acknowledgeJournalOutbox(operationId:string): Promise<void> {
- await (await db()).runAsync('DELETE FROM journal_sync_outbox WHERE operation_id=?',operationId);
+export async function acknowledgeJournalOutbox(entry:JournalOutboxEntry): Promise<void> {
+ const database=await db();
+ await database.withExclusiveTransactionAsync(async tx=>{
+  const identity=await getDeviceIdentity(tx);
+  if(identity)throw Error('Téléphone lié à un commercial : accusé de démonstration refusé.');
+  await assertLegacyMobileCreditSafe(tx,identity);
+  await acknowledgeJournalQueueEntry(tx,entry);
+ });
 }
 
 /** Tant que l'envoi individuel n'est pas activé, ne pas envoyer une file liée via le jeton partagé. */
