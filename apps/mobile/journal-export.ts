@@ -57,7 +57,8 @@ function expenseEntries(data:JournalExport):TourExpense[] {
  const seen=new Set<string>();return (data.expenses??[]).filter(e=>{
   const date=new Date(e.createdAt);
   if(!e.operationId||seen.has(e.operationId)||!Number.isFinite(date.getTime())||date.toISOString()!==e.createdAt||tunisDay(date)!==e.day||typeof e.description!=='string'||!e.description.trim()||!Number.isSafeInteger(e.amount)||e.amount<=0||![0,1].includes(e.pending))throw Error('Dépense du journal invalide.');
-  seen.add(e.operationId);return e.day===data.day;
+  if(e.cancelled!==undefined&&typeof e.cancelled!=='boolean')throw Error('Statut de dépense invalide.');
+  seen.add(e.operationId);return e.day===data.day&&!e.cancelled;
  });
 }
 function lines(data: JournalExport): string[][] {
@@ -176,7 +177,7 @@ function lines(data: JournalExport): string[][] {
  if(updates.size)rows.push(['Modifications enregistrées ailleurs','Les ventes indiquées ont été actualisées depuis un autre appareil. Les remboursements effectués ailleurs ne sont pas déduits de la caisse de ce téléphone.']);
  if(remoteByInvoice.size)rows.push(['Annulations enregistrées ailleurs','Les factures sont signalées comme annulées. Les avoirs reçus sur les factures de ce commercial sont déduits à leur date de création ; seuls les remboursements attribués à cette caisse sont déduits de l’encaissé. Consultez le journal serveur.']);
  for(const expense of expenses)rows.push(['Dépense de tournée','',expense.description,expense.createdAt,amount(expense.amount),'','',expense.pending?'En attente':'Synchronisée']);
- rows.push(['TOTAL CHARGES',expenses.length?amount(sum(expenses.map(e=>e.amount))):'Non renseigné']);
+ rows.push(['TOTAL CHARGES',expenses.length||(data.expenses??[]).some(e=>e.day===data.day&&e.cancelled)?amount(sum(expenses.map(e=>e.amount))):'Non renseigné']);
  rows.push(['NOMBRE DE CLIENTS',String(data.rows.length)]);
  rows.push(['Note','Le total facturé ne représente pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.']);
  return rows;
@@ -239,6 +240,6 @@ export function journalHtml(data: JournalExport): string {
  }
  const headers=['Client','Mt FC préétablie','Mt FC supplémentaire','Paiement FC du jour · mode','Ancienne dette réglée · mode','Total client'];
  const expenses=expenseEntries(data);
- const summary=[['Total facturé (préétablie + supplémentaire)',amount(billed)],['Total paiements facture préétablie',amount(preTotal)],['Total paiements facture supplémentaire',amount(saleTotal)],['Total charges',expenses.length?amount(sum(expenses.map(e=>e.amount))):'Non renseigné'],['Total encaissé local avant avoirs et remboursements distants',amount(gross)],['Nombre de clients',String(ordered.length)]];
+ const summary=[['Total facturé (préétablie + supplémentaire)',amount(billed)],['Total paiements facture préétablie',amount(preTotal)],['Total paiements facture supplémentaire',amount(saleTotal)],['Total charges',expenses.length||(data.expenses??[]).some(e=>e.day===data.day&&e.cancelled)?amount(sum(expenses.map(e=>e.amount))):'Non renseigné'],['Total encaissé local avant avoirs et remboursements distants',amount(gross)],['Nombre de clients',String(ordered.length)]];
  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>@page{size:A4 landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#193c35;font-size:10px}h1{font-size:20px}p{font-size:10px}table{width:100%;border-collapse:collapse;table-layout:fixed}td,th{border:1px solid #b7c9bf;padding:5px;text-align:left;overflow-wrap:anywhere}th{background:#d8eee2}tr{page-break-inside:avoid}.totals{margin-top:12px;width:68%}.totals td:last-child{text-align:right;font-weight:bold}.notice{color:#754b20}</style></head><body><h1>Journal de tournée — instantané local</h1><p>Date : ${escapeHtml(data.day)} · Commercial : ${escapeHtml(data.commercial)}<br>Secteur(s) des clients du jour : ${escapeHtml(sectorText)}</p><p>Opérations présentes sur ce téléphone. Les autres appareils ne sont pas inclus. Les charges de ce téléphone ne sont pas déduites de l’encaissé ; consultez le CSV pour leur détail et leur statut.</p><table><thead><tr>${headers.map(x=>`<th>${escapeHtml(x)}</th>`).join('')}</tr></thead><tbody>${table.map(row=>`<tr>${row.map(x=>`<td>${escapeHtml(x)}</td>`).join('')}</tr>`).join('')}</tbody></table><table class="totals"><tbody>${summary.map(row=>`<tr><td>${escapeHtml(row[0])}</td><td>${escapeHtml(row[1])}</td></tr>`).join('')}</tbody></table>${notices.map(text=>`<p class="notice">${escapeHtml(text)}</p>`).join('')}</body></html>`;
 }

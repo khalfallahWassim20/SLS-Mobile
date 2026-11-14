@@ -25,6 +25,7 @@ export async function storeExpenseRevision(pool:Pool,input:unknown,session:{toke
   // jamais avancer simultanément une même version.
   const result=await db.query('SELECT commercial_id,journal_date::text AS day,created_at,description,amount::text AS amount FROM identified_tour_expenses WHERE operation_id=$1 FOR UPDATE',[change.expenseId]);
   const original=result.rows[0];if(!original||original.commercial_id!==actor.id)throw new JournalConflict('Dépense inconnue ou liée à un autre commercial.');
+  if((await db.query('SELECT 1 FROM identified_tour_expense_cancellations WHERE expense_id=$1',[change.expenseId])).rows.length)throw new JournalConflict('Dépense annulée : correction impossible.');
   if(Date.parse(change.recordedAt)<new Date(original.created_at).getTime())throw new JournalConflict('Date de correction incohérente.');
   const days=[...new Set([original.day,dayOf(change.recordedAt)])].sort();
   for(const day of days){const closure=await lockTourClosure(db,actor.id,day);if(closure.status==='closed')throw new TourDayClosed(day,actor.id);}

@@ -7,6 +7,7 @@ import {saveCommercial,setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 import {storeTourExpense} from '../src/tour-expenses.js';
 import {storeExpenseRevision} from '../src/tour-expense-revisions.js';
+import {storeExpenseCancellation} from '../src/tour-expense-cancellations.js';
 import {requestTourTransition} from '../src/tour-closure-store.js';
 import {readIdentifiedJournalDay} from '../src/identified-journal-day.js';
 
@@ -31,6 +32,13 @@ test('PostgreSQL : dépense et clôture concurrentes, reprise sans doublon',asyn
   await requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-07',expectedVersion:1},{kind:'admin',actorId:'admin',commercialId:person.id},true);
   assert.equal(await storeExpenseRevision(pool,historical,credentials),'received');assert.equal(await storeExpenseRevision(pool,historical,credentials),'duplicate');
   const afterReopen=await readIdentifiedJournalDay(pool,person.id,'2026-11-07',true);assert.equal(afterReopen.expenseTotal,40000);assert.equal(afterReopen.expenseHistory.length,2);
+  const cancel={operationId:randomUUID(),expenseId:original.operationId,version:3,recordedAt:'2026-11-09T12:00:00.000Z',description:historical.description,amount:40000,reason:'Doublon'};
+  const concurrentRevision={operationId:randomUUID(),expenseId:original.operationId,version:4,recordedAt:'2026-11-09T12:00:00.000Z',previousDescription:historical.description,previousAmount:40000,description:'Encore corrigé',amount:41000};
+  const racing=await Promise.allSettled([storeExpenseCancellation(pool,cancel,credentials),storeExpenseRevision(pool,concurrentRevision,credentials)]);
+  assert.equal(racing.filter(x=>x.status==='fulfilled').length,1);assert.equal(racing.filter(x=>x.status==='rejected').length,1);
+  if(racing[0].status==='fulfilled'){assert.equal(await storeExpenseCancellation(pool,cancel,credentials),'duplicate');const j=await readIdentifiedJournalDay(pool,person.id,'2026-11-07',true);assert.equal(j.expenseTotal,0);assert.equal(j.expenseCancellations.length,1);}
+  else {const updated={...cancel,operationId:randomUUID(),version:4,description:concurrentRevision.description,amount:41000};assert.equal(await storeExpenseCancellation(pool,updated,credentials),'received');const j=await readIdentifiedJournalDay(pool,person.id,'2026-11-07',true);assert.equal(j.expenseTotal,0);assert.equal(j.expenseCancellations.length,1);}
+  assert.equal(Number((await pool.query('SELECT count(*) n FROM identified_tour_expenses WHERE operation_id=$1',[original.operationId])).rows[0].n),1);
   const [write,close]=await Promise.allSettled([storeTourExpense(pool,op,credentials),requestTourTransition(pool,{requestId:randomUUID(),day:'2026-11-08',expectedVersion:0},{kind:'commercial',token:session.token,secret},true)]);
   assert.equal(close.status,'fulfilled');const n=Number((await pool.query("SELECT count(*) AS n FROM identified_tour_expenses WHERE journal_date='2026-11-08'")).rows[0].n);
   if(write.status==='fulfilled'){assert.equal(write.value,'received');assert.equal(n,1);assert.equal(await storeTourExpense(pool,op,credentials),'duplicate');}else{assert.match(String(write.reason),/clôturé/);assert.equal(n,0);}

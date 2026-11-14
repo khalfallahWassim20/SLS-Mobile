@@ -205,6 +205,12 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       received_at timestamptz NOT NULL DEFAULT now(), UNIQUE(expense_id,version)
     );
     CREATE INDEX IF NOT EXISTS expense_revisions_by_expense ON identified_tour_expense_revisions(expense_id,version DESC);
+    CREATE TABLE IF NOT EXISTS identified_tour_expense_cancellations (
+      operation_id uuid PRIMARY KEY, expense_id uuid NOT NULL UNIQUE REFERENCES identified_tour_expenses(operation_id),
+      commercial_id uuid NOT NULL REFERENCES commercials(id), version integer NOT NULL CHECK(version>=1), recorded_at timestamptz NOT NULL,
+      description text NOT NULL, amount bigint NOT NULL CHECK(amount>0), reason text NOT NULL, payload_hash text NOT NULL,
+      received_at timestamptz NOT NULL DEFAULT now()
+    );
     CREATE TABLE IF NOT EXISTS credit_note_prototype_movements (
       operation_id uuid NOT NULL REFERENCES credit_note_prototype_events(operation_id),
       kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')), balance_delta bigint NOT NULL,
