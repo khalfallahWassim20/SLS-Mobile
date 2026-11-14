@@ -18,7 +18,8 @@ function fixture(){
  db.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(old.commercialId,old.serverOrigin,'{"keep":true}');
  db.prepare('INSERT INTO credit_protocol_quarantine VALUES(1,?,?)').run(old.commercialId,old.serverOrigin);
  db.prepare('INSERT INTO sales_outbox VALUES(?,?)').run('pending','{"money":123}');db.prepare('INSERT INTO sales VALUES(1,?)').run('{"sale":true}');
- db.prepare('INSERT INTO tour_expenses VALUES(?,?,?,?,?,?,?,?)').run(randomUUID(),old.commercialId,old.serverOrigin,'2026-11-08','2026-11-08T09:00:00.000Z','Carburant',25350,1);
+ const expenseId=randomUUID();db.prepare('INSERT INTO tour_expenses VALUES(?,?,?,?,?,?,?,?)').run(expenseId,old.commercialId,old.serverOrigin,'2026-11-08','2026-11-08T09:00:00.000Z','Carburant',25350,1);
+ db.prepare('INSERT INTO tour_expense_revisions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),expenseId,old.commercialId,old.serverOrigin,2,'2026-11-08T10:00:00.000Z','Carburant',25350,'Carburant corrigé',30000,1);
  return {db,tx,old,target};
 }
 test('migration isolée : préserve files, historique et cache, et reste annulable',async()=>{
@@ -28,6 +29,8 @@ test('migration isolée : préserve files, historique et cache, et reste annulab
   assert.equal(db.prepare('SELECT server_origin FROM identified_reference_cache').get()?.server_origin,target);
   assert.equal(db.prepare('SELECT server_origin FROM credit_protocol_quarantine').get()?.server_origin,target);
   assert.equal(db.prepare('SELECT server_origin FROM tour_expenses').get()?.server_origin,target);
+  assert.equal(db.prepare('SELECT server_origin FROM tour_expense_revisions').get()?.server_origin,target);
+  assert.equal(db.prepare('SELECT amount FROM tour_expense_revisions').get()?.amount,30000);
   assert.equal(db.prepare('SELECT amount FROM tour_expenses').get()?.amount,25350);
   assert.equal(db.prepare('SELECT payload FROM sales_outbox').get()?.payload,'{"money":123}');
   assert.equal(db.prepare('SELECT payload FROM sales').get()?.payload,'{"sale":true}');

@@ -36,7 +36,7 @@ import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-protot
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import {readCreditMobileWorkspacePrototype} from './credit-mobile-workspace-reader-prototype';
 import {readLegacyRows} from './legacy-read-guard';
-import {tourExpenseSchema,addTourExpense,readTourExpenses,acknowledgeTourExpense,type TourExpense} from './tour-expenses';
+import {tourExpenseSchema,addTourExpense,readTourExpenses,readOriginalExpenses,readExpenseRevisions,reviseTourExpense,acknowledgeTourExpense,acknowledgeExpenseRevision,type TourExpense,type ExpenseRevision} from './tour-expenses';
 import {inspectCreditStartup} from './credit-startup-guard';
 import {readClientRevisions} from './client-revisions';
 import {quarantineOnUpgrade} from './credit-protocol-quarantine';
@@ -323,6 +323,16 @@ export async function hasTourExpenses(identity:DeviceIdentity):Promise<boolean> 
 export async function getTourExpenses(identity:DeviceIdentity):Promise<TourExpense[]> {
  const database=await db();let rows:TourExpense[]=[];await database.withExclusiveTransactionAsync(async tx=>{rows=await readTourExpenses(tx,identity);});return rows;
 }
+export async function getPendingTourExpenseOperations(identity:DeviceIdentity):Promise<{originals:TourExpense[];revisions:ExpenseRevision[]}> {
+ const database=await db();let result:{originals:TourExpense[];revisions:ExpenseRevision[]}|undefined;
+ await database.withExclusiveTransactionAsync(async tx=>{const originals=await readOriginalExpenses(tx,identity),revisions=await readExpenseRevisions(tx,identity,originals);result={originals:originals.filter(x=>x.pending===1),revisions:revisions.filter(x=>x.pending===1)};});return result!;
+}
+export async function saveExpenseRevision(identity:DeviceIdentity,expected:TourExpense,description:string,amount:number):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await reviseTourExpense(tx,identity,expected,{operationId:randomUUID(),recordedAt:new Date().toISOString(),description,amount});});
+}
+export async function confirmExpenseRevision(identity:DeviceIdentity,revision:ExpenseRevision,response:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeExpenseRevision(tx,identity,revision,response);});
+}
 export async function saveTourExpense(identity:DeviceIdentity,description:string,amount:number,expectedDay:string):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{const createdAt=new Date().toISOString();if(tunisDay(new Date(createdAt))!==expectedDay)throw Error('La date de tournée a changé : actualisez le journal.');await addTourExpense(tx,identity,{operationId:randomUUID(),createdAt,description,amount});});
 }
@@ -355,7 +365,7 @@ export async function getLocalCloseAttempt(identity:DeviceIdentity,day:string):P
 }
 export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number,creditAware=false):Promise<Attempt> {
  const database=await db();let result:Attempt|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);const pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_expenses WHERE pending=1) AS n');if(!pending||pending.n)throw Error('Synchronisez les dépenses en attente avant la clôture.');if(!creditAware){await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);}else result=await prepareVerifiedPrototypeClose(tx,identity,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);const pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_expenses WHERE pending=1) OR EXISTS(SELECT 1 FROM tour_expense_revisions WHERE pending=1) AS n');if(!pending||pending.n)throw Error('Synchronisez les dépenses en attente avant la clôture.');if(!creditAware){await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);}else result=await prepareVerifiedPrototypeClose(tx,identity,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
 }
 export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
