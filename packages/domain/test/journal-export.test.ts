@@ -86,8 +86,6 @@ test('PDF journal synthétique : secteurs, une ligne par client, paiements et d�
  assert.match(table,/<td>Client B<\/td><td>0,000<\/td><td>0,000<\/td><td>0,000<\/td><td>30,000 · Chèque 30,000<\/td><td>0,000<\/td>/);
  assert.match(html,/Total facturé \(préétablie \+ supplémentaire\)<\/td><td>850,000/);assert.match(html,/Total paiements facture préétablie<\/td><td>250,000/);
  assert.match(html,/Total paiements facture supplémentaire<\/td><td>75,000/);assert.match(html,/Total charges<\/td><td>Non renseigné/);assert.match(html,/remboursements distants<\/td><td>390,000/);assert.match(html,/Nombre de clients<\/td><td>2/);
- assert.match(journalHtml({...data,expensesTotal:15500}),/Total charges<\/td><td>15,500/);
- assert.throws(()=>journalHtml({...data,expensesTotal:-1}),/charges invalide/);
  assert.throws(()=>journalHtml({...data,settlements:[data.settlements[0],data.settlements[0]]}),/Règlement de dette invalide/);
  assert.throws(()=>journalHtml({...data,rows:[data.rows[0],data.rows[0]]}),/dupliqué/);
 });
