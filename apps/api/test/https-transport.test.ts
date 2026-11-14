@@ -8,6 +8,7 @@ import {join,resolve} from 'node:path';
 import {createServer as netServer,connect} from 'node:net';
 import {request} from 'node:https';
 import {readTransportConfig} from '../src/https-config.js';
+import {checkHttpsDeployment} from '../src/https-deployment-check.js';
 import bcrypt from 'bcryptjs';
 
 function makeCertificate(dir:string,name:string){
@@ -71,7 +72,7 @@ test('API HTTPS réelle : certificat vérifié, nom contrôlé et pas de repli H
  try{
   const {key,cert}=makeCertificate(dir,'server'),port=await new Promise<number>((resolve,reject)=>{const s=netServer();s.on('error',reject);s.listen(0,'127.0.0.1',()=>{const a=s.address();if(!a||typeof a==='string')return reject(Error('port'));s.close(()=>resolve(a.port));});});
   const env={...process.env};for(const k of Object.keys(env))if(k.startsWith('SLS_')||k==='NODE_TLS_REJECT_UNAUTHORIZED'||k==='NODE_EXTRA_CA_CERTS')delete env[k];
-  const adminDir=join(dir,'admin-dist');mkdirSync(join(adminDir,'assets'),{recursive:true});writeFileSync(join(adminDir,'index.html'),'<html>Admin de test</html>');writeFileSync(join(adminDir,'assets','app.js'),'console.log("test")');
+  const adminDir=join(dir,'admin-dist');mkdirSync(join(adminDir,'assets'),{recursive:true});writeFileSync(join(adminDir,'index.html'),'<html><div id="root"></div></html>');writeFileSync(join(adminDir,'assets','app.js'),'console.log("test")');
   Object.assign(env,{DATABASE_URL:'postgresql://invalid:invalid@127.0.0.1:1/isolated',PORT:String(port),API_HOST:'127.0.0.1',JWT_SECRET:'secret de test suffisamment long pour le serveur',ADMIN_USERNAME:'test',ADMIN_PASSWORD_HASH:bcrypt.hashSync('fictif',4),SLS_REQUIRE_HTTPS:'1',SLS_TLS_KEY:key,SLS_TLS_CERT:cert,SLS_TLS_EXPECTED_HOST:'localhost',SLS_HSTS_MAX_AGE:'300',SLS_ADDRESS_HTTPS:'J_ACTIVE_HTTPS',SLS_ADMIN_STATIC_DIR:adminDir});
   child=spawn(process.execPath,['--import','tsx','src/server.ts'],{cwd:resolve('apps/api'),env,stdio:['ignore','pipe','pipe']});
   await new Promise<void>((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('Démarrage TLS expiré')),15000);child!.stdout!.on('data',d=>{if(String(d).includes('API de développement prête')){clearTimeout(timer);resolve();}});child!.once('exit',c=>{clearTimeout(timer);reject(Error(`API arrêtée ${c}`));});child!.stderr!.on('data',d=>process.stderr.write(d));});
@@ -81,6 +82,7 @@ test('API HTTPS réelle : certificat vérifié, nom contrôlé et pas de repli H
   assert.deepEqual(await query({ca:readFileSync(cert)}),{status:401,cache:'no-store',nosniff:'nosniff',hsts:undefined}); // une IP ne reçoit pas HSTS
   assert.deepEqual(await query({ca:readFileSync(cert),path:'/api/login',headers:{Host:`localhost:${port}`}}),{status:401,cache:'no-store',nosniff:'nosniff',hsts:'max-age=300'});
   assert.deepEqual(await query({ca:readFileSync(cert),path:'/',method:'GET',headers:{Host:`localhost:${port}`}}),{status:200,cache:'no-store',nosniff:'nosniff',hsts:'max-age=300'});
+  const checked=await checkHttpsDeployment(`https://localhost:${port}`,readFileSync(cert));assert.equal(checked.api,'refus sans session vérifié');assert.equal(checked.hsts,'max-age=300');
   assert.deepEqual(await query({ca:readFileSync(cert),path:'/',method:'GET'}),{status:421,cache:'no-store',nosniff:'nosniff',hsts:undefined});
   assert.deepEqual(await query({ca:readFileSync(cert),servername:'localhost',path:'/api/login',headers:{Host:'autre.example'}}),{status:401,cache:'no-store',nosniff:'nosniff',hsts:undefined});
   await assert.rejects(query({ca:readFileSync(cert),minVersion:'TLSv1.1',maxVersion:'TLSv1.1'}));

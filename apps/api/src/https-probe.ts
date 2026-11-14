@@ -1,22 +1,12 @@
-import {connect as tlsConnect,checkServerIdentity} from 'node:tls';
-import {X509Certificate} from 'node:crypto';
+import {connect as tlsConnect} from 'node:tls';
 import {isIP} from 'node:net';
+import {checkStrictServerIdentity,parseHttpsOrigin} from './https-identity.js';
 
 /** Contrôle réseau depuis Node seulement. Aucun identifiant ni requête HTTP. */
 export async function probeHttps(origin:string,ca?:Buffer,timeoutMs=5000):Promise<{origin:string;protocol:string;expiresAt:string;fingerprint256:string}>{
- let url:URL;try{url=new URL(origin);}catch{throw Error('Adresse HTTPS invalide.');}
- if(url.protocol!=='https:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash||url.origin!==origin)throw Error('Indiquer uniquement une origine HTTPS canonique, sans chemin ni identifiants.');
- const host=url.hostname.replace(/^\[|\]$/g,''),port=url.port?Number(url.port):443;
+ const {host,port}=parseHttpsOrigin(origin);
  return new Promise((resolve,reject)=>{
-  const socket=tlsConnect({host,port,servername:isIP(host)?undefined:host,ca,rejectUnauthorized:true,minVersion:'TLSv1.2',checkServerIdentity:(_name,peer)=>{
-   const standard=checkServerIdentity(host,peer);if(standard)return standard;
-   try{
-    const leaf=new X509Certificate(peer.raw);
-    const match=isIP(host)?leaf.checkIP(host):leaf.checkHost(host,{subject:'never',partialWildcards:false,multiLabelWildcards:false,singleLabelSubdomains:false});
-    if(!match)return Error('Le certificat ne couvre pas cette adresse dans son SAN.');
-   }catch{return Error('Certificat serveur invalide.');}
-   return undefined;
-  }});
+  const socket=tlsConnect({host,port,servername:isIP(host)?undefined:host,ca,rejectUnauthorized:true,minVersion:'TLSv1.2',checkServerIdentity:(_name,peer)=>checkStrictServerIdentity(host,peer)});
   socket.setTimeout(timeoutMs,()=>socket.destroy(Error('Délai de connexion HTTPS dépassé.')));
   socket.once('error',reject);
   socket.once('secureConnect',()=>{

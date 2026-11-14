@@ -15,6 +15,7 @@
     "test:credit-bridge-bundle": "node --test apps/mobile/test/credit-bridge-bundle.test.mjs",
     "test:https": "tsx --test apps/api/test/https-*.test.ts",
     "verifier:https": "tsx apps/api/src/https-probe-cli.ts",
+    "verifier:deploiement-https": "tsx apps/api/src/https-deployment-check-cli.ts",
     "mobile": "npm run start --workspace @sls/mobile",
     "api": "npm run dev --workspace @sls/api",
     "admin": "npm run dev --workspace @sls/admin",
