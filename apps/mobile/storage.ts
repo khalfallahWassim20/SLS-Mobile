@@ -36,6 +36,7 @@ import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-protot
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import {readCreditMobileWorkspacePrototype} from './credit-mobile-workspace-reader-prototype';
 import {readLegacyRows} from './legacy-read-guard';
+import {tourExpenseSchema,addTourExpense,readTourExpenses,acknowledgeTourExpense,type TourExpense} from './tour-expenses';
 import {inspectCreditStartup} from './credit-startup-guard';
 import {readClientRevisions} from './client-revisions';
 import {quarantineOnUpgrade} from './credit-protocol-quarantine';
@@ -73,7 +74,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -316,6 +317,18 @@ export async function recordCreditProtocolUpgrade(identity:DeviceIdentity,status
  return blocked;
 }
 export async function getBoundIdentity():Promise<DeviceIdentity|null> {return getDeviceIdentity(await db());}
+export async function hasTourExpenses(identity:DeviceIdentity):Promise<boolean> {
+ const database=await db();let present=true;await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);const row=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_expenses) AS n');if(!row)throw Error('État des dépenses indisponible.');present=!!row.n;});return present;
+}
+export async function getTourExpenses(identity:DeviceIdentity):Promise<TourExpense[]> {
+ const database=await db();let rows:TourExpense[]=[];await database.withExclusiveTransactionAsync(async tx=>{rows=await readTourExpenses(tx,identity);});return rows;
+}
+export async function saveTourExpense(identity:DeviceIdentity,description:string,amount:number,expectedDay:string):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{const createdAt=new Date().toISOString();if(tunisDay(new Date(createdAt))!==expectedDay)throw Error('La date de tournée a changé : actualisez le journal.');await addTourExpense(tx,identity,{operationId:randomUUID(),createdAt,description,amount});});
+}
+export async function confirmTourExpense(identity:DeviceIdentity,expense:TourExpense,response:unknown):Promise<void> {
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await acknowledgeTourExpense(tx,identity,expense,response);});
+}
 /** Identité et transition lues ensemble ; aucune modification du stockage. */
 export async function getCreditStartupState(enabled:boolean) {
  const database=await db();let result:Awaited<ReturnType<typeof inspectCreditStartup>>|undefined;
@@ -342,7 +355,7 @@ export async function getLocalCloseAttempt(identity:DeviceIdentity,day:string):P
 }
 export async function prepareLocalClose(identity:DeviceIdentity,day:string,version:number,creditAware=false):Promise<Attempt> {
  const database=await db();let result:Attempt|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);if(!creditAware){await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);}else result=await prepareVerifiedPrototypeClose(tx,identity,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
+ await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);const pending=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_expenses WHERE pending=1) AS n');if(!pending||pending.n)throw Error('Synchronisez les dépenses en attente avant la clôture.');if(!creditAware){await assertLegacyMobileCreditSafe(tx,identity);result=await preparePrototypeClose(tx,identity,day,version,randomUUID);}else result=await prepareVerifiedPrototypeClose(tx,identity,day,version,randomUUID,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});return result!;
 }
 export async function acknowledgeLocalClose(identity:DeviceIdentity,day:string,response:unknown):Promise<void> {
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});

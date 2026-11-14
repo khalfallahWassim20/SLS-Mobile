@@ -22,6 +22,8 @@ export async function readIdentifiedJournalDayInTransaction(db:PoolClient,commer
    WHERE f.commercial_id=$1 AND f.journal_date=$2::date`,[commercialId,day]);
   const settlements=await db.query(`SELECT count(*)::int AS count,COALESCE(sum((payload->'settlement'->>'amount')::bigint),0)::text AS amount
    FROM identified_settlements WHERE commercial_id=$1 AND journal_date=$2::date`,[commercialId,day]);
+  const expenses=await db.query(`SELECT operation_id AS "operationId",created_at AS "createdAt",description,amount::text AS amount FROM identified_tour_expenses WHERE commercial_id=$1 AND journal_date=$2::date ORDER BY created_at,operation_id`,[commercialId,day]);
+  const expenseTotal=expenses.rows.reduce((n,e)=>n+BigInt(e.amount),0n);if(expenseTotal>BigInt(Number.MAX_SAFE_INTEGER))throw new RangeError('Total des dépenses trop élevé.');
   const closure=await db.query(`SELECT status,version,closed_at FROM tour_closures WHERE commercial_id=$1 AND journal_date=$2::date`,[commercialId,day]);
   // La facture d'origine n'a pas d'auteur connu : ne pas l'attribuer à l'auteur d'un paiement ultérieur.
   const inherited=await db.query(`SELECT e.payload FROM identified_journal_events e JOIN identified_journal_invoices i ON i.id=e.invoice_id
@@ -44,7 +46,7 @@ export async function readIdentifiedJournalDayInTransaction(db:PoolClient,commer
   const inheritedPayments=[...inheritedByClient.values()].map(p=>{if(p.prePaid>BigInt(Number.MAX_SAFE_INTEGER)||p.oldDebtPaid>BigInt(Number.MAX_SAFE_INTEGER))throw new RangeError('Total encaissé trop élevé.');return {clientId:p.clientId,clientName:p.clientName,prePaid:Number(p.prePaid),oldDebtPaid:Number(p.oldDebtPaid)};});
   const state=closure.rows[0];
   return {...dayResult,commercial:commercial.rows[0],closure:{status:state?.status??'open',version:state?.version??0,closedAt:state?.closed_at?new Date(state.closed_at).toISOString():null},
-   journalCollected:dayResult.totalCollected,inheritedJournalPayments:inheritedPayments,inheritedJournalTotal:Number(inheritedTotal),globalSettlementCount:settlements.rows[0].count,globalSettlementTotal:Number(settlements.rows[0].amount),totalCollected:Number(total),closureEvents:events.rows};
+   journalCollected:dayResult.totalCollected,inheritedJournalPayments:inheritedPayments,inheritedJournalTotal:Number(inheritedTotal),globalSettlementCount:settlements.rows[0].count,globalSettlementTotal:Number(settlements.rows[0].amount),totalCollected:Number(total),expenseTotal:Number(expenseTotal),expenses:expenses.rows.map(e=>({operationId:e.operationId,createdAt:new Date(e.createdAt).toISOString(),description:e.description,amount:Number(e.amount)})),closureEvents:events.rows};
 }
 export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day:string,enforceMode=false) {
  const db=await pool.connect();

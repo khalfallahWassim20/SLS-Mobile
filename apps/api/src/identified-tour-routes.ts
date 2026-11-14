@@ -11,6 +11,7 @@ import {readRemoteSaleReceiptPrototype} from './remote-sale-receipt-prototype.js
 import {abandonRemoteSalePrototype} from './remote-sale-abandon-prototype.js';
 import {abandonCreditNotePrototype} from './credit-note-abandon-prototype.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement} from './identified-operations.js';
+import {storeTourExpense} from './tour-expenses.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
 import {readIdentifiedJournalDay} from './identified-journal-day.js';
 import {IdentifiedOverlap} from './identified-overlap.js';
@@ -106,6 +107,7 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}if(enforceMode)assertIdentifiedMode(await readSyncMode(pool));res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});
  if(options.allowCreditProtocol===true)r.post('/close/abandon',async(req,res,next)=>{try{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}res.json(await abandonTourClose(pool,req.body,{secret,token:bearer(req.get('Authorization'))}));}catch(e){errorHandler(e,res,next);}});
  r.post('/close',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))},enforceMode,supportsCredit(req),options.allowCreditProtocol===true);res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
+ r.post('/expenses',async(req,res,next)=>{try{const status=await storeTourExpense(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
  for(const kind of ['journal','sales','settlements'] as const) r.post('/'+kind,async(req,res,next)=>{try{
   const session={secret,token:bearer(req.get('Authorization')),enforceMode,creditAware:supportsCredit(req)};
   const status=kind==='journal'?await storeJournalSnapshot(pool,req.body,'identified',session):kind==='sales'?await storeIdentifiedSale(pool,req.body,session):await storeIdentifiedSettlement(pool,req.body,session);

@@ -1,0 +1,46 @@
+import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {randomUUID} from 'node:crypto';
+import {DatabaseSync} from 'node:sqlite';
+import {PGlite} from '@electric-sql/pglite';
+import type {Pool} from 'pg';
+import express from 'express';
+import {tourExpenseSchema,addTourExpense,readTourExpenses,acknowledgeTourExpense} from '../../../apps/mobile/tour-expenses.js';
+import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';
+import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
+import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';
+import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';
+import {journalHtml,journalCsv} from '../../../apps/mobile/journal-export.js';
+import {schemaSql} from '../../../apps/api/src/schema.js';
+import {saveCommercial,setCommercialCredentials} from '../../../apps/api/src/commercials.js';
+import {loginCommercial} from '../../../apps/api/src/commercial-session.js';
+import {identifiedCommercialRoutes} from '../../../apps/api/src/identified-tour-routes.js';
+import {readIdentifiedJournalDay} from '../../../apps/api/src/identified-journal-day.js';
+
+test('dépenses : hors ligne, synchronisation idempotente, journal et clôture',async()=>{
+ const db=new PGlite(),phone=new DatabaseSync(':memory:');let server:ReturnType<ReturnType<typeof express>['listen']>|undefined;
+ try{
+  await db.exec(schemaSql);await db.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+  const conn={query:(sql:string,args?:unknown[])=>sql.startsWith('SELECT pg_advisory_xact_lock')?Promise.resolve({rows:[]}):db.query(sql,args),release:()=>{}};const pool={connect:async()=>conn,query:conn.query} as unknown as Pool;
+  const commercial=await saveCommercial(pool,'admin',{name:'Commercial fictif',active:true});await setCommercialCredentials(pool,'admin',commercial.id,{login:'expense.test',password:'mot de passe fictif'});
+  const secret='secret fictif suffisamment long pour test',session=await loginCommercial(pool,secret,{login:'expense.test',password:'mot de passe fictif'});assert.ok(session);
+  const identity={commercialId:commercial.id,serverOrigin:'http://192.168.1.2:3001'};
+  phone.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${offlineCreditPrototypeSchema}${creditReferencePrototypeSchema}${tourExpenseSchema}`);phone.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(identity.commercialId,identity.serverOrigin);
+  const tx={getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>phone.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>phone.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{phone.prepare(sql).run(...p)}};
+  const op={operationId:randomUUID(),createdAt:'2026-11-08T10:00:00.000Z',description:'Carburant',amount:25350};
+  await assert.rejects(addTourExpense(tx,identity,{...op,amount:0}),/invalide/);await addTourExpense(tx,identity,op);const [local]=await readTourExpenses(tx,identity);assert.equal(local.pending,1);
+  const data={day:'2026-11-08',commercial:'Test',rows:[],receipts:[],expenses:[local]};assert.match(journalHtml(data),/25,350/);assert.match(journalCsv(data),/Carburant/);assert.match(journalCsv(data),/En attente/);
+  const other={...local,operationId:randomUUID(),description:'=frais',amount:1200};assert.match(journalHtml({...data,expenses:[local,other]}),/26,550/);assert.match(journalCsv({...data,expenses:[local,other]}),/'=frais/);assert.throws(()=>journalHtml({...data,expenses:[local,local]}),/invalide/);
+  const app=express();app.use(express.json());app.use('/mobile',identifiedCommercialRoutes(pool,secret));server=app.listen(0,'127.0.0.1');await new Promise<void>(resolve=>server!.once('listening',resolve));const addr=server.address();assert.ok(addr&&typeof addr!=='string');const url=`http://127.0.0.1:${addr.port}/mobile/expenses`;
+  const post=(body:unknown,token=session.token)=>fetch(url,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await post(op,'incorrect')).status,401);let r=await post(op);assert.equal(r.status,201);assert.deepEqual(await r.json(),{status:'received',operationId:op.operationId});
+  r=await post(op);assert.equal(r.status,200);const ack=await r.json();await assert.rejects(acknowledgeTourExpense(tx,identity,local,{...ack,operationId:randomUUID()}),/invalide/);assert.equal((await readTourExpenses(tx,identity))[0].pending,1);
+  await acknowledgeTourExpense(tx,identity,local,ack);assert.equal((await readTourExpenses(tx,identity))[0].pending,0);
+  assert.equal((await post({...op,amount:25351})).status,409);
+  const journal=await readIdentifiedJournalDay(pool,commercial.id,'2026-11-08',true);assert.equal(journal.expenseTotal,25350);assert.equal(journal.totalCollected,0);assert.equal(journal.expenses[0].description,'Carburant');
+  await db.query("UPDATE tour_closures SET status='closed',version=1,closed_at=now() WHERE commercial_id=$1 AND journal_date='2026-11-08'",[commercial.id]);
+  assert.equal((await post({...op,operationId:randomUUID()})).status,409);assert.equal((await post(op)).status,200);
+  phone.prepare('INSERT INTO tour_known_server_states VALUES(?,?,?,?)').run(identity.commercialId,'2026-11-08','closed',1);
+  await assert.rejects(addTourExpense(tx,identity,{...op,operationId:randomUUID()}),/clôturée/);
+ }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));phone.close();await db.close();}
+});
