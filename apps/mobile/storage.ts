@@ -408,9 +408,9 @@ export async function previewCreditReviewPrototype(identity:DeviceIdentity,clien
  await database.withExclusiveTransactionAsync(async tx=>{result=await previewLocalCredit(tx,identity,clientId,kind,{operationId:randomUUID(),invoiceId,expectedVersion,recordedAt:new Date().toISOString(),choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
  return result!;
 }
-export async function confirmCreditReviewPrototype(identity:DeviceIdentity,preview:CreditReview) {
+export async function confirmCreditReviewPrototype(identity:DeviceIdentity,preview:CreditReview,command:import('@sls/domain').CreditNoteCommand) {
  const database=await db();let result:Awaited<ReturnType<typeof confirmLocalCreditReview>>|undefined;
- await database.withExclusiveTransactionAsync(async tx=>{result=await confirmLocalCreditReview(tx,identity,preview,{operationId:randomUUID(),invoiceId:preview.invoiceId,expectedVersion:preview.expectedVersion,recordedAt:new Date().toISOString(),choice:preview.choice},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmLocalCreditReview(tx,identity,preview,command,data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));});
  return result!;
 }
 

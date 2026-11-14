@@ -2,7 +2,8 @@
  * Les calculs et les soldes actifs doivent d'abord être migrés ensemble en v5. */
 import React,{useCallback,useEffect,useRef,useState} from 'react';
 import {ScrollView,StyleSheet,Text,TouchableOpacity,View} from 'react-native';
-import type {FullCreditChoice} from '@sls/domain';
+import type {CreditNoteCommand,FullCreditChoice} from '@sls/domain';
+import {randomUUID} from 'expo-crypto';
 import type {DeviceIdentity} from './identified-device';
 import type {CreditReview} from './credit-note-review-prototype';
 import type {readCreditSourceChoices} from './credit-note-source-choices-prototype';
@@ -15,13 +16,14 @@ type Props={identity:DeviceIdentity;clientId:string;
  readChoices:(identity:DeviceIdentity,clientId:string)=>Promise<Choices>;
  refreshSources:((clientId:string)=>Promise<void>)|null;
  preview:(identity:DeviceIdentity,clientId:string,kind:Item['kind'],id:string,version:number,choice:FullCreditChoice|null)=>Promise<CreditReview>;
- confirm:(identity:DeviceIdentity,review:CreditReview)=>Promise<unknown>;
+ confirm:(identity:DeviceIdentity,review:CreditReview,command:CreditNoteCommand)=>Promise<unknown>;
  onDone:()=>void;onCancel:()=>void;};
 /** Remonter le composant avec une clé liée à identity/clientId lorsque le
  * client change ; les callbacks transactionnels restent la source de vérité. */
 export function CreditNoteWorkflowView(props:Props){
  const {identity,clientId,readChoices,refreshSources,preview,confirm,onDone,onCancel}=props;
  const [choices,setChoices]=useState<Choices|null>(null),[selected,setSelected]=useState<Item|null>(null),[review,setReview]=useState<CreditReview|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const confirmation=useRef<CreditNoteCommand|null>(null);
  const running=useRef(false),mounted=useRef(false),context=useRef(`${identity.serverOrigin}\n${identity.commercialId}\n${clientId}`);
  const current=`${identity.serverOrigin}\n${identity.commercialId}\n${clientId}`,liveContext=useRef(current);liveContext.current=current;
  const alive=()=>mounted.current&&context.current===current&&liveContext.current===current;
@@ -29,12 +31,12 @@ export function CreditNoteWorkflowView(props:Props){
  const load=useCallback(async()=>{const value=await readChoices(identity,clientId);if(alive())setChoices(value);},[identity.commercialId,identity.serverOrigin,clientId,readChoices]);
  useEffect(()=>{mounted.current=true;void run(load);return()=>{mounted.current=false;};},[]);
  const update=()=>void run(async()=>{if(!refreshSources)throw Error('Connectez-vous pour actualiser les factures des autres appareils.');await refreshSources(clientId);await load();});
- const prepare=(choice:FullCreditChoice|null)=>void run(async()=>{if(!selected||selected.blocked)throw Error('Facture non disponible.');const value=await preview(identity,clientId,selected.kind,selected.invoiceId,selected.version,choice);if(alive())setReview(value);});
- const save=()=>void run(async()=>{if(!review)throw Error('Aperçu indisponible.');await confirm(identity,review);if(alive())onDone();});
+ const prepare=(choice:FullCreditChoice|null)=>void run(async()=>{if(!selected||selected.blocked)throw Error('Facture non disponible.');const value=await preview(identity,clientId,selected.kind,selected.invoiceId,selected.version,choice);if(alive()){confirmation.current=null;setReview(value);}});
+ const save=()=>void run(async()=>{if(!review)throw Error('Aperçu indisponible.');const command=confirmation.current??{operationId:randomUUID(),invoiceId:review.invoiceId,expectedVersion:review.expectedVersion,recordedAt:new Date().toISOString(),choice:review.choice};confirmation.current=command;try{await confirm(identity,review,command);}catch(e){throw Error(`${e instanceof Error?e.message:'Confirmation impossible.'} Si le résultat est incertain, réessayez cette même confirmation ; vérifiez l’historique avant tout remboursement physique.`);}if(alive())onDone();});
  if(context.current!==current)return <Text>Client ou téléphone modifié : rouvrez le parcours.</Text>;
  return <ScrollView contentContainerStyle={styles.container}>
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-  {review?<CreditNoteReviewView review={review} busy={busy} onConfirm={save} onCancel={()=>{if(!busy)setReview(null);}}/>:
+  {review?<CreditNoteReviewView review={review} busy={busy} onConfirm={save} onCancel={()=>{if(!busy){confirmation.current=null;setReview(null);}}}/>:
    selected?<View style={styles.card}>
     <Text style={styles.title}>{selected.kind==='sale'?'Vente SLS':'Facture préétablie'} du {selected.invoiceDay}</Text>
     {selected.paid>0?<><Text>Que faire du paiement de cette facture ?</Text>

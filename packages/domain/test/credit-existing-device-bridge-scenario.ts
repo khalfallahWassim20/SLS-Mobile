@@ -83,12 +83,20 @@ export async function runExistingDeviceBridgeScenario(db:BridgeDatabase,pool:Poo
   const first={operationId:randomUUID(),invoiceId:saleId,expectedVersion:1,recordedAt:'2026-11-08T11:00:00.000Z',choice:'refund' as const};
   const preview=await transaction(()=>previewLocalCredit(tx,identity,clientId,'sale',first,digest));assert.equal(preview.beforeBalance,489000);assert.equal(preview.afterBalance,420000);
   await transaction(()=>confirmLocalCreditReview(tx,identity,preview,first,digest));
+  // Réponse perdue après commit local : même confirmation, même UUID et
+  // même contenu, sans deuxième mouvement ni second avoir.
+  const replay=await transaction(()=>confirmLocalCreditReview(tx,identity,preview,first,digest));assert.equal(replay.note.command.operationId,first.operationId);
+  assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).length,1);
+  await assert.rejects(transaction(()=>confirmLocalCreditReview(tx,identity,{...preview,refund:preview.refund+1},first,digest)),/autre aperçu/);
+  await assert.rejects(transaction(()=>confirmLocalCreditReview(tx,identity,preview,{...first,recordedAt:'2026-11-08T11:01:00.000Z'},digest)),/autre aperçu/);
   const second={operationId:randomUUID(),invoiceId,expectedVersion:2,recordedAt:'2026-11-08T11:00:00.000Z',choice:'credit' as const};
   const pre=await transaction(()=>previewLocalCredit(tx,identity,clientId,'preinvoice',second,digest));assert.equal(pre.afterBalance,-180000);
   await transaction(()=>confirmLocalCreditReview(tx,identity,pre,second,digest));assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
   await assert.rejects(controller.synchronize(),/réponse perdue/);assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).filter(x=>x.pending).length,2);
   assert.deepEqual(await controller.synchronize(),{operations:0,credits:2});assert.deepEqual(await transaction(()=>readPrototypeCreditBalance(tx,identity,clientId,digest)),{balance:-180000,conflict:false});
   assert.deepEqual(await controller.synchronize(),{operations:0,credits:0});
+  await transaction(()=>confirmLocalCreditReview(tx,identity,preview,first,digest));
+  assert.equal((await transaction(()=>readAllOfflineCreditPrototype(tx,identity))).length,2);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM credit_note_prototype_events')).rows[0].n,1);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM pre_invoice_credit_prototype_events')).rows[0].n,1);
   assert.equal(phone.prepare('SELECT payload FROM settlements').get()?.payload,JSON.stringify(settlement));
