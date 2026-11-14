@@ -19,6 +19,10 @@ test('file individuelle : ordre, identité et accusé transactionnel',async()=>{
   await assert.rejects(readIdentifiedOutbox(tx,{...identity,commercialId:'bob'}),/[Ii]dentité/);
   await assert.rejects(readIdentifiedOutbox(tx,{...identity,serverOrigin:'https://other.test'}),/[Ii]dentité/);
   await assert.rejects(acknowledgeIdentifiedOutbox(tx,identity,{...rows[0],payload:'{}'}),/accusé/);
+  db.prepare('UPDATE identified_local_operations SET recorded_at=? WHERE operation_id=?').run('2026-11-11T12:00:00.000Z','a');
+  await assert.rejects(acknowledgeIdentifiedOutbox(tx,identity,rows[0]),/accusé/);
+  assert.equal((await readIdentifiedOutbox(tx,identity)).length,3);
+  db.prepare('UPDATE identified_local_operations SET recorded_at=? WHERE operation_id=?').run(rows[0].recordedAt,'a');
   db.exec('BEGIN');await acknowledgeIdentifiedOutbox(tx,identity,rows[0]);db.exec('ROLLBACK');
   assert.equal((await readIdentifiedOutbox(tx,identity)).length,3);
   await acknowledgeIdentifiedOutbox(tx,identity,rows[0]);assert.equal((await readIdentifiedOutbox(tx,identity)).length,2);

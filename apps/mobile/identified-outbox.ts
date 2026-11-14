@@ -29,8 +29,10 @@ export async function acknowledgeIdentifiedOutbox(tx:Tx,identity:DeviceIdentity,
  if(entry.commercialId!==identity.commercialId)throw Error('Identité de file incohérente.');
  const table=entry.kind==='journal'?'journal_sync_outbox':entry.kind==='sale'||entry.kind==='settlement'?'sales_outbox':null;
  if(!table)throw Error('Type de file invalide.');
- const row=await tx.getFirstAsync<{payload:string;commercialId:string;kind:string;entityId:string}>(`SELECT o.payload,m.commercial_id AS commercialId,m.operation_kind AS kind,m.entity_id AS entityId
+ const row=await tx.getFirstAsync<{payload:string;commercialId:string;kind:string;entityId:string;recordedAt:string}>(`SELECT o.payload,m.commercial_id AS commercialId,m.operation_kind AS kind,m.entity_id AS entityId,m.recorded_at AS recordedAt
  FROM ${table} o JOIN identified_local_operations m ON m.operation_id=o.operation_id WHERE o.operation_id=?`,entry.operationId);
- if(!row || row.payload!==entry.payload || row.commercialId!==identity.commercialId || row.kind!==entry.kind || row.entityId!==entry.entityId)throw Error('File modifiée : accusé refusé.');
+ // La date est transmise au serveur pour les ventes : elle fait aussi partie
+ // de la preuve à comparer avant de retirer une opération de la file.
+ if(!row || row.payload!==entry.payload || row.commercialId!==identity.commercialId || row.kind!==entry.kind || row.entityId!==entry.entityId || row.recordedAt!==entry.recordedAt)throw Error('File modifiée : accusé refusé.');
  await tx.runAsync(`DELETE FROM ${table} WHERE operation_id=?`,entry.operationId);
 }

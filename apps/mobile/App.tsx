@@ -25,6 +25,7 @@ import { uploadJournalQueue } from './journal-upload';
 import { isIdentifiedDeviceBound } from './storage';
 import { openBoundCommercialSession, type CommercialSession } from './commercial-login';
 import { clearLocalTestOperations,bindAndCacheIdentified,getBoundIdentity,recordCreditProtocolUpgrade,getIdentifiedOutbox,acknowledgeIdentifiedEntry,observeIdentifiedTour,getLocalCloseAttempt,prepareLocalClose,acknowledgeLocalClose } from './storage';
+import { uploadTourExpenses } from './tour-expense-upload';
 import { uploadIdentifiedOperations, ClosedDaySyncError } from './identified-upload';
 import { sendPreparedTourClose } from './tour-close-queue';
 import { validateIdentifiedReference } from './identified-reference';
@@ -363,33 +364,19 @@ export default function App() {
     }catch(e){Alert.alert('Annulation non enregistrée',e instanceof Error?e.message:'Erreur de stockage.');}finally{savingRef.current=false;setExpenseBusy(false);}
   };
   const sendIndividual=async()=>{
-    if(!individual||syncRef.current)return;syncRef.current=true;setSyncBusy(true);
+    if(!individual||syncRef.current)return;
+    if(savingRef.current){Alert.alert('Opération en cours','Attendez la fin de l’enregistrement avant de synchroniser.');return;}
+    syncRef.current=true;setSyncBusy(true);
     try {
       const identity={commercialId:individual.id,serverOrigin:individual.serverOrigin},entries=await getIdentifiedOutbox(identity);
       const byId=new Map(entries.map(entry=>[entry.operationId,entry]));
       const count=await uploadIdentifiedOperations(entries,identity,identity,async(path,payload)=>{const response=await fetch(`${individual.serverOrigin}/api/mobile/identified/${path}`,{method:'POST',headers:{Authorization:`Bearer ${individual.token}`,'Content-Type':'application/json'},body:payload});if(response.status===401)invalidateIndividual(individual);await checkProtocolUpgrade(individual,response);return response;},async(id)=>{const entry=byId.get(id);if(!entry)throw Error('Opération introuvable.');await acknowledgeIdentifiedEntry(identity,entry);});
-      let expenseCount=0;
       const pendingExpenses=await getPendingTourExpenseOperations(identity);
-      for(const expense of pendingExpenses.originals){
-        const response=await individualRequest(individual,'expenses',{operationId:expense.operationId,createdAt:expense.createdAt,description:expense.description,amount:expense.amount});
-        const result=await response.json().catch(()=>null);
-        if(!response.ok){if(response.status===409&&result?.code==='TOUR_DAY_CLOSED')throw new ClosedDaySyncError(result.day,result.commercialId);throw Error(result?.error||`Envoi de dépense impossible (${response.status}).`);}
-        await confirmTourExpense(identity,expense,result);expenseCount++;
-      }
-      for(const revision of pendingExpenses.revisions){
-        const {operationId,expenseId,version,recordedAt,previousDescription,previousAmount,description,amount}=revision;
-        const response=await individualRequest(individual,'expense-revisions',{operationId,expenseId,version,recordedAt,previousDescription,previousAmount,description,amount});
-        const result=await response.json().catch(()=>null);
-        if(!response.ok){if(response.status===409&&result?.code==='TOUR_DAY_CLOSED')throw new ClosedDaySyncError(result.day,result.commercialId);throw Error(result?.error||`Correction de dépense impossible (${response.status}).`);}
-        await confirmExpenseRevision(identity,revision,result);expenseCount++;
-      }
-      for(const cancellation of pendingExpenses.cancellations){
-        const {operationId,expenseId,version,recordedAt,description,amount,reason}=cancellation;
-        const response=await individualRequest(individual,'expense-cancellations',{operationId,expenseId,version,recordedAt,description,amount,reason});
-        const result=await response.json().catch(()=>null);
-        if(!response.ok){if(response.status===409&&result?.code==='TOUR_DAY_CLOSED')throw new ClosedDaySyncError(result.day,result.commercialId);throw Error(result?.error||`Annulation de dépense impossible (${response.status}).`);}
-        await confirmExpenseCancellation(identity,cancellation,result);expenseCount++;
-      }
+      const expenseCount=await uploadTourExpenses(pendingExpenses,identity,(path,payload)=>individualRequest(individual,path,payload),{
+        original:(expense,receipt)=>confirmTourExpense(identity,expense,receipt),
+        revision:(revision,receipt)=>confirmExpenseRevision(identity,revision,receipt),
+        cancellation:(cancellation,receipt)=>confirmExpenseCancellation(identity,cancellation,receipt),
+      });
       await loadExpenses(identity);await refreshIndividual(individual);await updateIndividualDay(individual);await loadSales();await loadJournal(journalDate);
       Alert.alert('Synchronisation terminée',`${count} opération(s) et ${expenseCount} dépense(s) envoyée(s).`);
     }catch(error){
@@ -402,7 +389,9 @@ export default function App() {
     finally{syncRef.current=false;setSyncBusy(false);}
   };
   const closeIndividual=async()=>{
-    if(!individual||syncRef.current)return;syncRef.current=true;setSyncBusy(true);
+    if(!individual||syncRef.current)return;
+    if(savingRef.current){Alert.alert('Opération en cours','Attendez la fin de l’enregistrement avant de clôturer.');return;}
+    syncRef.current=true;setSyncBusy(true);
     try {
       const identity={commercialId:individual.id,serverOrigin:individual.serverOrigin};
       let attempt=await getLocalCloseAttempt(identity,journalDate);
@@ -536,6 +525,7 @@ export default function App() {
   };
   const beginJournalPayment = () => { setPrePaidInput(''); setOldPaidInput(''); setCreditFull(false); setJournalMode('Espèces'); setJournalChequeNumber(''); setJournalChequeBank(''); setJournalChequeDue(''); setScreen('journalPayment'); };
   const recordJournalPayment = async () => {
+    if (syncRef.current) { Alert.alert('Synchronisation en cours', 'Attendez la fin de la synchronisation avant cet enregistrement.'); return; }
     const pre = journalRow?.preInvoice;
     const ref = reference?.clients.find(c => c.id === journalRow?.clientId);
     const customer = ref ? toClient(ref) : null;
@@ -560,6 +550,7 @@ export default function App() {
     finally { savingRef.current = false; setSaving(false); }
   };
   const createPreInvoice = async () => {
+    if (syncRef.current) { Alert.alert('Synchronisation en cours', 'Attendez la fin de la synchronisation avant cet enregistrement.'); return; }
     if (!journalPick || savingRef.current || journalLoading || loading || storageError) return;
     try {
       if (tunisDay(new Date()) !== journalDate) throw Error('La date a changé : revenez au journal avant de réessayer.');
@@ -579,6 +570,7 @@ export default function App() {
   };
   const syncReference = async () => {
     if (syncRef.current) return;
+    if (savingRef.current) { Alert.alert('Opération en cours', 'Attendez la fin de l’enregistrement avant de synchroniser.'); return; }
     syncRef.current = true; setSyncBusy(true); setReferenceError('');
     try {
       if(await isIdentifiedDeviceBound()) throw Error('Téléphone lié à un commercial : utilisez la synchronisation individuelle depuis le journal.');
@@ -598,6 +590,7 @@ export default function App() {
   };
   const uploadSales = async () => {
     if (syncRef.current) return;
+    if (savingRef.current) { Alert.alert('Opération en cours', 'Attendez la fin de l’enregistrement avant de synchroniser.'); return; }
     syncRef.current = true; setSyncBusy(true); setReferenceError('');
     let current: OutboxEntry | undefined;
     try {
@@ -674,6 +667,7 @@ export default function App() {
   const beginEdit = () => { if (!selectedSale) return; setEditLines(selectedSale.lines.map(l => ({ ...l }))); setEditQuery(''); setDisposition(null); setScreen('edit'); };
   const modifyLine = (index: number, change: Partial<SavedSale['lines'][number]>) => setEditLines(lines => lines.map((l, i) => i === index ? { ...l, ...change } : l));
   const commitEdit = async () => {
+    if (syncRef.current) { Alert.alert('Synchronisation en cours', 'Attendez la fin de la synchronisation avant cet enregistrement.'); return; }
     if (!selectedSale || !editTotals || savingRef.current || storageError || loading) return;
     try {
       const refClient = reference?.clients.find(c => c.id === selectedSale.clientId);
@@ -690,6 +684,7 @@ export default function App() {
   };
   const beginSettlement = () => { setSettlementAmount(''); setSettlementMode('Espèces'); setSettlementNumber(''); setSettlementBank(''); setSettlementDue(''); setScreen('settlement'); };
   const recordSettlement = async () => {
+    if (syncRef.current) { Alert.alert('Synchronisation en cours', 'Attendez la fin de la synchronisation avant cet enregistrement.'); return; }
     if (!balanceClient || savingRef.current || storageError || loading) return;
     try {
       const amount = parseDinars(settlementAmount);
@@ -715,6 +710,7 @@ export default function App() {
   const change = (id: string, fn: (line: CartLine) => CartLine | null) => setCart(current => current.flatMap(line => line.product.id === id ? ((updated) => updated ? [updated] : [])(fn(line)) : [line]));
   const reset = () => { setClient(null); setCart([]); setQuery(''); setNotice(''); setReturnJournalId(null); setPaidInput(''); setMode('Espèces'); setChequeNumber(''); setChequeBank(''); setChequeDue(''); setScreen('clients'); };
   const recordSale = async () => {
+    if (syncRef.current) { Alert.alert('Synchronisation en cours', 'Attendez la fin de la synchronisation avant cet enregistrement.'); return; }
     if (!client || !totals || savingRef.current || storageError || loading) return;
     try {
       const paid = mode === 'Crédit' ? 0 : parseDinars(paidInput);
