@@ -49,6 +49,12 @@ test('liaison isolée : anciennes files préservées, identité immuable et opé
   await recordDeviceOperation(tx,identity,op,'sale',entity,time);
   await assertKnownDeviceEntity(tx,identity,'sale',entity);
   await assert.rejects(assertKnownDeviceEntity(tx,{...identity,commercialId:other},'sale',entity),/rapprochement/);
+  await assert.rejects(assertKnownDeviceEntity(tx,{...identity,serverOrigin:'http://autre:3001'},'sale',entity),/rapprochement/);
+  // Une révision étrangère ne doit pas être masquée par le premier marqueur.
+  await recordDeviceOperation(tx,{...identity,commercialId:other},request,'sale',entity,time);
+  await assert.rejects(assertKnownDeviceEntity(tx,identity,'sale',entity),/autre commercial/);
+  db.prepare('DELETE FROM identified_local_operations WHERE operation_id=?').run(request);
+  await assertKnownDeviceEntity(tx,identity,'sale',entity);
   await assertDeviceWritable(tx,identity,[day]);
   await prepareTourClose(tx,id,day,0,()=>request);
   await assert.rejects(assertDeviceWritable(tx,identity,[day]),/Clôture en attente/);

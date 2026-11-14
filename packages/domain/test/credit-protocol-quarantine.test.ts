@@ -40,3 +40,17 @@ test('refus serveur explicite : blocage persistant sans effacer données ou file
   assert.equal(db.prepare('SELECT count(*) n FROM identified_device').get()?.n,1);
  }finally{db.close();}
 });
+
+test('cache v5 orphelin : anciens écrans bloqués sans effacer les données',async()=>{
+ const db=new DatabaseSync(':memory:');
+ try{
+  db.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}CREATE TABLE sales(id TEXT);INSERT INTO sales VALUES('facture');`);
+  const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{db.prepare(sql).run(...args)}};
+  assert.equal((await readLegacyRows(tx,'SELECT id FROM sales')).length,1);
+  db.prepare('INSERT INTO credit_reference_prototype_cache VALUES(1,?,?,?)').run('commercial','https://example.test','{}');
+  await assert.rejects(assertLegacyMobileCreditSafe(tx,null),/sans identité/);
+  await assert.rejects(readLegacyRows(tx,'SELECT id FROM sales'),/sans identité/);
+  assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,1);
+  assert.equal(db.prepare('SELECT count(*) n FROM credit_reference_prototype_cache').get()?.n,1);
+ }finally{db.close();}
+});

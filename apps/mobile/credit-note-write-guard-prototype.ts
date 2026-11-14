@@ -17,7 +17,13 @@ export async function assertLegacyMobileCreditSafe(tx:Tx,identity:DeviceIdentity
  if(!quarantine||quarantine.n)throw Error('Mise à jour et rapprochement v5 nécessaires : anciennes données temporairement indisponibles.');
  const row=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM offline_credit_prototype) AS n');
  if(!row||row.n)throw Error('Des avoirs existent : mise à jour des écrans et synchronisation v5 nécessaires.');
- if(!identity)return;
+ if(!identity){
+  // Une identité perdue n'autorise pas les anciens écrans à ignorer un
+  // cache v5 encore présent : il peut contenir des annulations distantes.
+  const orphan=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM credit_reference_prototype_cache) AS n');
+  if(!orphan||orphan.n)throw Error('Référence v5 sans identité : rapprochement nécessaire.');
+  return;
+ }
  const ref=await readPrototypeCreditReferenceCache(tx,identity);
  if(ref&&(ref.saleStates.some(s=>s.creditNote)||ref.journalStates.some(j=>j.creditNote)))throw Error('Des avoirs existent : mise à jour des écrans et synchronisation v5 nécessaires.');
  if(ref)throw Error('Téléphone lié en v5 : utilisez les écrans et calculs compatibles avant toute écriture.');
