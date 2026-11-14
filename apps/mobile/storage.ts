@@ -36,6 +36,7 @@ import {bindAndCacheCreditReferencePrototype} from './credit-note-binding-protot
 import {readCreditClientsPrototype} from './credit-client-view-prototype';
 import {readCreditMobileWorkspacePrototype} from './credit-mobile-workspace-reader-prototype';
 import {readLegacyRows} from './legacy-read-guard';
+import {readClientRevisions} from './client-revisions';
 import {quarantineOnUpgrade} from './credit-protocol-quarantine';
 import type {CommercialSession} from './commercial-login';
 import {validateCreditSaleEdit} from './credit-sale-edit-prototype';
@@ -60,7 +61,9 @@ async function db() {
     ); CREATE TABLE IF NOT EXISTS sale_revisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT, sale_id INTEGER NOT NULL, created_at TEXT NOT NULL,
       previous_payload TEXT NOT NULL, new_payload TEXT NOT NULL, refund INTEGER NOT NULL
-    ); CREATE TABLE IF NOT EXISTS settlements (
+    ); CREATE INDEX IF NOT EXISTS sale_revisions_by_sale ON sale_revisions(sale_id,id);
+    CREATE INDEX IF NOT EXISTS sales_by_client ON sales(client_id,id);
+    CREATE TABLE IF NOT EXISTS settlements (
       id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, client_id TEXT NOT NULL, payload TEXT NOT NULL
     ); CREATE TABLE IF NOT EXISTS sales_outbox (
       sequence INTEGER PRIMARY KEY AUTOINCREMENT, operation_id TEXT NOT NULL UNIQUE, sale_id TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, last_error TEXT
@@ -110,6 +113,11 @@ export async function getRevisions(saleId: number): Promise<Revision[]> {
   const rows = await legacyReadAll<{id: number; created_at: string; previous_payload: string; new_payload: string; refund: number}>(
     'SELECT id, created_at, previous_payload, new_payload, refund FROM sale_revisions WHERE sale_id = ? ORDER BY id DESC', saleId);
   return rows.map(r => ({ id: r.id, createdAt: r.created_at, previous: JSON.parse(r.previous_payload), current: JSON.parse(r.new_payload), refund: r.refund }));
+}
+export async function getClientRevisions(clientId:string):Promise<Revision[]> {
+ const database=await db();let rows:Revision[]=[];
+ await database.withExclusiveTransactionAsync(async tx=>{rows=await readClientRevisions(tx,clientId);});
+ return rows;
 }
 export async function updateSale(previous: SavedSale, updated: SavedSale, refund: number, credit?:CreditWriteContext): Promise<void> {
   const database = await db();
