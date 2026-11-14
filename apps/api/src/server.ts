@@ -27,8 +27,11 @@ import {CreditProtocolUpgradeRequired,assertOldCreditProtocolSafe} from './credi
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
 const secret: string = JWT_SECRET, username: string = ADMIN_USERNAME, passwordHash: string = ADMIN_PASSWORD_HASH;
+const transport=readTransportConfig(process.env);
 const app = express();
 app.disable('x-powered-by');
+// HSTS est opt-in, propre au nom DNS configuré, sans sous-domaines ni preload.
+if(transport.hsts){const hsts=transport.hsts;app.use((req,res,next)=>{if(req.secure&&req.hostname.toLowerCase()===hsts.host)res.set('Strict-Transport-Security',`max-age=${hsts.maxAge}`);next();});}
 // Les réponses API peuvent contenir des sessions ou des données commerciales.
 // Ces en-têtes ne remplacent ni TLS ni la protection du stockage local.
 app.use('/api',(_req,res,next)=>{res.set('Cache-Control','no-store');res.set('X-Content-Type-Options','nosniff');next();});
@@ -176,7 +179,6 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
 const creditV5TestOnly=process.env.SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
 const addressTestOnly=process.env.SLS_ADDRESS_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
 const addressPrivateHttp=process.env.SLS_ADDRESS_PRIVATE_HTTP==='J_ACCEPTE_LES_RISQUES_HTTP';
-const transport=readTransportConfig(process.env);
 if(addressTestOnly||addressPrivateHttp||transport.addressHttps){
  app.use('/api/mobile/address-approvals',addressApprovalCommercialRoutes(pool,secret,addressPrivateHttp));
  app.use('/api/address-approvals',addressApprovalAdminRoutes(pool,auth,username,addressPrivateHttp));

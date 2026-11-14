@@ -23,6 +23,10 @@ Les deux fichiers sont obligatoires ensemble. Un certificat expiré ou pas encor
 
 Les réponses sous `/api` portent `Cache-Control: no-store` et `X-Content-Type-Options: nosniff`, y compris les erreurs d’authentification. Ces en-têtes réduisent certains risques de cache et d’interprétation du contenu mais ne chiffrent pas les échanges ni le stockage du téléphone.
 
+### HSTS facultatif
+
+Après validation du nom DNS, du certificat et de leur renouvellement, `SLS_HSTS_MAX_AGE` peut fixer une durée en secondes de `0` à `31536000`. Il exige `SLS_REQUIRE_HTTPS=1` et un `SLS_TLS_EXPECTED_HOST` DNS (pas une IP) valide dans le SAN. L’en-tête `Strict-Transport-Security` est émis uniquement sur HTTPS pour ce nom, sans `includeSubDomains` ni `preload` ; il est absent par défaut et le HTTP temporaire reste inchangé. Il concerne les clients qui respectent HSTS, pas nécessairement l’application Android native ; il ne protège pas la première connexion ni ne remplace la validation du certificat. Un navigateur peut garder cette règle jusqu’à son expiration : choisir une durée courte au départ. Supprimer la variable n’efface pas une règle déjà mémorisée ; `0` demande son effacement uniquement si le navigateur reçoit cette réponse en HTTPS valide sur le même nom. Ne pas activer HSTS avant d’être sûr de pouvoir maintenir HTTPS sur ce nom.
+
 Ne pas associer `SLS_ADDRESS_HTTPS` au mode HTTP privé `SLS_ADDRESS_PRIVATE_HTTP`, ni aux paramètres de test `SLS_ADDRESS_TEST_ONLY` / `SLS_ADDRESS_TEST_TLS_*`. Le mode d’essai v5 HTTPS préexistant reste réservé aux données fictives. Une activation HTTPS ne synchronise ni ne migre automatiquement le téléphone ; l’approbation et les autres contrôles de continuité restent nécessaires. Une copie ou restauration de base peut passer ces contrôles. Ne pas utiliser la procédure avec des données réelles tant que l’identité de la base et la protection complète des flux ne sont pas établies.
 
 ## Administration et mobile
