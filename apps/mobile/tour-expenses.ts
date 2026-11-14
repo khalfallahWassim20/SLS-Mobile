@@ -55,8 +55,10 @@ export async function readExpenseCancellations(tx:Tx,id:DeviceIdentity,originals
  const source=originals??await readOriginalExpenses(tx,id),history=revisions??await readExpenseRevisions(tx,id,source);
  const rows=await tx.getAllAsync<ExpenseCancellation>(`SELECT operation_id AS operationId,expense_id AS expenseId,commercial_id AS commercialId,server_origin AS serverOrigin,version,recorded_at AS recordedAt,description,amount,reason,pending FROM tour_expense_cancellations ORDER BY recorded_at,operation_id`);
  const ids=new Set([...source.map(e=>e.operationId),...history.map(r=>r.operationId)]),seen=new Set<string>();
+ const originalsById=new Map(source.map(e=>[e.operationId,e])),revisionsByExpense=new Map<string,ExpenseRevision[]>();
+ for(const r of history){const group=revisionsByExpense.get(r.expenseId);if(group)group.push(r);else revisionsByExpense.set(r.expenseId,[r]);}
  for(const c of rows){
-  const original=source.find(e=>e.operationId===c.expenseId),all=history.filter(r=>r.expenseId===c.expenseId),last=all.at(-1),date=new Date(c.recordedAt);
+  const original=originalsById.get(c.expenseId),all=revisionsByExpense.get(c.expenseId)??[],last=all.at(-1),date=new Date(c.recordedAt);
   if(!original||seen.has(c.expenseId)||!uuid(c.operationId)||ids.has(c.operationId)||c.commercialId!==id.commercialId||c.serverOrigin!==id.serverOrigin||c.version!==(last?.version??1)||c.description!==(last?.description??original.description)||c.amount!==(last?.amount??original.amount)||!Number.isFinite(date.getTime())||date.toISOString()!==c.recordedAt||Date.parse(c.recordedAt)<Date.parse(last?.recordedAt??original.createdAt)||typeof c.reason!=='string'||!c.reason.trim()||c.reason!==c.reason.trim()||c.reason.length>200||![0,1].includes(c.pending)||(c.pending===0&&(original.pending===1||all.some(r=>r.pending))))throw Error('Annulation de dépense incohérente : rapprochement nécessaire.');
   ids.add(c.operationId);seen.add(c.expenseId);
  }
@@ -64,7 +66,9 @@ export async function readExpenseCancellations(tx:Tx,id:DeviceIdentity,originals
 }
 export async function readTourExpenses(tx:Tx,id:DeviceIdentity):Promise<TourExpense[]> {
  const originals=await readOriginalExpenses(tx,id),revisions=await readExpenseRevisions(tx,id,originals),cancellations=await readExpenseCancellations(tx,id,originals,revisions);
- return originals.map(e=>{const history=revisions.filter(r=>r.expenseId===e.operationId),latest=history.at(-1),cancel=cancellations.find(c=>c.expenseId===e.operationId);return {...e,version:latest?.version??1,description:latest?.description??e.description,amount:latest?.amount??e.amount,pending:e.pending||history.some(r=>r.pending)||cancel?.pending?1:0,...(cancel?{cancelled:true}:{})};});
+ const latestByExpense=new Map<string,ExpenseRevision>(),pendingByExpense=new Set<string>(),cancelByExpense=new Map(cancellations.map(c=>[c.expenseId,c]));
+ for(const r of revisions){latestByExpense.set(r.expenseId,r);if(r.pending)pendingByExpense.add(r.expenseId);}
+ return originals.map(e=>{const latest=latestByExpense.get(e.operationId),cancel=cancelByExpense.get(e.operationId);return {...e,version:latest?.version??1,description:latest?.description??e.description,amount:latest?.amount??e.amount,pending:e.pending||pendingByExpense.has(e.operationId)||cancel?.pending?1:0,...(cancel?{cancelled:true}:{})};});
 }
 /** Chaque correction ajoute une version, sans modifier ou effacer l'original. */
 export async function reviseTourExpense(tx:Tx,id:DeviceIdentity,expected:TourExpense,change:{operationId:string;recordedAt:string;description:string;amount:number}) {

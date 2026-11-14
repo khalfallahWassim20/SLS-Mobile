@@ -38,8 +38,13 @@ export async function reconcileExpenseSnapshot(tx:Tx,id:DeviceIdentity,day:strin
  if(originals.some(e=>e.pending)||revisions.some(r=>r.pending)||cancellations.some(c=>c.pending))throw Error('Synchronisez toutes les dépenses en attente avant l’actualisation.');
  if(originals.some(e=>e.day===day&&!expenseIds.has(e.operationId)))throw Error('Dépense locale absente du serveur : rapprochement nécessaire.');
  const allLocalIds=new Set([...originals.map(e=>e.operationId),...revisions.map(r=>r.operationId),...cancellations.map(c=>c.operationId)]);
+ // Indexer une fois : une journée volumineuse ne doit pas rescanner tout l'historique pour chaque dépense.
+ const originalsById=new Map(originals.map(e=>[e.operationId,e]));
+ const revisionsByExpense=new Map<string,typeof revisions>();
+ for(const r of revisions){const group=revisionsByExpense.get(r.expenseId);if(group)group.push(r);else revisionsByExpense.set(r.expenseId,[r]);}
+ const cancellationsByExpense=new Map(cancellations.map(c=>[c.expenseId,c]));
  for(const e of items){
-  const original=originals.find(x=>x.operationId===e.operationId),localRevisions=revisions.filter(r=>r.expenseId===e.operationId),localCancel=cancellations.find(c=>c.expenseId===e.operationId);
+  const original=originalsById.get(e.operationId),localRevisions=revisionsByExpense.get(e.operationId)??[],localCancel=cancellationsByExpense.get(e.operationId);
   if(original&&!same({operationId:original.operationId,createdAt:original.createdAt,description:original.description,amount:original.amount},{operationId:e.operationId,createdAt:e.createdAt,description:e.description,amount:e.amount}))throw Error('Dépense distante divergente : rapprochement nécessaire.');
   if(!original&&allLocalIds.has(e.operationId))throw Error('Identifiant distant déjà utilisé : rapprochement nécessaire.');
   if(localRevisions.length>e.revisions.length||localRevisions.some((r,i)=>!same({operationId:r.operationId,version:r.version,recordedAt:r.recordedAt,previousDescription:r.previousDescription,previousAmount:r.previousAmount,description:r.description,amount:r.amount},e.revisions[i])))throw Error('Versions de dépense divergentes : rapprochement nécessaire.');
@@ -48,7 +53,7 @@ export async function reconcileExpenseSnapshot(tx:Tx,id:DeviceIdentity,day:strin
   if(e.cancellation&&!localCancel&&allLocalIds.has(e.cancellation.operationId))throw Error('Identifiant distant déjà utilisé : rapprochement nécessaire.');
  }
  for(const e of items){
-  const original=originals.find(x=>x.operationId===e.operationId),localRevisions=revisions.filter(r=>r.expenseId===e.operationId),localCancel=cancellations.find(c=>c.expenseId===e.operationId);
+  const original=originalsById.get(e.operationId),localRevisions=revisionsByExpense.get(e.operationId)??[],localCancel=cancellationsByExpense.get(e.operationId);
   if(!original)await tx.runAsync('INSERT INTO tour_expenses VALUES(?,?,?,?,?,?,?,0)',e.operationId,id.commercialId,id.serverOrigin,day,e.createdAt,e.description,e.amount);
   for(const r of e.revisions.slice(localRevisions.length))await tx.runAsync('INSERT INTO tour_expense_revisions VALUES(?,?,?,?,?,?,?,?,?,?,0)',r.operationId,e.operationId,id.commercialId,id.serverOrigin,r.version,r.recordedAt,r.previousDescription,r.previousAmount,r.description,r.amount);
   if(e.cancellation&&!localCancel){const c=e.cancellation;await tx.runAsync('INSERT INTO tour_expense_cancellations VALUES(?,?,?,?,?,?,?,?,?,0)',c.operationId,e.operationId,id.commercialId,id.serverOrigin,c.version,c.recordedAt,c.description,c.amount,c.reason);}
