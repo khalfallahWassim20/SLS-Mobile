@@ -1,7 +1,8 @@
 /** Composition v5 montée uniquement avec l’option explicite de test isolé.
  * Les formulaires utilisent CreditWriteContext et les gardes transactionnelles. */
 import React,{useEffect,useMemo,useRef,useState} from 'react';
-import {Alert,ScrollView,StyleSheet,Text,TouchableOpacity,View} from 'react-native';
+import {Alert,ScrollView,StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
+import {parseDinars} from '@sls/domain';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -26,6 +27,7 @@ type Props={identity:DeviceIdentity;day:string;commercialName:string;session:Com
  * et l'identité dans la transaction avant d'enregistrer l'opération. */
 export function CreditMobileWorkspacePrototype({identity,day,commercialName,session,onUnauthorized}:Props){
  const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[tab,setTab]=useState<'clients'|'journal'>('journal'),[creditClient,setCreditClient]=useState<{id:string;scope:string}|null>(null),[form,setForm]=useState<{kind:'sale'|'settlement'|'preinvoice'|'receipt';client:Client;context:CreditWriteContext;articles:Snapshot['clients']['articles'];scope:string;invoice?:TourPreInvoice;receipts?:TourJournalReceipt[]}|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ const [journalCharge,setJournalCharge]=useState<{scope:string;value:string}>({scope:'',value:''});
  const [comparison,setComparison]=useState<Awaited<ReturnType<typeof comparePendingRemoteEditPrototype>>|null>(null);
  const [pendingClients,setPendingClients]=useState<Snapshot['clients']|null>(null);
  const [abandonedNotes,setAbandonedNotes]=useState<Awaited<ReturnType<typeof getAbandonedCreditNotesPrototype>>>([]);
@@ -74,7 +76,9 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
  const close=()=>{if(!transport||busy)return;Alert.alert('Clôturer la journée ?', 'Synchronisez tous les téléphones utilisés pour cette journée, puis vérifiez le journal et les remboursements. Le serveur compare les opérations reçues à ce téléphone, mais ne voit pas les données encore hors ligne et ne prouve pas les versements physiques. Seul un administrateur pourra rouvrir cette journée.',[{text:'Annuler',style:'cancel'},{text:'Clôturer',onPress:()=>void run(async seq=>{await transport.closeDay(day);await load(seq);})}]);};
  const exportJournal=(format:'csv'|'pdf')=>void run(async seq=>{
   const current=await getCreditMobileWorkspacePrototype(identity,day,commercialName);if(!alive(seq))return;
-  await shareCreditJournalPrototype(current.journal,format,{
+  const charge=journalCharge.scope===context?journalCharge.value.trim():'';
+  const expensesTotal=format==='pdf'&&charge?parseDinars(charge):undefined;
+  await shareCreditJournalPrototype({...current.journal,expensesTotal},format,{
    cacheDirectory:FileSystem.cacheDirectory,available:()=>Sharing.isAvailableAsync(),now:Date.now,
    print:async html=>{const result=await Print.printToFileAsync({html,base64:true});return {base64:result.base64};},
    write:(uri,data,encoding)=>FileSystem.writeAsStringAsync(uri,data,{encoding:encoding==='base64'?FileSystem.EncodingType.Base64:FileSystem.EncodingType.UTF8}),
@@ -128,12 +132,12 @@ export function CreditMobileWorkspacePrototype({identity,day,commercialName,sess
   {pendingClients&&!currentSnapshot&&<><Text style={styles.notice}>Clients disponibles avec leurs contrôles individuels. Un solde en conflit reste bloqué ; l’historique permet de comparer les versions.</Text>{clientList(pendingClients)}</>}
   {!pendingRemote&&(!pendingClients||!!currentSnapshot)&&<>
   <View style={styles.actions}><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setTab('journal')}><Text style={styles.link}>Journal</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setTab('clients')}><Text style={styles.link}>Clients et soldes</Text></TouchableOpacity></View>
-  {!currentSnapshot?<Text>{busy?'Chargement…':'Données v5 indisponibles.'}</Text>:tab==='journal'?<CreditJournalViewPrototype model={currentSnapshot.view} busy={busy} onCredit={selectCredit} onExport={exportJournal} onPayment={(clientId,invoiceId)=>{
+  {!currentSnapshot?<Text>{busy?'Chargement…':'Données v5 indisponibles.'}</Text>:tab==='journal'?<><Text style={styles.heading}>Total des charges pour le PDF (DT)</Text><TextInput accessibilityLabel="Total des charges pour le PDF" keyboardType="decimal-pad" style={styles.input} value={journalCharge.scope===context?journalCharge.value:''} onChangeText={value=>setJournalCharge({scope:context,value})} placeholder="Facultatif · ex. 15,500"/><Text>Montant manuel pour ce PDF seulement : non enregistré, non synchronisé et non déduit des encaissements.</Text><CreditJournalViewPrototype model={currentSnapshot.view} busy={busy} onCredit={selectCredit} onExport={exportJournal} onPayment={(clientId,invoiceId)=>{
    const client=currentSnapshot.clients.clients.find(c=>c.id===clientId),invoice=currentSnapshot.journal.rows.find(r=>r.clientId===clientId)?.preInvoice;
    if(!client||client.balance===null||client.conflict||!invoice||invoice.id!==invoiceId){setError('Client ou facture indisponible : actualisez le journal.');return;}
    setForm({kind:'receipt',client,context:writeContext(client),articles:[],scope:context,invoice,receipts:currentSnapshot.journal.receipts.filter(r=>r.preInvoiceId===invoice.id)});
-  }}/>:clientList(currentSnapshot.clients)}
+  }}/></>:clientList(currentSnapshot.clients)}
   </>}
  </ScrollView>;
 }
-const styles=StyleSheet.create({container:{padding:16,gap:12},title:{fontSize:20,fontWeight:'700',color:'#173c32'},heading:{fontWeight:'700',fontSize:16},comparison:{gap:8,marginVertical:8},compareCard:{backgroundColor:'#fff',borderRadius:8,padding:10,gap:4},pending:{backgroundColor:'#fff4de',padding:12,borderRadius:10,gap:7},notice:{backgroundColor:'#fff4de',padding:10,borderRadius:8,color:'#89511e'},error:{backgroundColor:'#ffebe8',padding:10,borderRadius:8,color:'#842c23'},actions:{flexDirection:'row',gap:16,flexWrap:'wrap'},link:{color:'#176745',fontWeight:'700',paddingVertical:8}});
+const styles=StyleSheet.create({container:{padding:16,gap:12},title:{fontSize:20,fontWeight:'700',color:'#173c32'},input:{backgroundColor:'#fff',borderWidth:1,borderColor:'#c5d7cc',padding:10,borderRadius:8},heading:{fontWeight:'700',fontSize:16},comparison:{gap:8,marginVertical:8},compareCard:{backgroundColor:'#fff',borderRadius:8,padding:10,gap:4},pending:{backgroundColor:'#fff4de',padding:12,borderRadius:10,gap:7},notice:{backgroundColor:'#fff4de',padding:10,borderRadius:8,color:'#89511e'},error:{backgroundColor:'#ffebe8',padding:10,borderRadius:8,color:'#842c23'},actions:{flexDirection:'row',gap:16,flexWrap:'wrap'},link:{color:'#176745',fontWeight:'700',paddingVertical:8}});

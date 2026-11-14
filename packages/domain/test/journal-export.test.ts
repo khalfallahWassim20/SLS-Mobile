@@ -21,8 +21,8 @@ test('export local : avoirs du jour distincts des factures et de l’ancienne de
  const csv=journalCsv(data),html=journalHtml(data);
  assert.match(csv,/AVOIRS CRÉÉS CE JOUR/);assert.match(csv,/'=Fictif/);assert.match(csv,/facture du 2026-11-07/);assert.match(csv,/en attente/);assert.match(csv,/synchronisé/);
  assert.match(csv,/850,000/);assert.match(csv,/100,000/);assert.match(csv,/250,000/);assert.match(csv,/'-600,000/);
- assert.match(html,/AVOIRS CRÉÉS CE JOUR/);assert.match(html,/corriger séparément dans le système principal/);
- assert.match(csv,/Vente supplémentaire — annulée par avoir/);assert.match(html,/Vente supplémentaire — annulée par avoir/);
+ assert.match(html,/avant déduction des avoirs/);assert.match(html,/corrigée séparément dans le système principal/);
+ assert.match(csv,/Vente supplémentaire — annulée par avoir/);assert.match(html,/Consultez le CSV détaillé/);
  const prior={...data,day:'2026-11-07',rows:[{clientId:client,clientName:'=Fictif',sector:'',preInvoice:{...invoice,sector:''},sales:[],total:600000}],receipts:[receipt]};
  const originalNotes=notes.map(x=>x.note.kind==='preinvoice'?{...x,note:{...x.note,source:{...x.note.source,invoice:{...invoice,sector:''}}}}:x);
  const preData={...prior,credits:originalNotes};const historical=journalCsv(preData);assert.match(historical,/Facture préétablie — annulée par avoir/);assert.match(historical,/avoir du 2026-11-08 · synchronisé/);assert.match(historical,/400,000/);
@@ -32,7 +32,7 @@ test('export local : avoirs du jour distincts des factures et de l’ancienne de
  const changed={...data,remoteSaleUpdates:[{saleId:id,day:'2026-11-08'}]};assert.match(journalCsv(changed),/modification du 2026-11-08 enregistrée ailleurs/);assert.match(journalHtml(changed),/Modifications enregistrées ailleurs/);
  assert.throws(()=>journalCsv({...changed,remoteSaleUpdates:[{saleId:id,day:'2026-11-08'},{saleId:id,day:'2026-11-08'}]}),/Modification distante invalide/);
  assert.throws(()=>journalCsv({...changed,remoteSaleUpdates:[{saleId:randomUUID(),day:'2026-11-08'}]}),/Modification distante invalide/);
- const remote={kind:'sale' as const,invoiceId:id,day:'2026-11-08',source};const remoteData={...data,credits:[],remoteCancellations:[remote]};assert.match(journalCsv(remoteData),/enregistré ailleurs/);assert.match(journalHtml(remoteData),/Vente supplémentaire — annulée par avoir/);
+ const remote={kind:'sale' as const,invoiceId:id,day:'2026-11-08',source};const remoteData={...data,credits:[],remoteCancellations:[remote]};assert.match(journalCsv(remoteData),/enregistré ailleurs/);assert.match(journalHtml(remoteData),/avant déduction des avoirs/);
  assert.throws(()=>journalCsv({...remoteData,remoteCancellations:[remote,remote]}),/Annulation distante invalide/);
  assert.throws(()=>journalCsv({...remoteData,remoteCancellations:[{...remote,source:{...source,total:1}}]}),/modifiée après avoir/);
  assert.throws(()=>journalCsv({...data,remoteCancellations:[remote]}),/Annulation distante invalide/);
@@ -59,7 +59,7 @@ test('avoirs distants du propriétaire : facturé, caisse distincte et contrôle
  const e={operationId:randomUUID(),invoiceId:randomUUID(),kind:'preinvoice' as const,clientId:randomUUID(),clientName:'=Client fictif',recordedAt:'2026-11-08T10:00:00.000Z',invoiceDay:'2026-11-07',invoiceTotal:600000,refund:250000,retainedCredit:0,actorRole:'admin' as const,actorId:'admin'};
  const data={day:'2026-11-08',commercial:'Fictif',rows:[],receipts:[],credits:[],remoteOwnedCredits:[e],creditOwnersKnown:true};
  const model=describeCreditJournalPrototype(data);assert.equal(model.remoteOwnedCredits.length,1);assert.equal(model.totals.billedAfterLocalCredits,-600000);assert.equal(model.totals.collectedAfterLocalRefunds,0);
- const csv=journalCsv(data);assert.match(csv,/AVOIRS ENREGISTRÉS AILLEURS/);assert.match(csv,/600,000/);assert.match(csv,/'=Client fictif/);assert.match(csv,/déduits du facturé/);assert.match(journalHtml(data),/facture du 2026-11-07/);
+ const csv=journalCsv(data);assert.match(csv,/AVOIRS ENREGISTRÉS AILLEURS/);assert.match(csv,/600,000/);assert.match(csv,/'=Client fictif/);assert.match(csv,/déduits du facturé/);assert.match(journalHtml(data),/corrigée séparément/);
  assert.throws(()=>journalCsv({...data,remoteOwnedCredits:[e,e]}),/invalide/);
  assert.throws(()=>journalCsv({...data,remoteOwnedCredits:[{...e,invoiceDay:'2026-02-30'}]}),/invalide/);
  assert.throws(()=>journalCsv({...data,remoteOwnedCredits:[{...e,refund:600001}]}),/invalide/);
@@ -71,4 +71,23 @@ test('avoirs distants du propriétaire : facturé, caisse distincte et contrôle
  assert.equal(bothModel.totals.creditNotes,600000);assert.equal(bothModel.totals.billedAfterLocalCredits,-600000);assert.equal(bothModel.totals.collectedAfterLocalRefunds,-250000);
  assert.match(journalCsv(both),/TOTAL REMBOURSEMENTS ADMIN ATTRIBUÉS/);
 
+});
+
+test('PDF journal synthétique : secteurs, une ligne par client, paiements et dépenses non renseignées',()=>{
+ const day='2026-11-08',at='2026-11-08T10:00:00.000Z';
+ const sale=(id:number,paid:number,mode:string)=>({id,createdAt:at,clientId:'a',clientName:'<Client A>',lines:[],total:125000,paid,remaining:125000-paid,paymentMode:mode,chequeNumber:'',chequeBank:'',chequeDue:''});
+ const invoice={id:'p',journalDate:day,clientId:'a',clientName:'<Client A>',sector:'Nord & Est',amount:600000,createdAt:at};
+ const receipt=(id:string,prePaid:number,oldDebtPaid:number,mode:'Espèces'|'Chèque')=>({id,preInvoiceId:'p',clientId:'a',journalDate:day,createdAt:at,prePaid,oldDebtPaid,creditFull:false,mode,chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:100000});
+ const data={day,commercial:'<Commercial>',rows:[{clientId:'a',clientName:'<Client A>',sector:'Nord & Est',preInvoice:invoice,sales:[sale(1,50000,'Espèces'),sale(2,25000,'Virement')],total:850000}],receipts:[receipt('r1',200000,10000,'Espèces'),receipt('r2',50000,5000,'Chèque')],settlements:[{id:1,createdAt:at,clientId:'a',clientName:'<Client A>',amount:20000,mode:'Virement',chequeNumber:'',chequeBank:'',chequeDue:''},{id:2,createdAt:at,clientId:'b',clientName:'Client B',amount:30000,mode:'Chèque',chequeNumber:'',chequeBank:'',chequeDue:''}],clientSectors:{a:'Nord & Est',b:'Sud'}};
+ const html=journalHtml(data),table=html.match(/<table><thead>.*?<\/thead><tbody>(.*?)<\/tbody><\/table>/)?.[1];assert.ok(table);
+ assert.equal((table.match(/<tr>/g)??[]).length,2);assert.equal((table.match(/&lt;Client A&gt;/g)??[]).length,1);assert.equal((table.match(/Client B/g)??[]).length,1);
+ assert.match(html,/Secteur\(s\) des clients du jour : Nord &amp; Est, Sud/);assert.doesNotMatch(html,/<th>Secteur<\/th>/);
+ assert.match(table,/<td>&lt;Client A&gt;<\/td><td>600,000<\/td><td>250,000<\/td><td>325,000 · Espèces 250,000 · Chèque 50,000 · Virement 25,000<\/td><td>35,000 · Espèces 10,000 · Chèque 5,000 · Virement 20,000<\/td><td>850,000<\/td>/);
+ assert.match(table,/<td>Client B<\/td><td>0,000<\/td><td>0,000<\/td><td>0,000<\/td><td>30,000 · Chèque 30,000<\/td><td>0,000<\/td>/);
+ assert.match(html,/Total facturé \(préétablie \+ supplémentaire\)<\/td><td>850,000/);assert.match(html,/Total paiements facture préétablie<\/td><td>250,000/);
+ assert.match(html,/Total paiements facture supplémentaire<\/td><td>75,000/);assert.match(html,/Total charges<\/td><td>Non renseigné/);assert.match(html,/remboursements distants<\/td><td>390,000/);assert.match(html,/Nombre de clients<\/td><td>2/);
+ assert.match(journalHtml({...data,expensesTotal:15500}),/Total charges<\/td><td>15,500/);
+ assert.throws(()=>journalHtml({...data,expensesTotal:-1}),/charges invalide/);
+ assert.throws(()=>journalHtml({...data,settlements:[data.settlements[0],data.settlements[0]]}),/Règlement de dette invalide/);
+ assert.throws(()=>journalHtml({...data,rows:[data.rows[0],data.rows[0]]}),/dupliqué/);
 });

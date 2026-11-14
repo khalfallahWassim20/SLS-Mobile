@@ -398,7 +398,7 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   // Les exports proviennent de la même capture que le modèle et ne nécessitent
   // aucun réseau ; PDF et CSV restent disponibles en attente de synchronisation.
   const writes:{uri:string;content:string;encoding:string}[]=[],shares:string[]=[];
-  const shareIO={cacheDirectory:'file:///cache/',available:async()=>true,write:async(uri:string,content:string,encoding:'utf8'|'base64')=>{writes.push({uri,content,encoding});},print:async(html:string)=>{assert.match(html,/Avoir/);return {base64:'UEZG'};},share:async(uri:string)=>{shares.push(uri);},now:()=>1};
+  const shareIO={cacheDirectory:'file:///cache/',available:async()=>true,write:async(uri:string,content:string,encoding:'utf8'|'base64')=>{writes.push({uri,content,encoding});},print:async(html:string)=>{assert.match(html,/avoir/i);return {base64:'UEZG'};},share:async(uri:string)=>{shares.push(uri);},now:()=>1};
   await shareCreditJournalPrototype(workspace.journal,'csv',shareIO);await shareCreditJournalPrototype(workspace.journal,'pdf',shareIO);
   assert.equal(writes.length,2);assert.match(writes[0].content,/50,000/);assert.equal(writes[1].encoding,'base64');assert.equal(shares.length,2);
   await assert.rejects(shareCreditJournalPrototype({...workspace.journal,credits:undefined},'csv',shareIO),/v5 invalide/);
