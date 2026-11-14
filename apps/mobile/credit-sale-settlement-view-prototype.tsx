@@ -3,6 +3,7 @@ import React,{useMemo,useRef,useState} from 'react';
 import {ScrollView,StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
 import {calculateInvoice} from '@sls/domain';
 import {unitPriceExcludingVat} from './reference';
+import {indexSearch,searchIndexed,firstPage} from './paged-search';
 import {saveSale,saveSettlement} from './storage';
 import type {CreditWriteContext} from './credit-note-write-guard-prototype';
 import {prepareCreditSale,prepareCreditSettlement,type CreditFormArticle,type CreditFormClient,type CreditPayment} from './credit-sale-settlement-prototype';
@@ -14,7 +15,10 @@ const discount=(value:string)=>{const m=/^(\d{1,3})(?:[.,](\d{1,2}))?$/.exec(val
 export function CreditSaleSettlementViewPrototype({kind,client,context,articles,onDone,onCancel}:Props){
  const [query,setQuery]=useState(''),[cart,setCart]=useState<Draft[]>([]),[mode,setMode]=useState<CreditPayment['mode']>('Espèces'),[paid,setPaid]=useState('0'),[number,setNumber]=useState(''),[bank,setBank]=useState(''),[due,setDue]=useState(''),[busy,setBusy]=useState(false),[complete,setComplete]=useState(false),[error,setError]=useState('');
  const lock=useRef(false),saved=useRef(false);
- const found=useMemo(()=>{const q=query.trim().toLocaleLowerCase();return articles.filter(a=>`${a.name} ${a.code} ${a.barcode}`.toLocaleLowerCase().includes(q));},[query,articles]);
+ const [visible,setVisible]=useState(40);
+ const articleIndex=useMemo(()=>indexSearch(articles,a=>`${a.name} ${a.code} ${a.barcode??''}`),[articles]);
+ const found=useMemo(()=>searchIndexed(articleIndex,query),[articleIndex,query]);
+ const page=useMemo(()=>firstPage(found,visible),[found,visible]);
  const total=useMemo(()=>{try{return cart.length?calculateInvoice(cart.map(l=>({quantity:l.quantity,unitPrice:unitPriceExcludingVat(l.article.saleTtc,l.article.vatRate),discountRate:discount(l.discount),vatRate:l.article.vatRate}))).total:null;}catch{return null;}},[cart]);
  const add=(article:CreditFormArticle)=>setCart(current=>current.some(l=>l.article.id===article.id)?current.map(l=>l.article.id===article.id?{...l,quantity:Math.min(1000000,l.quantity+1)}:l):[...current,{article,quantity:1,discount:'0'}]);
  const change=(id:string,fn:(l:Draft)=>Draft|null)=>setCart(current=>current.flatMap(l=>l.article.id===id?((value)=>value?[value]:[])(fn(l)):[l]));
@@ -33,9 +37,10 @@ export function CreditSaleSettlementViewPrototype({kind,client,context,articles,
   <Text style={styles.title}>{kind==='sale'?'Nouvelle vente':'Règlement de dette'} · {client.name}</Text>
   <Text style={styles.notice}>Solde connu avant opération : {money(client.balance??0)}. Les opérations hors ligne des autres appareils ne sont pas encore visibles.</Text>
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-  {kind==='sale'&&<><TextInput accessibilityLabel="Rechercher un article" style={styles.input} value={query} onChangeText={setQuery} placeholder="Nom, code ou code-barres"/>
-   <Text>{found.length} article(s) trouvé(s){found.length>50?' · affinez la recherche':''}</Text>
-   {found.slice(0,50).map(a=><TouchableOpacity key={a.id} accessibilityRole="button" disabled={busy||complete} onPress={()=>add(a)} style={styles.card}><Text>{a.name} · {a.code}</Text><Text>Prix TTC unitaire : {money(Number(a.saleTtc))} · Ajouter</Text></TouchableOpacity>)}
+  {kind==='sale'&&<><TextInput accessibilityLabel="Rechercher un article" style={styles.input} value={query} onChangeText={v=>{setQuery(v);setVisible(40);}} placeholder="Nom, code ou code-barres"/>
+   <Text>{page.total} article(s) trouvé(s) · {page.items.length} affiché(s)</Text>
+   {page.items.map(a=><TouchableOpacity key={a.id} accessibilityRole="button" disabled={busy||complete} onPress={()=>add(a)} style={styles.card}><Text>{a.name} · {a.code}</Text><Text>Prix TTC unitaire : {money(Number(a.saleTtc))} · Ajouter</Text></TouchableOpacity>)}
+   {page.hasMore&&<TouchableOpacity accessibilityRole="button" disabled={busy||complete} onPress={()=>setVisible(v=>v+40)}><Text style={styles.link}>Afficher plus d’articles</Text></TouchableOpacity>}
    <Text style={styles.heading}>Panier</Text>{cart.map(l=><View key={l.article.id} style={styles.card}><Text>{l.article.name} · quantité {l.quantity}</Text><View style={styles.actions}><TouchableOpacity accessibilityRole="button" disabled={busy||complete} onPress={()=>change(l.article.id,x=>x.quantity<=1?null:{...x,quantity:x.quantity-1})}><Text style={styles.link}>−</Text></TouchableOpacity><TouchableOpacity accessibilityRole="button" disabled={busy||complete} onPress={()=>change(l.article.id,x=>({...x,quantity:Math.min(1000000,x.quantity+1)}))}><Text style={styles.link}>+</Text></TouchableOpacity><Text>Remise (%)</Text><TextInput accessibilityLabel={`Remise ${l.article.name}`} style={styles.smallInput} keyboardType="decimal-pad" value={l.discount} onChangeText={v=>change(l.article.id,x=>({...x,discount:v}))}/></View></View>)}
    <Text style={styles.heading}>Total : {total===null?'—':money(total)}</Text></>}
   <Text style={styles.heading}>Mode de paiement</Text><View style={styles.actions}>{(['Espèces','Chèque','Virement',...(kind==='sale'?['Crédit']:[])] as CreditPayment['mode'][]).map(value=><TouchableOpacity accessibilityRole="button" accessibilityState={{selected:mode===value}} disabled={busy||complete} key={value} onPress={()=>setMode(value)}><Text style={styles.link}>{mode===value?'✓ ':''}{value}</Text></TouchableOpacity>)}</View>

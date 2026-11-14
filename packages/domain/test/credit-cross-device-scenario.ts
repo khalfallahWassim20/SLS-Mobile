@@ -319,6 +319,11 @@ export async function runCreditCrossDeviceScenario(db:CreditScenarioDatabase,poo
   for(const [id,kind] of [[localSaleId,'sale'],[localInvoiceId,'journal']])mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(randomUUID(),identity.commercialId,kind,id,at);
   mobile.exec('DELETE FROM credit_sources_prototype_cache');
   const localChoices=await transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest));assert.equal(localChoices.remoteAvailable,false);assert.equal(localChoices.items.length,2);assert.ok(localChoices.items.every(x=>x.origin==='local'&&!x.blocked));assert.equal(localChoices.items.find(x=>x.kind==='preinvoice')?.paid,250000);assert.equal(localChoices.items.find(x=>x.kind==='preinvoice')?.oldDebtPaid,400000);
+  // La liste ne doit pas proposer une facture dont une révision locale a été
+  // attribuée à une autre identité, même si le premier marqueur est correct.
+  const foreignMarker=randomUUID();mobile.prepare('INSERT INTO identified_local_operations VALUES(?,?,?,?,?)').run(foreignMarker,randomUUID(),'sale',localSaleId,at);
+  await assert.rejects(transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest)),/autre identité/);
+  mobile.prepare('DELETE FROM identified_local_operations WHERE operation_id=?').run(foreignMarker);
   const localHistory=await transaction(()=>readCreditHistoryPrototype(tx,identity,clientId,digest));assert.equal(localHistory.sales.length,1);assert.equal(localHistory.sales[0].sale.syncSaleId,localSaleId);assert.equal(localHistory.receipts.length,1);assert.equal(localHistory.receipts[0].oldDebtPaid,400000);
   mobile.prepare('UPDATE tour_journal_receipts SET payload=? WHERE id=?').run(JSON.stringify({...localReceipt,oldDebtPaid:1}),localReceipt.id);await assert.rejects(transaction(()=>readCreditSourceChoices(tx,identity,clientId,digest)),/Historique local/);mobile.prepare('UPDATE tour_journal_receipts SET payload=? WHERE id=?').run(JSON.stringify(localReceipt),localReceipt.id);
   await transaction(()=>saveCreditSourcesPrototype(tx,identity,identity,clientId,sources,digest));

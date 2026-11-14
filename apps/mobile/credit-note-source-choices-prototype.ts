@@ -55,12 +55,14 @@ export async function readCreditSourceChoices(tx:Tx,identity:DeviceIdentity,clie
  const seen=new Set<string>();
  for(const c of candidates){
   const key=`${c.kind}:${c.id}`;if(seen.has(key))throw Error('Facture locale dupliquée.');seen.add(key);
-  const proof=await tx.getFirstAsync<{commercialId:string}>('SELECT commercial_id AS commercialId FROM identified_local_operations WHERE entity_id=? AND operation_kind=? LIMIT 1',c.id,c.kind==='sale'?'sale':'journal');
-  if(proof&&proof.commercialId!==identity.commercialId)throw Error('Facture liée à une autre identité.');
+  const operationKind=c.kind==='sale'?'sale':'journal';
+  const proof=await tx.getFirstAsync<{present:number;foreignIdentity:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE entity_id=? AND operation_kind=?) AS present,
+   EXISTS(SELECT 1 FROM identified_local_operations WHERE entity_id=? AND operation_kind=? AND commercial_id<>?) AS foreignIdentity`,c.id,operationKind,c.id,operationKind,identity.commercialId);
+  if(!proof||proof.foreignIdentity)throw Error('Facture liée à une autre identité.');
   const state=c.kind==='sale'?reference.saleStates.find(s=>s.saleId===c.id):reference.journalStates.find(j=>j.id===c.id);
   const proofForVersion=c.kind==='sale'?reference.eligibleSaleProofs.find(p=>p.saleId===c.id):reference.journalProofs.find(p=>p.id===c.id);
   let mismatch=!!state&&(state.clientId!==clientId||state.version>c.version||(state.version===c.version&&!!proofForVersion&&await digest(canonicalJson(c.source))!==proofForVersion.hash));
-  if(!proof){
+  if(!proof.present){
    // Une ancienne facture présente sur le téléphone peut ne pas avoir de
    // marqueur local. Ne la proposer que si la référence v5 l'identifie ;
    // une file, une version ou une empreinte différentes restent bloquantes.
