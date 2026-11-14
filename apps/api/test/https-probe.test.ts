@@ -25,6 +25,17 @@ test('vérification TLS : origine stricte, autorité et nom reconnus, sans requ�
  }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));rmSync(dir,{recursive:true,force:true});}
 });
 
+test('le diagnostic refuse un certificat CN seul même avec une autorité reconnue',{timeout:20000},async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'sls-probe-cn-'));let server:ReturnType<typeof createServer>|undefined;
+ try{
+  const key=join(dir,'key'),cert=join(dir,'cert');
+  assert.equal(spawnSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-keyout',key,'-out',cert,'-days','1','-subj','/CN=localhost'],{stdio:'ignore'}).status,0);
+  server=createServer({key:readFileSync(key),cert:readFileSync(cert)},()=>{});
+  const port=await new Promise<number>(resolve=>server!.listen(0,'localhost',()=>resolve((server!.address() as {port:number}).port)));
+  await assert.rejects(probeHttps(`https://localhost:${port}`,readFileSync(cert)),/SAN/);
+ }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));rmSync(dir,{recursive:true,force:true});}
+});
+
 test('vérification TLS réussie avec CA explicite et SAN IP : certificat présenté sans envoi de données',{timeout:20000},async()=>{
  const dir=mkdtempSync(join(tmpdir(),'sls-probe-ok-'));let server:ReturnType<typeof createServer>|undefined;
  try{

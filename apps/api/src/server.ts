@@ -29,6 +29,9 @@ if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_
 const secret: string = JWT_SECRET, username: string = ADMIN_USERNAME, passwordHash: string = ADMIN_PASSWORD_HASH;
 const app = express();
 app.disable('x-powered-by');
+// Les réponses API peuvent contenir des sessions ou des données commerciales.
+// Ces en-têtes ne remplacent ni TLS ni la protection du stockage local.
+app.use('/api',(_req,res,next)=>{res.set('Cache-Control','no-store');res.set('X-Content-Type-Options','nosniff');next();});
 app.use(express.json({ limit: '64kb' }));
 app.post('/api/login', rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-8', legacyHeaders: false }), async (req, res) => {
   const input = z.object({ username: z.string().max(200), password: z.string().max(200) }).safeParse(req.body);
