@@ -100,6 +100,9 @@ test('export unifié : montant complet, encaissement à sa date et aucune ventil
  const html=journalHtml(data),csv=journalCsv(data);
  assert.match(html,/850,000/);assert.match(html,/600,000/);assert.match(html,/250,000/);assert.match(html,/200,000 · Espèces 200,000/);assert.match(html,/Total paiements factures du jour<\/td><td>200,000/);assert.match(html,/Total encaissé local avant remboursements<\/td><td>200,000/);
  assert.doesNotMatch(html,/Total paiements facture préétablie/);assert.match(csv,/Règlement facture du jour/);assert.match(csv,/en attente/);assert.match(csv,/TOTAL RÈGLEMENTS FACTURE DU JOUR/);
+ const credit={...movement,payment:{...payment,amount:0,mode:'Crédit' as const}};
+ const creditCsv=journalCsv({...data,dayInvoicePayments:[credit]}),creditHtml=journalHtml({...data,dayInvoicePayments:[credit]});
+ assert.match(creditCsv,/Facture du jour — crédit total/);assert.match(creditHtml,/0,000 · Crédit total/);assert.match(creditHtml,/Total encaissé local avant remboursements<\/td><td>0,000/);
  assert.throws(()=>journalHtml({...data,dayInvoicePayments:[movement,movement]}),/dupliqué/);
  assert.throws(()=>journalCsv({...data,dayInvoicePayments:[{...movement,payment:{...payment,amount:0}}]}),/Paiement invalide/);
  const tomorrow={...movement,payment:{...payment,recordedAt:'2026-01-02T10:00:00.000Z'},pending:false};

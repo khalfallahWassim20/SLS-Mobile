@@ -32,7 +32,7 @@ export function projectDayInvoiceView(source:DayInvoiceViewSource,local:readonly
  for(const [id,p] of localMap){const other=merged.get(id);if(other&&canonicalJson(other)!==canonicalJson(p))throw RangeError('Paiement local et serveur divergent');merged.set(id,p);}
  const events=[...merged.values()].sort((a,b)=>a.recordedAt<b.recordedAt?-1:a.recordedAt>b.recordedAt?1:a.operationId<b.operationId?-1:a.operationId>b.operationId?1:0);
  if(events.filter(p=>p.preInvoice?.declare).length>1||events.some(p=>p.preInvoice?.declare&&!source.preInvoice?.declared))throw RangeError('Déclaration de facture incohérente');
- const result=calculateDayInvoice({preInvoice:source.preInvoice,sales:source.sales,dayPayments:events.map(p=>({id:p.operationId,amount:p.amount}))});
+ const result=calculateDayInvoice({preInvoice:source.preInvoice,sales:source.sales,dayPayments:events.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))});
  const paid=safe(BigInt(result.alreadyPaid)+BigInt(result.dayPayments));
  const collectionByDay=new Map<string,{day:string;total:bigint;cash:bigint;cheque:bigint;transfer:bigint}>();
  for(const event of events){const day=civilDay(event.recordedAt);let item=collectionByDay.get(day);if(!item){item={day,total:0n,cash:0n,cheque:0n,transfer:0n};collectionByDay.set(day,item);}const n=BigInt(event.amount);item.total+=n;if(event.mode==='Espèces')item.cash+=n;else if(event.mode==='Chèque')item.cheque+=n;else item.transfer+=n;}

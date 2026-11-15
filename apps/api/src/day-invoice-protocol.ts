@@ -6,8 +6,8 @@ const uuid=z.string().uuid();
 const version=z.number().int().safe().min(1).max(1000000);
 const source=z.object({id:uuid,version}).strict();
 const payload=z.object({
- operationId:uuid,clientId:uuid,day:z.string(),recordedAt:z.string(),amount:z.number().int().safe().positive(),
- mode:z.enum(['Espèces','Chèque','Virement']),chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100),
+ operationId:uuid,clientId:uuid,day:z.string(),recordedAt:z.string(),amount:z.number().int().safe().nonnegative(),
+ mode:z.enum(['Espèces','Chèque','Virement','Crédit']),chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100),
  preInvoice:z.object({id:uuid,version,total:z.number().int().safe().positive(),declare:z.boolean()}).strict().nullable(),
  sales:z.array(source).max(1000)
 }).strict();

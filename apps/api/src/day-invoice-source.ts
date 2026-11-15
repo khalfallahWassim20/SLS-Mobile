@@ -47,5 +47,5 @@ export async function readServerDayInvoiceSource(db:PoolClient,event:DayInvoiceP
   preInvoice={id:p.id,version:proof.version,total:p.total,paid:summary.prePaid,declared:summary.declared||declarations.length===1};
  }
  if(payments.some(p=>p.preInvoice && p.preInvoice.id!==preInvoice?.id))throw Error('Paiement serveur rattaché à une autre facture.');
- return {clientId:event.clientId,day:event.day,preInvoice,sales,dayPayments:payments.map(p=>({id:p.operationId,amount:p.amount}))};
+ return {clientId:event.clientId,day:event.day,preInvoice,sales,dayPayments:payments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))};
 }

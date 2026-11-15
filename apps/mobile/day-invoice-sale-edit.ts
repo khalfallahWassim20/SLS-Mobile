@@ -58,7 +58,7 @@ export async function captureDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,sa
  const oldTotal=calculateInvoice(previous.lines.map(l=>({quantity:l.quantity,unitPrice:l.unitPrice,discountRate:l.discount,vatRate:l.vat}))).total;
  if(oldTotal!==previous.total||previous.remaining!==Math.max(0,previous.total-previous.paid))throw Error('Totaux de vente locale incohérents.');
  const total=calculateInvoice(clean.map(l=>({quantity:l.quantity,unitPrice:l.unitPrice,discountRate:l.discount,vatRate:l.vat}))).total;
- const assessment=assessDayInvoiceSaleRevision({...invoice.source,dayPayments:invoice.view.payments.map(p=>({id:p.operationId,amount:p.amount}))},previous.syncSaleId,total);
+ const assessment=assessDayInvoiceSaleRevision({...invoice.source,dayPayments:invoice.view.payments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))},previous.syncSaleId,total);
  const balanceAfter=BigInt(client.balance)+BigInt(assessment.balanceDelta);if(balanceAfter>BigInt(Number.MAX_SAFE_INTEGER)||balanceAfter<BigInt(Number.MIN_SAFE_INTEGER))throw Error('Solde trop élevé.');
  const fingerprint=canonicalJson({previous,invoice:invoice.fingerprint,balance:client.balance,lines:clean});
  return {previous,lines:clean,day,assessment,balanceAfter:Number(balanceAfter),fingerprint};

@@ -67,7 +67,7 @@ export async function readLocalDayInvoiceSource(tx:Tx,identity:DayInvoiceIdentit
  if(preInvoice&&dayPayments.some(p=>p.preInvoice && p.preInvoice.id!==preInvoice!.id))throw Error('Paiement rattaché à une autre facture préétablie.');
  // Sans préétablie locale, la projection fusionnée devra prouver toute
  // référence à une facture distante avant d'accepter le paiement.
- return {clientId,day,preInvoice,sales,receiptProof,oldDebtPaid,dayPayments:dayPayments.map(p=>({id:p.operationId,amount:p.amount}))};
+ return {clientId,day,preInvoice,sales,receiptProof,oldDebtPaid,dayPayments:dayPayments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'})) as {id:string;amount:number;declaration?:boolean}[]};
 }
 
 /** À appeler uniquement dans une transaction exclusive. La garde doit vérifier
@@ -97,6 +97,6 @@ export async function writeReconciledDayInvoicePayment(tx:Tx,identity:DayInvoice
   const localPayments=await readDayInvoicePayments(locked,owner,entry.clientId,entry.day);
   const verified=await verifiedPendingSaleRevisions(locked,owner,reference,local);
   const merged=buildMergedDayInvoiceView(reference,local,localPayments,verified);
-  validateDayInvoiceWrite(entry,{...merged.source,dayPayments:merged.payments.map(p=>({id:p.operationId,amount:p.amount}))});
+  validateDayInvoiceWrite(entry,{...merged.source,dayPayments:merged.payments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))});
  });
 }

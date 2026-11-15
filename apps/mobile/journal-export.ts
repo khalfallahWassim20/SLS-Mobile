@@ -133,7 +133,7 @@ function lines(data: JournalExport): string[][] {
   }
   for(const p of data.receipts.filter(p=>p.clientId===r.clientId && p.journalDate===data.day)) rows.push([r.clientName,r.sector,p.creditFull?'Journal — crédit total':'Règlement journal',p.createdAt,'',amount(p.prePaid),amount(p.oldDebtPaid),p.mode,'']);
  }
- for(const {payment:p,clientName,sector,pending} of unified)rows.push([clientName,sector,'Règlement facture du jour',`Facture du ${p.day} · ${p.recordedAt} · ${pending?'en attente':'synchronisé'}`,'',amount(p.amount),'',p.mode,'']);
+ for(const {payment:p,clientName,sector,pending} of unified)rows.push([clientName,sector,p.mode==='Crédit'?'Facture du jour — crédit total':'Règlement facture du jour',`Facture du ${p.day} · ${p.recordedAt} · ${pending?'en attente':'synchronisé'}`,'',amount(p.amount),'',p.mode,'']);
  for(const p of separate)rows.push([p.clientName,data.clientSectors?.[p.clientId]??'','Règlement ancienne dette',p.createdAt,'','',amount(p.amount),p.mode,'']);
  if(data.dayInvoicePayments!==undefined)rows.push(['TOTAL RÈGLEMENTS FACTURE DU JOUR','','','','',amount(sum(unified.map(x=>x.payment.amount)))]);
  rows.push(['TOTAL FACTURÉ (préétabli + ventes)','','','','','','','',amount(sum(data.rows.map(r=>r.total)))]);
@@ -249,7 +249,8 @@ export function journalHtml(data: JournalExport): string {
   billed=sum([billed,bill]);preTotal=sum([preTotal,prePaid]);saleTotal=sum([saleTotal,salePaid]);oldTotal=sum([oldTotal,old]);unifiedTotal=sum([unifiedTotal,unifiedPaid]);
   const paymentMode=byMode([...clientReceipts.map(p=>({mode:p.mode,value:p.prePaid})),...row.sales.map(s=>({mode:s.paymentMode,value:initial?.get(s.id)??s.paid})),...clientUnified.map(({payment:p})=>({mode:p.mode,value:p.amount}))]);
   const oldMode=byMode([...clientReceipts.map(p=>({mode:p.mode,value:p.oldDebtPaid})),...clientSettlements.map(p=>({mode:p.mode,value:p.amount}))]);
-  const payment=`${amount(sum([prePaid,salePaid,unifiedPaid]))}${paymentMode?` · ${paymentMode}`:''}`;
+  const invoicePaid=sum([prePaid,salePaid,unifiedPaid]),creditLabel=invoicePaid===0&&clientUnified.some(({payment:p})=>p.mode==='Crédit')?' · Crédit total':'';
+  const payment=`${amount(invoicePaid)}${paymentMode?` · ${paymentMode}`:creditLabel}`;
   const debt=`${amount(old)}${oldMode?` · ${oldMode}`:''}${data.settlements===undefined?' · règlements séparés indisponibles':''}`;
   return [row.clientName,amount(row.preInvoice?.amount??0),amount(supplementary),payment,debt,amount(bill)];
  });

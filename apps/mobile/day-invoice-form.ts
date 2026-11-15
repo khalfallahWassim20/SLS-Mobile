@@ -42,7 +42,7 @@ export async function confirmDayInvoiceForm(tx:Tx,identity:DayInvoiceIdentity,in
  if(typeof input.fingerprint!=='string'||input.fingerprint!==current.fingerprint)throw Error('La facture du jour a changé : vérifiez à nouveau le montant avant de confirmer.');
  const pre=current.source.preInvoice;
  const payment:DayInvoicePayment={operationId:input.operationId,clientId:input.clientId,day:input.day,recordedAt:input.recordedAt,amount:input.amount,mode:input.mode,chequeNumber:input.chequeNumber,chequeBank:input.chequeBank,chequeDue:input.chequeDue,preInvoice:pre?{id:pre.id,version:pre.version,total:pre.total,declare:!pre.declared}:null,sales:current.source.sales.map(s=>({id:s.id,version:s.version}))};
- validateDayInvoiceWrite(payment,{...current.source,dayPayments:current.view.payments.map(p=>({id:p.operationId,amount:p.amount}))});
+ validateDayInvoiceWrite(payment,{...current.source,dayPayments:current.view.payments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))});
  const status=await writeReconciledDayInvoicePayment(tx,identity,payment,(locked,id,event)=>guardDayInvoiceWrite(locked,id,event,digest,true),digest);
  return {status,payment};
 }

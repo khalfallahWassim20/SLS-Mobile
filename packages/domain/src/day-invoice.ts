@@ -6,7 +6,7 @@ export type DayInvoiceInput = {
   preInvoice: { id: string; total: number; paid: number; declared: boolean } | null;
   sales: readonly { id: string; total: number; paid: number }[];
   /** Paiements explicitement attribués à la facture du jour, jamais à l'ancienne dette. */
-  dayPayments: readonly { id: string; amount: number }[];
+  dayPayments: readonly { id: string; amount: number; declaration?: boolean }[];
 };
 function amount(value: number): bigint {
   if (!Number.isSafeInteger(value) || value < 0) throw new RangeError('Montant invalide');
@@ -36,7 +36,8 @@ export function calculateDayInvoice(input: DayInvoiceInput) {
     if (!payment.id.trim() || payments.has(payment.id)) throw new RangeError('Paiement invalide ou dupliqué');
     payments.add(payment.id);
     const value = amount(payment.amount);
-    if (value === 0n) throw new RangeError('Paiement nul');
+    if (value === 0n && payment.declaration !== true) throw new RangeError('Paiement nul');
+    if (payment.declaration !== undefined && (typeof payment.declaration !== 'boolean' || (payment.declaration && value !== 0n))) throw new RangeError('Déclaration invalide');
     allocated += value;
   }
   // Un remboursement/crédit existant peut rendre le reste négatif, mais un nouveau
@@ -50,7 +51,7 @@ export function calculateDayInvoice(input: DayInvoiceInput) {
  * Ce contrat n'est pas encore raccordé aux files mobile ni aux routes serveur. */
 export type DayInvoicePayment = {
   operationId: string; clientId: string; day: string; recordedAt: string;
-  amount: number; mode: 'Espèces' | 'Chèque' | 'Virement';
+  amount: number; mode: 'Espèces' | 'Chèque' | 'Virement' | 'Crédit';
   chequeNumber: string; chequeBank: string; chequeDue: string;
   /** Preuves des versions connues lors de l'enregistrement : à vérifier côté serveur. */
   preInvoice: {id:string;version:number;total:number;declare:boolean} | null;
@@ -64,7 +65,8 @@ export function validateDayPayment(p: DayInvoicePayment): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(p.day)) throw new RangeError('Date de journée invalide');
   const day = new Date(`${p.day}T00:00:00.000Z`), recorded = new Date(p.recordedAt);
   if (!Number.isFinite(day.getTime()) || day.toISOString().slice(0,10) !== p.day || !Number.isFinite(recorded.getTime()) || recorded.toISOString() !== p.recordedAt) throw new RangeError('Date de paiement invalide');
-  if (amount(p.amount) === 0n || !['Espèces', 'Chèque', 'Virement'].includes(p.mode)) throw new RangeError('Paiement invalide');
+  const value=amount(p.amount);
+  if (!['Espèces', 'Chèque', 'Virement', 'Crédit'].includes(p.mode) || (p.mode==='Crédit' ? value!==0n || !p.preInvoice?.declare : value===0n)) throw new RangeError('Paiement invalide ou déclaration de crédit invalide');
   for (const text of [p.chequeNumber,p.chequeBank,p.chequeDue]) if (typeof text !== 'string' || text.length > 100) throw new RangeError('Informations de paiement invalides');
   if (p.mode === 'Chèque' && (!p.chequeNumber.trim() || !p.chequeBank.trim() || !p.chequeDue.trim())) throw new RangeError('Informations du chèque incomplètes');
   if (p.mode !== 'Chèque' && (p.chequeNumber || p.chequeBank || p.chequeDue)) throw new RangeError('Informations de chèque inattendues');
@@ -138,7 +140,7 @@ export function validateDayInvoiceWrite(payment: DayInvoicePayment, source: {
   clientId:string; day:string;
   preInvoice:{id:string;version:number;total:number;paid:number;declared:boolean}|null;
   sales:readonly {id:string;version:number;total:number;paid:number}[];
-  dayPayments:readonly {id:string;amount:number}[];
+  dayPayments:readonly {id:string;amount:number;declaration?:boolean}[];
 }) {
  validateDayPayment(payment);
  if(payment.clientId!==source.clientId || payment.day!==source.day) throw new RangeError('Client ou journée incohérent');
@@ -146,7 +148,11 @@ export function validateDayInvoiceWrite(payment: DayInvoicePayment, source: {
  if((pre===null)!==(proof===null) || (pre && proof && (pre.id!==proof.id || pre.version!==proof.version || pre.total!==proof.total || proof.declare===pre.declared))) throw new RangeError('Facture préétablie modifiée : actualisation nécessaire');
  const sorted=[...source.sales].sort((a,b)=>a.id.localeCompare(b.id));
  if(sorted.length!==payment.sales.length || sorted.some((s,i)=>s.id!==payment.sales[i].id || s.version!==payment.sales[i].version)) throw new RangeError('Ventes modifiées : actualisation nécessaire');
- const result=calculateDayInvoice({preInvoice:pre,sales:sorted,dayPayments:[...source.dayPayments,{id:payment.operationId,amount:payment.amount}]});
+ if(payment.mode==='Crédit'){
+  const before=calculateDayInvoice({preInvoice:pre,sales:sorted,dayPayments:source.dayPayments});
+  if(!pre||pre.declared||before.alreadyPaid!==0||before.dayPayments!==0)throw new RangeError('Crédit total réservé à une facture entièrement impayée.');
+ }
+ const result=calculateDayInvoice({preInvoice:pre,sales:sorted,dayPayments:[...source.dayPayments,{id:payment.operationId,amount:payment.amount,declaration:payment.mode==='Crédit'}]});
  return {...result,declaresPreInvoice:!!proof?.declare};
 }
 
