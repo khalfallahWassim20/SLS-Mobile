@@ -1,3 +1,4 @@
+import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt,type PaymentAttempt} from './day-invoice-payment-attempt';
 import {dayInvoiceSaleAttemptSchema,prepareDaySaleAttempt,readDaySaleAttempt,confirmDaySaleAttempt,acknowledgeDaySaleAttempt,cancelDaySaleAttempt} from './day-invoice-sale-attempt';
 import type {NewSaleAttempt} from './day-invoice-sale-create-input';
 import {captureNewDayInvoiceSale,confirmNewDayInvoiceSale} from './day-invoice-sale-create';
@@ -95,7 +96,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoicePaymentAttemptSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -720,4 +721,16 @@ export async function cancelDaySaleAttemptPrototype(identity:DeviceIdentity,oper
 export function daySaleAttemptIOPrototype(identity:DeviceIdentity){return {
  read:()=>readDaySaleAttemptPrototype(identity),prepare:(attempt:NewSaleAttempt)=>prepareDaySaleAttemptPrototype(identity,attempt),
  confirm:(operationId:string)=>confirmDaySaleAttemptPrototype(identity,operationId),acknowledge:(operationId:string)=>acknowledgeDaySaleAttemptPrototype(identity,operationId),cancel:(operationId:string)=>cancelDaySaleAttemptPrototype(identity,operationId)
+};}
+
+/** Registre de reprise du règlement unifié, expérimental et non monté. */
+export async function readDayPaymentAttemptPrototype(identity:DeviceIdentity){const database=await db();let result!:Awaited<ReturnType<typeof readDayPaymentAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await readDayPaymentAttempt(tx,identity);});return result;}
+export async function prepareDayPaymentAttemptPrototype(identity:DeviceIdentity,input:PaymentAttempt){const database=await db();let result!:Awaited<ReturnType<typeof prepareDayPaymentAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await prepareDayPaymentAttempt(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function confirmDayPaymentAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();let result!:Awaited<ReturnType<typeof confirmDayPaymentAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDayPaymentAttempt(tx,identity,operationId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function acknowledgeDayPaymentAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgeDayPaymentAttempt(tx,identity,operationId));}
+export async function cancelDayPaymentAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelDayPaymentAttempt(tx,identity,operationId));}
+/** Adaptateur à mémoriser par liaison commerciale, pour écran v6 non monté. */
+export function dayPaymentAttemptIOPrototype(identity:DeviceIdentity){return {
+ read:()=>readDayPaymentAttemptPrototype(identity),prepare:(attempt:PaymentAttempt)=>prepareDayPaymentAttemptPrototype(identity,attempt),
+ confirm:(operationId:string)=>confirmDayPaymentAttemptPrototype(identity,operationId),acknowledge:(operationId:string)=>acknowledgeDayPaymentAttemptPrototype(identity,operationId),cancel:(operationId:string)=>cancelDayPaymentAttemptPrototype(identity,operationId)
 };}

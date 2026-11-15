@@ -1,44 +1,49 @@
-/** Composant de paiement v6 préparatoire, pas encore monté dans App.tsx. */
+/** Écran de paiement v6 expérimental, non monté dans l'application active. */
 import React,{useEffect,useRef,useState} from 'react';
 import {StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
 import {parseDinars} from '@sls/domain';
 import {randomUUID} from 'expo-crypto';
 import type {captureDayInvoiceForm} from './day-invoice-form';
 import type {DayInvoicePayment} from '../../packages/domain/src/day-invoice';
-
+import type {PaymentAttempt,StoredPaymentAttempt} from './day-invoice-payment-attempt';
+import {startPaymentAttempt,resumePaymentAttempt,finishPaymentAttempt,abandonPaymentAttempt,type PaymentAttemptIO} from './day-invoice-payment-attempt-flow';
 type Form=Awaited<ReturnType<typeof captureDayInvoiceForm>>;
-type Input={clientId:string;day:string;fingerprint:string;operationId:string;recordedAt:string;amount:number;mode:DayInvoicePayment['mode'];chequeNumber:string;chequeBank:string;chequeDue:string};
-type Props={clientId:string;clientName:string;day:string;read:()=>Promise<Form>;confirm:(input:Input)=>Promise<unknown>;onBack:()=>void;onSaved:()=>void};
+/** bindingKey change à chaque changement de commercial ou serveur lié. */
+type Props={bindingKey:string;clientId:string;clientName:string;day:string;read:()=>Promise<Form>;attempts:PaymentAttemptIO;onBack:()=>void;onSaved:()=>void};
 const money=(value:number)=>`${(value/1000).toFixed(3)} DT`;
-export function DayInvoicePaymentScreen({clientId,clientName,day,read,confirm,onBack,onSaved}:Props){
+export function DayInvoicePaymentScreen({bindingKey,clientId,clientName,day,read,attempts,onBack,onSaved}:Props){
  const [form,setForm]=useState<Form|null>(null),[amount,setAmount]=useState(''),[mode,setMode]=useState<DayInvoicePayment['mode']>('Espèces');
- const [number,setNumber]=useState(''),[bank,setBank]=useState(''),[due,setDue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[reload,setReload]=useState(0),[uncertain,setUncertain]=useState(false);
- const submitting=useRef(false),generation=useRef(0),mounted=useRef(true),attempt=useRef<Input|null>(null);
- useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
- useEffect(()=>{const current=++generation.current;setForm(null);setError('');setAmount('');attempt.current=null;setUncertain(false);void read().then(value=>{if(generation.current===current)setForm(value);},e=>{if(generation.current===current)setError(e instanceof Error?e.message:'Lecture impossible.');});return()=>{generation.current++;};},[clientId,day,reload]);
- const submit=async()=>{
-  if(submitting.current||!form)return;
-  if(!attempt.current){let value:number;try{value=mode==='Crédit'?0:parseDinars(amount);if(mode==='Crédit'&&(!form.source.preInvoice||form.view.declared||form.view.paid!==0))throw Error('Crédit total réservé à une facture entièrement impayée.');if(mode!=='Crédit'&&(value<=0||value>form.view.remaining))throw Error('Le montant doit être supérieur à zéro et inférieur ou égal au reste de la facture.');if(mode==='Chèque'&&(!number.trim()||!bank.trim()||!due.trim()))throw Error('Renseignez le numéro, la banque et l’échéance du chèque.');}catch(e){setError(e instanceof Error?e.message:'Montant invalide.');return;}
-   attempt.current={clientId,day,fingerprint:form.fingerprint,operationId:randomUUID(),recordedAt:new Date().toISOString(),amount:value,mode,chequeNumber:mode==='Chèque'?number.trim():'',chequeBank:mode==='Chèque'?bank.trim():'',chequeDue:mode==='Chèque'?due.trim():''};}
-  const input=attempt.current;
-  submitting.current=true;setBusy(true);setError('');const current=generation.current;
-  try{await confirm(input);if(generation.current===current){attempt.current=null;setUncertain(false);setForm(null);onSaved();}}
-  catch(e){if(generation.current===current){setUncertain(true);setError(e instanceof Error?e.message:'Résultat inconnu. Réessayez la même opération.');}}
-  finally{submitting.current=false;if(mounted.current)setBusy(false);}
+ const [number,setNumber]=useState(''),[bank,setBank]=useState(''),[due,setDue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[reload,setReload]=useState(0),[loaded,setLoaded]=useState(false),[stored,setStored]=useState<StoredPaymentAttempt|null>(null);
+ const working=useRef(false),generation=useRef(0),mounted=useRef(true);
+ useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;generation.current++;};},[]);
+ useEffect(()=>{const current=++generation.current;setLoaded(false);setStored(null);setForm(null);setError('');setAmount('');
+  void (async()=>{const pending=await attempts.read();if(pending)return {pending,form:null};return {pending:null,form:await read()};})().then(value=>{if(mounted.current&&generation.current===current){if(value.form&&(value.form.view.clientId!==clientId||value.form.view.day!==day))throw Error('Client ou journée incohérent.');setStored(value.pending);setForm(value.form);setLoaded(true);}},e=>{if(mounted.current&&generation.current===current){setError(e instanceof Error?e.message:'Lecture impossible.');setLoaded(false);}}).catch(e=>{if(mounted.current&&generation.current===current){setError(e instanceof Error?e.message:'Lecture impossible.');setLoaded(false);}});
+  return()=>{generation.current++;};
+ },[bindingKey,clientId,day,reload]);
+ const other=!!stored&&(stored.attempt.clientId!==clientId||stored.attempt.day!==day);
+ const run=async(work:(current:()=>boolean)=>Promise<void>)=>{if(working.current)return;working.current=true;setBusy(true);setError('');const current=generation.current;
+  try{await work(()=>mounted.current&&generation.current===current);}catch(e){if(mounted.current&&generation.current===current){setLoaded(false);setError(e instanceof Error?e.message:'Résultat inconnu : vérifiez la tentative.');}}finally{working.current=false;if(mounted.current)setBusy(false);}
  };
+ const submit=()=>{if(working.current||!loaded||stored||!form)return;let value:number;
+  try{value=mode==='Crédit'?0:parseDinars(amount);if(mode==='Crédit'&&(!form.source.preInvoice||form.view.declared||form.view.paid!==0))throw Error('Crédit total réservé à une facture entièrement impayée.');if(mode!=='Crédit'&&(value<=0||value>form.view.remaining))throw Error('Le montant doit être supérieur à zéro et inférieur ou égal au reste de la facture.');if(mode==='Chèque'&&(!number.trim()||!bank.trim()||!due.trim()))throw Error('Renseignez le numéro, la banque et l’échéance du chèque.');}catch(e){setError(e instanceof Error?e.message:'Montant invalide.');return;}
+  const input:PaymentAttempt={clientId,day,fingerprint:form.fingerprint,operationId:randomUUID(),recordedAt:new Date().toISOString(),amount:value,mode,chequeNumber:mode==='Chèque'?number.trim():'',chequeBank:mode==='Chèque'?bank.trim():'',chequeDue:mode==='Chèque'?due.trim():''};
+  void run(async current=>{const result=await startPaymentAttempt(attempts,input);if(current()){setStored(result);setForm(null);}});
+ };
+ const resume=()=>{if(!stored||other||stored.result)return;void run(async current=>{const result=await resumePaymentAttempt(attempts,stored.attempt);if(current())setStored(result);});};
+ const finish=()=>{if(!stored||other||!stored.result)return;void run(async current=>{await finishPaymentAttempt(attempts,stored.attempt);if(current()){setStored(null);onSaved();}});};
+ const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonPaymentAttempt(attempts,stored.attempt);if(current())setReload(n=>n+1);});};
  return <View style={styles.container}>
-  <View style={styles.header}><TouchableOpacity accessibilityRole="button" accessibilityLabel="Retour" onPress={onBack} disabled={busy}><Text style={styles.back}>‹</Text></TouchableOpacity><View style={styles.grow}><Text style={styles.title}>Facture du jour</Text><Text style={styles.subtitle}>{clientName} · {day}</Text></View></View>
+  <View style={styles.header}><TouchableOpacity accessibilityRole="button" accessibilityLabel="Retour" onPress={onBack} disabled={busy||!loaded}><Text style={styles.back}>‹</Text></TouchableOpacity><View style={styles.grow}><Text style={styles.title}>Facture du jour</Text><Text style={styles.subtitle}>{clientName} · {day}</Text></View></View>
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
-  {!!error&&!busy&&!uncertain&&<TouchableOpacity accessibilityRole="button" onPress={()=>setReload(n=>n+1)}><Text style={styles.link}>Actualiser la facture et recommencer</Text></TouchableOpacity>}
-  {!form&&!error&&<Text style={styles.muted}>Chargement de la facture…</Text>}
-  {form&&<><View style={styles.card}><Text style={styles.label}>Facture préétablie</Text><Text style={styles.value}>{money(form.view.preInvoiceTotal)}</Text><Text style={styles.label}>Ventes sur place</Text><Text style={styles.value}>{money(form.view.salesTotal)}</Text><Text style={styles.label}>Total de la facture du jour</Text><Text style={styles.total}>{money(form.view.total)}</Text><Text style={styles.label}>Déjà payé</Text><Text style={styles.value}>{money(form.view.paid)}</Text><Text style={styles.label}>Reste à payer</Text><Text style={styles.total}>{money(form.view.remaining)}</Text></View>
+  {!loaded&&<><Text style={styles.muted}>Vérification du règlement enregistré…</Text><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setReload(n=>n+1)}><Text style={styles.link}>Vérifier à nouveau</Text></TouchableOpacity></>}
+  {loaded&&stored&&<View style={styles.card}>{other?<Text style={styles.error}>Un règlement attend vérification pour un autre client ou une autre journée ({stored.attempt.clientId} · {stored.attempt.day}). Revenez à ce règlement avant d’en créer un nouveau.</Text>:<><Text style={styles.total}>{stored.result?'Règlement enregistré':'Règlement à confirmer'}</Text><Text style={styles.value}>{money(stored.attempt.amount)} · {stored.attempt.mode}</Text><Text style={styles.muted}>Le même identifiant sera conservé en cas de reprise.</Text><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={stored.result?finish:resume} style={[styles.button,busy&&styles.disabled]}><Text style={styles.buttonText}>{stored.result?'Terminer':'Reprendre le règlement'}</Text></TouchableOpacity>{!stored.result&&<TouchableOpacity accessibilityRole="button" disabled={busy} onPress={cancel}><Text style={styles.link}>Abandonner cette tentative non confirmée</Text></TouchableOpacity>}</>}</View>}
+  {loaded&&!stored&&form&&<><View style={styles.card}><Text style={styles.label}>Facture préétablie</Text><Text style={styles.value}>{money(form.view.preInvoiceTotal)}</Text><Text style={styles.label}>Ventes sur place</Text><Text style={styles.value}>{money(form.view.salesTotal)}</Text><Text style={styles.label}>Total de la facture du jour</Text><Text style={styles.total}>{money(form.view.total)}</Text><Text style={styles.label}>Déjà payé</Text><Text style={styles.value}>{money(form.view.paid)}</Text><Text style={styles.label}>Reste à payer</Text><Text style={styles.total}>{money(form.view.remaining)}</Text></View>
    <Text style={styles.muted}>Un seul règlement pour la facture complète. Le paiement n’est pas réparti entre préétablie et ventes. L’ancienne dette est réglée séparément.</Text>
-   <Text style={styles.label}>Montant du règlement</Text><TextInput accessibilityLabel="Montant du règlement de la facture du jour" editable={!busy&&!uncertain&&mode!=='Crédit'} keyboardType="decimal-pad" value={mode==='Crédit'?'0,000':amount} onChangeText={setAmount} placeholder="0,000" style={styles.input}/>
-   <View style={styles.row}>{(['Espèces','Chèque','Virement',...(form.source.preInvoice&&!form.view.declared&&form.view.paid===0?['Crédit' as const]:[])] as DayInvoicePayment['mode'][]).map(value=><TouchableOpacity accessibilityRole="button" accessibilityState={{selected:mode===value,disabled:busy||uncertain}} key={value} disabled={busy||uncertain} onPress={()=>setMode(value)} style={[styles.mode,mode===value&&styles.selected]}><Text style={styles.modeText}>{value}</Text></TouchableOpacity>)}</View>
+   <Text style={styles.label}>Montant du règlement</Text><TextInput accessibilityLabel="Montant du règlement de la facture du jour" editable={!busy&&mode!=='Crédit'} keyboardType="decimal-pad" value={mode==='Crédit'?'0,000':amount} onChangeText={setAmount} placeholder="0,000" style={styles.input}/>
+   <View style={styles.row}>{(['Espèces','Chèque','Virement',...(form.source.preInvoice&&!form.view.declared&&form.view.paid===0?['Crédit' as const]:[])] as DayInvoicePayment['mode'][]).map(value=><TouchableOpacity accessibilityRole="button" accessibilityState={{selected:mode===value,disabled:busy}} key={value} disabled={busy} onPress={()=>setMode(value)} style={[styles.mode,mode===value&&styles.selected]}><Text style={styles.modeText}>{value}</Text></TouchableOpacity>)}</View>
    {mode==='Crédit'&&<Text style={styles.muted}>Facture entièrement impayée : aucun encaissement, le montant reste en dette.</Text>}
-   {mode==='Chèque'&&<><TextInput accessibilityLabel="Numéro du chèque" editable={!busy&&!uncertain} value={number} onChangeText={setNumber} placeholder="Numéro du chèque" maxLength={100} style={styles.input}/><TextInput accessibilityLabel="Banque du chèque" editable={!busy&&!uncertain} value={bank} onChangeText={setBank} placeholder="Banque" maxLength={100} style={styles.input}/><TextInput accessibilityLabel="Échéance du chèque" editable={!busy&&!uncertain} value={due} onChangeText={setDue} placeholder="Échéance" maxLength={100} style={styles.input}/></>}
-   <TouchableOpacity accessibilityRole="button" accessibilityState={{disabled:busy||form.view.remaining<=0}} disabled={busy||form.view.remaining<=0} onPress={()=>{void submit();}} style={[styles.button,(busy||form.view.remaining<=0)&&styles.disabled]}><Text style={styles.buttonText}>{busy?'Enregistrement…':uncertain?'Vérifier et reprendre le même règlement':'Enregistrer le règlement'}</Text></TouchableOpacity>
-   {uncertain&&<Text style={styles.error}>Résultat incertain : reprenez le même règlement pour éviter un doublon.</Text>}
+   {mode==='Chèque'&&<><TextInput accessibilityLabel="Numéro du chèque" editable={!busy} value={number} onChangeText={setNumber} placeholder="Numéro du chèque" maxLength={100} style={styles.input}/><TextInput accessibilityLabel="Banque du chèque" editable={!busy} value={bank} onChangeText={setBank} placeholder="Banque" maxLength={100} style={styles.input}/><TextInput accessibilityLabel="Échéance du chèque" editable={!busy} value={due} onChangeText={setDue} placeholder="Échéance" maxLength={100} style={styles.input}/></>}
+   <TouchableOpacity accessibilityRole="button" accessibilityState={{disabled:busy||form.view.remaining<=0}} disabled={busy||form.view.remaining<=0} onPress={submit} style={[styles.button,(busy||form.view.remaining<=0)&&styles.disabled]}><Text style={styles.buttonText}>{busy?'Enregistrement…':'Enregistrer le règlement'}</Text></TouchableOpacity>
    <Text style={styles.muted}>L’opération est conservée sur ce téléphone. Synchronisez dès que le réseau et la session sont disponibles.</Text></>}
  </View>;
 }

@@ -1,5 +1,6 @@
 import {test} from 'node:test';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import assert from 'node:assert/strict';import {DatabaseSync} from 'node:sqlite';import {createHash} from 'node:crypto';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../../apps/mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
+import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt} from '../../../apps/mobile/day-invoice-payment-attempt.js';
 import {dayInvoiceSaleAttemptSchema,readDaySaleAttempt,prepareDaySaleAttempt,confirmDaySaleAttempt,acknowledgeDaySaleAttempt,cancelDaySaleAttempt} from '../../../apps/mobile/day-invoice-sale-attempt.js';
 import {captureNewDayInvoiceSale,confirmNewDayInvoiceSale} from '../../../apps/mobile/day-invoice-sale-create.js';import {captureDayInvoiceForm,confirmDayInvoiceForm} from '../../../apps/mobile/day-invoice-form.js';import {readDayInvoiceClients} from '../../../apps/mobile/day-invoice-clients.js';
 const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invoiceId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',saleId='cccccccc-cccc-4ccc-8ccc-cccccccccccc',operationId='11111111-1111-4111-8111-111111111111',paymentId='22222222-2222-4222-8222-222222222222';
@@ -7,7 +8,7 @@ const identity={commercialId:clientId,serverOrigin:'https://example.test'},day='
 const line={name:'Produit',code:'X',quantity:1,unitPrice:210084,discount:0,vat:1900};
 const reference={version:6,clients:[{id:clientId,name:'Client',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[{id:'33333333-3333-4333-8333-333333333333',code:'X',name:'Produit',barcode:'',saleTtc:'250000',vatRate:1900,unitsPerCarton:1}],saleStates:[],saleDays:[],settlementStates:[],settlementDays:[],settlementProofs:[],oldDebtMarkers:[],journalStates:[{id:invoiceId,clientId,journalDate:day,total:600000,receipts:[],declaredByDayPayment:false}],journalProofs:[{id:invoiceId,version:1,hash:'a'.repeat(64)}],dayPayments:[]};
 function wrap(db:DatabaseSync){return {getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};}
-function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}
+function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}
  CREATE TABLE sales(id INTEGER PRIMARY KEY,created_at TEXT,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
  CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,payload TEXT);
  CREATE TABLE tour_pre_invoices(id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT,version INTEGER,payload TEXT);`);
@@ -79,4 +80,44 @@ test('tentative durable : redémarrage, rollback, preuve locale après synchroni
   await assert.rejects(readDaySaleAttempt(tx,identity),/incohérente/);await assert.rejects(acknowledgeDaySaleAttempt(tx,identity,operationId),/incohérente/);
   db.prepare('UPDATE day_invoice_sale_attempt SET payload=?').run(raw);await acknowledgeDaySaleAttempt(tx,identity,operationId);assert.equal(await readDaySaleAttempt(tx,identity),null);assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,1);
  }finally{db.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('règlement durable : reprise après redémarrage, transaction atomique et preuve après synchronisation',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'sls-payment-attempt-')),path=join(dir,'phone.db');let {db,tx}=setup(path);
+ try{
+  await saveDayInvoiceReference(tx,identity,identity,reference);
+  const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),saleInput={clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at};
+  await confirmNewDayInvoiceSale(tx,identity,saleInput,digest);
+  const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest),input={clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-01T10:00:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+  await assert.rejects(prepareDayPaymentAttempt(tx,identity,{...input,amount:900000},digest),/paiement|total|supérieur|dépasse/i);
+  await prepareDayPaymentAttempt(tx,identity,input,digest);assert.equal((await readDayPaymentAttempt(tx,identity))?.result,null);
+  await assert.rejects(prepareDayPaymentAttempt(tx,identity,{...input,amount:100000},digest),/autre règlement/);
+  await assert.rejects(acknowledgeDayPaymentAttempt(tx,identity,paymentId),/non confirmé/);
+  await assert.rejects(cancelDayPaymentAttempt(tx,identity,operationId),/abandonnable/);
+  db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(paymentId,identity.commercialId,saleId,at);await assert.rejects(cancelDayPaymentAttempt(tx,identity,paymentId),/Trace/);db.prepare('DELETE FROM identified_local_operations WHERE operation_id=?').run(paymentId);
+  await cancelDayPaymentAttempt(tx,identity,paymentId);assert.equal(await readDayPaymentAttempt(tx,identity),null);await prepareDayPaymentAttempt(tx,identity,input,digest);
+  db.close();db=new DatabaseSync(path);tx=wrap(db);assert.deepEqual((await readDayPaymentAttempt(tx,identity))?.attempt,input);
+  const fail={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{if(sql.startsWith('UPDATE day_invoice_payment_attempt'))throw Error('panne avant reçu');await tx.runAsync(sql,...args);}};
+  db.exec('BEGIN');await assert.rejects(confirmDayPaymentAttempt(fail,identity,paymentId,digest),/panne avant reçu/);db.exec('ROLLBACK');
+  assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payments').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,0);
+  await assert.rejects(confirmDayPaymentAttempt(tx,identity,operationId,digest),/différente/);
+  db.exec('BEGIN');assert.equal((await confirmDayPaymentAttempt(tx,identity,paymentId,digest)).status,'created');db.exec('COMMIT');
+  db.close();db=new DatabaseSync(path);tx=wrap(db);assert.equal((await confirmDayPaymentAttempt(tx,identity,paymentId,digest)).status,'duplicate');
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,650000);
+  db.prepare('DELETE FROM day_invoice_payment_outbox').run();assert.equal((await confirmDayPaymentAttempt(tx,identity,paymentId,digest)).status,'duplicate');
+  await assert.rejects(cancelDayPaymentAttempt(tx,identity,paymentId),/abandonnable/);await assert.rejects(readDayPaymentAttempt(tx,{...identity,serverOrigin:'https://other.test'}),/Identité/);
+  const original=db.prepare('SELECT payload FROM day_invoice_payment_attempt').get()?.payload as string,corrupt=JSON.parse(original);corrupt.result.payment.amount++;db.prepare('UPDATE day_invoice_payment_attempt SET payload=?').run(JSON.stringify(corrupt));
+  await assert.rejects(readDayPaymentAttempt(tx,identity),/incohérente/);await assert.rejects(acknowledgeDayPaymentAttempt(tx,identity,paymentId),/incohérente/);
+  db.prepare('UPDATE day_invoice_payment_attempt SET payload=?').run(original);await acknowledgeDayPaymentAttempt(tx,identity,paymentId);assert.equal(await readDayPaymentAttempt(tx,identity),null);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payments').get()?.n,1);
+ }finally{db.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('tentative durable : déclaration crédit seulement sur facture entièrement impayée',async()=>{
+ const {db,tx}=setup();try{await saveDayInvoiceReference(tx,identity,identity,reference);
+  const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest),input={clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:at,amount:0,mode:'Crédit' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+  await prepareDayPaymentAttempt(tx,identity,input,digest);db.exec('BEGIN');await confirmDayPaymentAttempt(tx,identity,paymentId,digest);db.exec('COMMIT');
+  assert.equal((await readDayPaymentAttempt(tx,identity))?.result?.payment.amount,0);assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,600000);
+  await acknowledgeDayPaymentAttempt(tx,identity,paymentId);const after=await captureDayInvoiceForm(tx,identity,clientId,day,digest);
+  await assert.rejects(prepareDayPaymentAttempt(tx,identity,{...input,operationId:'99999999-9999-4999-8999-999999999999',fingerprint:after.fingerprint},digest),/crédit|déclaration/i);
+ }finally{db.close();}
 });
