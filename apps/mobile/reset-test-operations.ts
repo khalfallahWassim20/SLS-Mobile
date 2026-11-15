@@ -8,6 +8,9 @@ export async function resetLocalTestOperations(tx:Tx):Promise<void> {
  const state=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('day_invoice_payment_outbox','day_invoice_payments','day_invoice_reference_cache','day_invoice_close_attempt_markers')");
  if(!state||![0,names.length].includes(state.n))throw Error('Migration facture du jour incomplète : nettoyage refusé.');
  if(state.n===names.length)for(const name of names)await tx.runAsync(`DELETE FROM ${name}`);
+ const attempt=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_attempt'");
+ if(!attempt||![0,1].includes(attempt.n))throw Error('Migration tentative de vente incohérente.');
+ if(attempt.n===1)await tx.runAsync('DELETE FROM day_invoice_sale_attempt');
  const debt=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('day_invoice_old_debt_local','day_invoice_old_debt_outbox')");
  if(!debt||![0,2].includes(debt.n))throw Error('Migration ancienne dette incomplète : nettoyage refusé.');
  if(debt.n===2){await tx.runAsync('DELETE FROM day_invoice_old_debt_outbox');await tx.runAsync('DELETE FROM day_invoice_old_debt_local');}

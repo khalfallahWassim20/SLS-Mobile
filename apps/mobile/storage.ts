@@ -1,3 +1,5 @@
+import {dayInvoiceSaleAttemptSchema,prepareDaySaleAttempt,readDaySaleAttempt,confirmDaySaleAttempt,acknowledgeDaySaleAttempt,cancelDaySaleAttempt} from './day-invoice-sale-attempt';
+import type {NewSaleAttempt} from './day-invoice-sale-create-input';
 import {captureNewDayInvoiceSale,confirmNewDayInvoiceSale} from './day-invoice-sale-create';
 import {captureDayInvoiceSaleEdit,confirmDayInvoiceSaleEdit} from './day-invoice-sale-edit';
 import {captureOldDebtForm,confirmOldDebtForm} from './day-invoice-old-debt-form';
@@ -93,7 +95,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -706,3 +708,10 @@ export async function confirmNewDayInvoiceSalePrototype(identity:DeviceIdentity,
  const database=await db();let result!:Awaited<ReturnType<typeof confirmNewDayInvoiceSale>>;
  await database.withExclusiveTransactionAsync(async tx=>{result=await confirmNewDayInvoiceSale(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }
+
+/** Reprise durable préparatoire, non raccordée aux écrans actifs. */
+export async function readDaySaleAttemptPrototype(identity:DeviceIdentity){const database=await db();let result!:Awaited<ReturnType<typeof readDaySaleAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await readDaySaleAttempt(tx,identity);});return result;}
+export async function prepareDaySaleAttemptPrototype(identity:DeviceIdentity,input:NewSaleAttempt){const database=await db();let result!:Awaited<ReturnType<typeof prepareDaySaleAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await prepareDaySaleAttempt(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function confirmDaySaleAttemptPrototype(identity:DeviceIdentity){const database=await db();let result!:Awaited<ReturnType<typeof confirmDaySaleAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDaySaleAttempt(tx,identity,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function acknowledgeDaySaleAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgeDaySaleAttempt(tx,identity,operationId));}
+export async function cancelDaySaleAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelDaySaleAttempt(tx,identity,operationId));}
