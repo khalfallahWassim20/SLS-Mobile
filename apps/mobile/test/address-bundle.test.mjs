@@ -23,6 +23,14 @@ test('bundle Android normal : bouton présent sans variable Expo publique', {tim
   assert.ok(source.includes('creditBridgeAvailable'));
   assert.ok(source.includes('Passer aux avoirs'));
   assert.ok(source.includes('v5ServerAvailable'));
+  // Le nouveau design doit rester raccordé aux fonctions réelles, sans perdre
+  // la synchronisation ou l'écran des dépenses du bundle normal.
+  assert.ok(source.includes('JournalHome'));
+  assert.ok(source.includes('JournalDrawer'));
+  assert.ok(source.includes('uploadTourExpenses'));
+  assert.ok(source.includes('uploadDemoQueue'));
+  assert.ok(source.includes('Dépenses de tournée') || source.includes('D\\u00E9penses de tourn\\u00E9e'));
+  assert.ok(source.includes('refreshReferenceFromHeader'));
   assert.match(source,/label: "Changer l\\u2019adresse du serveur"/);
   assert.doesNotMatch(source,/var ADDRESS_PRIVATE_HTTP = false/);
  }finally{rmSync(dir,{recursive:true,force:true});}
