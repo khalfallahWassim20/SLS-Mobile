@@ -8,6 +8,7 @@ import type {SavedSale,TourPreInvoice,TourJournalReceipt,Settlement} from './sto
 import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {buildMergedDayInvoiceView} from './day-invoice-merged-view';
+import {verifiedPendingSaleRevisions} from './day-invoice-pending-sale-revision';
 
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
@@ -94,7 +95,8 @@ export async function writeReconciledDayInvoicePayment(tx:Tx,identity:DayInvoice
   if(!reference)throw Error('Référence facture du jour indisponible : actualisation nécessaire.');
   const local=await readLocalDayInvoiceSource(locked,owner,entry.clientId,entry.day,digest);
   const localPayments=await readDayInvoicePayments(locked,owner,entry.clientId,entry.day);
-  const merged=buildMergedDayInvoiceView(reference,local,localPayments);
+  const verified=await verifiedPendingSaleRevisions(locked,owner,reference,local);
+  const merged=buildMergedDayInvoiceView(reference,local,localPayments,verified);
   validateDayInvoiceWrite(entry,{...merged.source,dayPayments:merged.payments.map(p=>({id:p.operationId,amount:p.amount}))});
  });
 }

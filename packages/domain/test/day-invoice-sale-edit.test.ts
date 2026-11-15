@@ -2,7 +2,7 @@ import {test} from 'node:test';import assert from 'node:assert/strict';import {D
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../../apps/mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
 import {draftSaleLines,parseSaleEditLines} from '../../../apps/mobile/day-invoice-sale-edit-input.js';
-import {captureDayInvoiceSaleEdit,confirmDayInvoiceSaleEdit} from '../../../apps/mobile/day-invoice-sale-edit.js';import {captureDayInvoiceForm} from '../../../apps/mobile/day-invoice-form.js';
+import {captureDayInvoiceSaleEdit,confirmDayInvoiceSaleEdit} from '../../../apps/mobile/day-invoice-sale-edit.js';import {captureDayInvoiceForm,confirmDayInvoiceForm} from '../../../apps/mobile/day-invoice-form.js';
 const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',saleId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',invoiceId='cccccccc-cccc-4ccc-8ccc-cccccccccccc',identity={commercialId:clientId,serverOrigin:'https://example.test'},day='2026-01-01',at='2026-01-01T09:00:00.000Z';
 const saleOperation='11111111-1111-4111-8111-111111111111',editOperation='22222222-2222-4222-8222-222222222222',paymentOperation='33333333-3333-4333-8333-333333333333';
 const line={name:'Produit',code:'X',quantity:5,unitPrice:50000,discount:0,vat:0},sale={createdAt:at,clientId,clientName:'Client',syncSaleId:saleId,syncVersion:1,lines:[line],total:250000,paid:0,remaining:250000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''};
@@ -26,7 +26,11 @@ test('révision v6 hors ligne : aperçu combiné, trop-perçu refusé et écritu
   db.exec('BEGIN');const result=await confirmDayInvoiceSaleEdit(tx,identity,{saleId:1,lines:increase,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z'},digest);db.exec('COMMIT');
   assert.equal(result.updated.total,300000);assert.equal(result.updated.syncVersion,2);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);assert.equal(db.prepare('SELECT count(*) n FROM sale_revisions').get()?.n,1);
   await assert.rejects(captureDayInvoiceSaleEdit(tx,identity,1,increase,digest),/Opérations en attente/);
-  await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
+  const after=await captureDayInvoiceForm(tx,identity,clientId,day,digest);assert.equal(after.view.total,900000);assert.equal(after.view.remaining,100000);
+  const extraPayment='44444444-4444-4444-8444-444444444444';
+  db.exec('BEGIN');await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:after.fingerprint,operationId:extraPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:50000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);db.exec('COMMIT');
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,50000);
+  assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,1);
  }finally{db.close();}
 });
 test('révision v6 : source, identité, lignes et opérations en attente sont contrôlées',async()=>{
@@ -48,5 +52,17 @@ test('révision v6 : toute erreur pendant l’écriture annule vente, historique
   assert.equal(db.prepare('SELECT count(*) n FROM identified_local_operations WHERE operation_id=?').get(editOperation)?.n,0);
   const fresh=await captureDayInvoiceSaleEdit(tx,identity,1,lines,digest);assert.equal(fresh.fingerprint,preview.fingerprint);
   db.exec('BEGIN');await confirmDayInvoiceSaleEdit(tx,identity,{saleId:1,lines,fingerprint:fresh.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z'},digest);db.exec('COMMIT');
+ }finally{db.close();}
+});
+
+test('révision en attente : preuve locale altérée ou file disparue bloque la projection',async()=>{
+ const {db,tx}=setup();try{await saveDayInvoiceReference(tx,identity,identity,reference);
+  const lines=[{...line,quantity:6}],preview=await captureDayInvoiceSaleEdit(tx,identity,1,lines,digest);
+  await confirmDayInvoiceSaleEdit(tx,identity,{saleId:1,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z'},digest);
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,100000);
+  const queued=String(db.prepare('SELECT payload FROM sales_outbox').get()?.payload),event=JSON.parse(queued);
+  db.prepare('UPDATE sales_outbox SET payload=?').run(JSON.stringify({...event,refund:1}));await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
+  db.prepare('UPDATE sales_outbox SET payload=?').run(queued);db.prepare('UPDATE sale_revisions SET refund=1').run();await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
+  db.prepare('UPDATE sale_revisions SET refund=0').run();db.prepare('DELETE FROM sales_outbox').run();await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
  }finally{db.close();}
 });

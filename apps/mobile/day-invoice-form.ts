@@ -7,6 +7,7 @@ import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readDayInvoicePayments,type DayInvoiceIdentity} from './day-invoice-queue';
 import {readLocalDayInvoiceSource,writeReconciledDayInvoicePayment} from './day-invoice-local';
 import {buildMergedDayInvoiceView} from './day-invoice-merged-view';
+import {verifiedPendingSaleRevisions} from './day-invoice-pending-sale-revision';
 import {guardDayInvoiceWrite} from './day-invoice-guards';
 import {validateDayInvoiceWrite,type DayInvoicePayment} from '../../packages/domain/src/day-invoice';
 type Bind=string|number|null;
@@ -16,7 +17,8 @@ export async function captureDayInvoiceForm(tx:Tx,identity:DayInvoiceIdentity,cl
  if(!reference)throw Error('Référence facture du jour indisponible : actualisation nécessaire.');
  const local=await readLocalDayInvoiceSource(tx,identity,clientId,day,digest);
  const payments=await readDayInvoicePayments(tx,identity,clientId,day);
- const view=buildMergedDayInvoiceView(reference,local,payments);
+ const verified=await verifiedPendingSaleRevisions(tx,identity,reference,local);
+ const view=buildMergedDayInvoiceView(reference,local,payments,verified);
  const source={...view.source,sales:[...view.source.sales].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0)};
  const fingerprint=canonicalJson({source,payments:view.payments.map(({pending:_pending,collectionDay:_collectionDay,...p})=>p)});
  return {view:{clientId,day,preInvoiceTotal:view.preInvoiceTotal,salesTotal:view.salesTotal,total:view.total,paid:view.paid,remaining:view.remaining,declared:view.declared,payments:view.payments},fingerprint,source,remoteOnlyPreInvoice:view.remoteOnlyPreInvoice,remoteOnlySaleIds:view.remoteOnlySaleIds};

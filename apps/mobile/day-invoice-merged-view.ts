@@ -8,7 +8,7 @@ import type {readLocalDayInvoiceSource} from './day-invoice-local';
 import type {validateDayInvoiceReference} from './day-invoice-reference';
 type Local=Awaited<ReturnType<typeof readLocalDayInvoiceSource>>;
 type Reference=ReturnType<typeof validateDayInvoiceReference>;
-export function buildMergedDayInvoiceView(reference:Reference,local:Local,localPayments:readonly DayInvoicePayment[]) {
+export function buildMergedDayInvoiceView(reference:Reference,local:Local,localPayments:readonly DayInvoicePayment[],verifiedRevisions:ReadonlySet<string>=new Set()) {
  const {clientId,day}=local;
  if(!reference.clients.some(c=>c.id===clientId)||!reference.saleStates||!reference.journalStates)throw Error('Client ou référence indisponible.');
  if(reference.settlementDays.some(p=>p.clientId===clientId&&(reference.oldDebtMarkers.some(m=>m.operationId===p.operationId)?day<p.day:p.day===day)))throw Error('Règlement global non attribué sur cette journée : rapprochement nécessaire.');
@@ -19,7 +19,7 @@ export function buildMergedDayInvoiceView(reference:Reference,local:Local,localP
  for(const sale of local.sales){
   if(localIds.has(sale.id))throw Error('Vente locale dupliquée.');localIds.add(sale.id);
   const known=reference.saleStates.find(s=>s.saleId===sale.id),date=reference.saleDays.find(d=>d.saleId===sale.id);
-  if(known&&(known.clientId!==clientId||date?.day!==day||known.version!==sale.version||Number(known.total)!==sale.total||Number(known.paid)!==sale.paid))throw Error('Vente locale et serveur incohérentes.');
+  if(known&&(known.clientId!==clientId||date?.day!==day||((known.version!==sale.version||Number(known.total)!==sale.total||Number(known.paid)!==sale.paid)&&!verifiedRevisions.has(sale.id))))throw Error('Vente locale et serveur incohérentes.');
   sales.set(sale.id,sale);
  }
  const candidates=reference.journalStates.filter(p=>p.clientId===clientId&&p.journalDate===day);
