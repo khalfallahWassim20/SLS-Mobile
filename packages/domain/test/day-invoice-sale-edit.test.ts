@@ -39,7 +39,7 @@ test('révision v6 : source, identité, lignes et opérations en attente sont co
   await assert.rejects(captureDayInvoiceSaleEdit(tx,identity,1,[{...line,unitPrice:1}],digest),/Article/);
   db.prepare('UPDATE sales SET payload=?').run(JSON.stringify({...sale,total:249000}));await assert.rejects(captureDayInvoiceSaleEdit(tx,identity,1,[line],digest),/incohérentes/);
   db.prepare('UPDATE sales SET payload=?').run(JSON.stringify(sale));db.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(editOperation,saleId,2,'{}');
-  await assert.rejects(captureDayInvoiceSaleEdit(tx,identity,1,[line],digest),/Opérations en attente/);
+  await assert.rejects(captureDayInvoiceSaleEdit(tx,identity,1,[line],digest),/identité vérifiée/);
  }finally{db.close();}
 });
 test('révision v6 : toute erreur pendant l’écriture annule vente, historique et file',async()=>{
@@ -72,5 +72,23 @@ test('révision en attente : preuve locale altérée ou file disparue bloque la 
   db.prepare('UPDATE sales SET payload=?').run(originalCurrent);db.prepare('UPDATE sale_revisions SET new_payload=?').run(originalRevision);db.prepare('UPDATE sales_outbox SET payload=?').run(queued);
   db.prepare('UPDATE sale_revisions SET refund=1').run();await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
   db.prepare('UPDATE sale_revisions SET refund=0').run();db.prepare('DELETE FROM sales_outbox').run();await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
+ }finally{db.close();}
+});
+
+test('révision v6 : une opération prouvée d’un autre client ne bloque pas le travail hors ligne',async()=>{
+ const {db,tx}=setup(),other='dddddddd-dddd-4ddd-8ddd-dddddddddddd',otherSale='eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',otherOperation='55555555-5555-4555-8555-555555555555';
+ try{
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,clients:[...reference.clients,{id:other,name:'Autre',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}]});
+  const local={...sale,clientId:other,clientName:'Autre',syncSaleId:otherSale},event={operationId:otherOperation,saleId:otherSale,version:1,sale:local,refund:0};
+  db.prepare('INSERT INTO sales VALUES(2,?,?)').run(other,JSON.stringify(local));db.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(otherOperation,otherSale,1,JSON.stringify(event));db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(otherOperation,identity.commercialId,otherSale,at);
+  const forged={...event,saleId,sale:{...local,syncSaleId:saleId}};
+  db.prepare('UPDATE sales_outbox SET sale_id=?,payload=?').run(saleId,JSON.stringify(forged));db.prepare('UPDATE identified_local_operations SET entity_id=? WHERE operation_id=?').run(saleId,otherOperation);
+  await assert.rejects(captureDayInvoiceSaleEdit(tx,identity,1,[{...line,quantity:6}],digest),/Client de vente en attente incohérent/);
+  db.prepare('UPDATE sales_outbox SET sale_id=?,payload=?').run(otherSale,JSON.stringify(event));db.prepare('UPDATE identified_local_operations SET entity_id=? WHERE operation_id=?').run(otherSale,otherOperation);
+  const lines=[{...line,quantity:6}],preview=await captureDayInvoiceSaleEdit(tx,identity,1,lines,digest);assert.equal(preview.balanceAfter,100000);
+  db.exec('BEGIN');await confirmDayInvoiceSaleEdit(tx,identity,{saleId:1,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z'},digest);db.exec('COMMIT');
+  assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,2);
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,100000);
+  await assert.rejects(captureDayInvoiceSaleEdit(tx,identity,1,lines,digest),/Opérations en attente pour ce client/);
  }finally{db.close();}
 });

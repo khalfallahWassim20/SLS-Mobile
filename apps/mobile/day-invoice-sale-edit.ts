@@ -6,6 +6,9 @@ import {getDeviceIdentity,assertDeviceWritable,assertKnownDeviceEntity,recordDev
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
 import {assertNoLocalCreditNote,assertNoRemoteCreditNote} from './credit-note-local-guard';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
+import {readIdentifiedOutbox} from './identified-outbox';
+import {readDayInvoiceOutbox} from './day-invoice-queue';
+import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
 import {captureDayInvoiceForm} from './day-invoice-form';
 import {readDayInvoiceClients} from './day-invoice-clients';
 import {readLocalSaleCashLedger} from './credit-sale-refund-journal-prototype';
@@ -20,20 +23,45 @@ type Line=SavedSale['lines'][number];
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const fields=['createdAt','clientId','clientName','syncSaleId','syncVersion','lines','total','paid','remaining','paymentMode','chequeNumber','chequeBank','chequeDue'];
 function lineKeys(line:unknown):line is Line{return !!line&&typeof line==='object'&&!Array.isArray(line)&&Object.keys(line).sort().join(',')==='code,discount,name,quantity,unitPrice,vat';}
-async function ensureIdle(tx:Tx){
- const row=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM sales_outbox) OR EXISTS(SELECT 1 FROM journal_sync_outbox) OR EXISTS(SELECT 1 FROM day_invoice_payment_outbox) OR EXISTS(SELECT 1 FROM day_invoice_old_debt_outbox) AS n`);
- if(!row||row.n)throw Error('Opérations en attente : synchronisez avant de modifier la facture.');
+/** Les autres clients peuvent avoir des opérations hors ligne. Ne jamais
+ * ignorer une file non attribuable : dans le doute, la révision reste bloquée. */
+async function ensureClientIdle(tx:Tx,identity:DeviceIdentity,clientId:string){
+ const sources=await readIdentifiedOutbox(tx,identity),payments=await readDayInvoiceOutbox(tx,identity),debts=await readOldDebtOutbox(tx,identity);
+ const ids=new Set<string>();
+ const register=(id:string)=>{if(typeof id!=='string'||!uuid.test(id))throw Error('Identifiant d’opération en attente invalide.');const key=id.toLowerCase();if(ids.has(key))throw Error('Identifiant d’opération dupliqué entre files.');ids.add(key);};
+ const different=(id:unknown)=>{if(typeof id!=='string'||!uuid.test(id))throw Error('Client d’une opération en attente inconnu : rapprochement nécessaire.');if(id.toLowerCase()===clientId.toLowerCase())throw Error('Opérations en attente pour ce client : synchronisez avant de modifier la facture.');};
+ for(const entry of sources){register(entry.operationId);let event:any;try{event=JSON.parse(entry.payload);}catch{throw Error('Opération en attente illisible.');}
+  if(!event||typeof event!=='object'||event.operationId!==entry.operationId)throw Error('Opération en attente incohérente.');
+  if(entry.kind==='sale'){
+   if(event.saleId!==entry.entityId||event.sale?.syncSaleId!==entry.entityId||event.sale?.syncVersion!==event.version||!Number.isSafeInteger(event.version))throw Error('Vente en attente incohérente.');
+   const rows=await tx.getAllAsync<{clientId:string;payload:string}>('SELECT client_id AS clientId,payload FROM sales');
+   const matches=rows.filter(r=>{try{return JSON.parse(r.payload).syncSaleId===entry.entityId;}catch{throw Error('Vente locale illisible.');}});
+   if(matches.length!==1||matches[0].clientId!==event.sale.clientId||JSON.parse(matches[0].payload).clientId!==event.sale.clientId)throw Error('Client de vente en attente incohérent.');different(event.sale.clientId);
+  } else if(entry.kind==='journal'){
+   if(event.invoice?.id!==entry.entityId||!Number.isSafeInteger(event.version))throw Error('Journal en attente incohérent.');
+   const rows=await tx.getAllAsync<{clientId:string;payload:string}>('SELECT client_id AS clientId,payload FROM tour_pre_invoices WHERE id=?',entry.entityId);
+   if(rows.length!==1||rows[0].clientId!==event.invoice.clientId)throw Error('Client de facture en attente incohérent.');different(event.invoice.clientId);
+  } else {
+   if(entry.entityId!==entry.operationId||event.settlement?.syncOperationId!==entry.operationId||typeof event.settlement.clientId!=='string')throw Error('Règlement en attente incohérent.');
+   const rows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM settlements WHERE client_id=?',event.settlement.clientId);
+   const matches=rows.filter(r=>{try{return JSON.parse(r.payload).syncOperationId===entry.operationId;}catch{throw Error('Règlement local illisible.');}});
+   if(matches.length!==1||canonicalJson(JSON.parse(matches[0].payload))!==canonicalJson(event.settlement))throw Error('Client de règlement en attente incohérent.');different(event.settlement.clientId);
+  }
+ }
+ for(const entry of payments){register(entry.operationId);different(JSON.parse(entry.payload).clientId);}
+ for(const entry of debts){register(entry.operationId);different(JSON.parse(entry.payload).event.settlement.clientId);}
 }
 /** L'aperçu est reproductible et fige la source, le solde et les lignes. */
 export async function captureDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,saleId:number,lines:Line[],digest:(text:string)=>Promise<string>){
  if(!Number.isSafeInteger(saleId)||saleId<1)throw Error('Vente invalide.');
  const bound=await getDeviceIdentity(tx);if(!bound||bound.commercialId!==identity.commercialId||bound.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur incohérent.');
- await assertLegacyMobileCreditSafe(tx,identity);await ensureIdle(tx);
+ await assertLegacyMobileCreditSafe(tx,identity);
  const row=await tx.getFirstAsync<{payload:string;clientId:string}>('SELECT payload,client_id AS clientId FROM sales WHERE id=?',saleId);
  let raw:unknown;try{raw=JSON.parse(row?.payload??'');}catch{throw Error('Vente locale illisible.');}
  if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).length!==fields.length||fields.some(k=>!(k in raw)))throw Error('Vente locale incohérente.');
  const previous={...(raw as Omit<SavedSale,'id'>),id:saleId};
  if(!row||row.clientId!==previous.clientId||!previous.syncSaleId||!uuid.test(previous.syncSaleId)||!Number.isSafeInteger(previous.syncVersion)||previous.syncVersion!<1||previous.syncVersion!>=1000000||!Number.isFinite(Date.parse(previous.createdAt))||!Array.isArray(previous.lines)||previous.lines.some(l=>!lineKeys(l)))throw Error('Vente locale incohérente.');
+ await ensureClientIdle(tx,identity,previous.clientId);
  const day=tunisDay(new Date(previous.createdAt));await assertDeviceWritable(tx,identity,[day]);
  await assertNoLocalCreditNote(tx,'sale',previous.syncSaleId);await assertNoRemoteCreditNote(tx,identity,'sale',previous.syncSaleId);
  await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion!,total:previous.total,paid:previous.paid,payload:row.payload,digest});

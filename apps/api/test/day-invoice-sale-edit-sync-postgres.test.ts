@@ -12,7 +12,8 @@ test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon
  try{
   await root.query(`CREATE SCHEMA "${schema}"`);pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`,max:6});await pool.query(schemaSql);await pool.query(dayInvoiceServerSchema);
   const clientId=randomUUID(),commercialId=randomUUID(),saleId=randomUUID(),day='2026-01-01',at='2026-01-01T09:00:00.000Z',saleOperation=randomUUID();
-  await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,0)',[clientId,'Client fictif']);await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[commercialId,'Commercial fictif']);await pool.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
+  const otherClient=randomUUID(),otherSaleId=randomUUID(),otherSaleOperation=randomUUID();
+  await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,0),($3,$4,0)',[clientId,'Client fictif',otherClient,'Autre client']);await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[commercialId,'Commercial fictif']);await pool.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
   const secret='secret fictif suffisamment long pour les tests';await setCommercialCredentials(pool,'admin',commercialId,{login:'edit.sync',password:'mot de passe fictif'});const login=await loginCommercial(pool,secret,{login:'edit.sync',password:'mot de passe fictif'});assert.ok(login);const session={secret,token:login.token};
   const sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:210084,discount:0,vat:1900}],total:250000,paid:0,remaining:250000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''};
   await storeIdentifiedSale(pool,{operationId:saleOperation,saleId,version:1,recordedAt:at,sale,refund:0},{...session,enforceMode:true});
@@ -33,6 +34,8 @@ test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon
   const transaction=async<T>(work:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const result=await work(tx);db.exec('COMMIT');return result;}catch(e){db.exec('ROLLBACK');throw e;}};
   const digest=async(text:string)=>createHash('sha256').update(text).digest('hex'),headers={Authorization:`Bearer ${login.token}`,'Content-Type':'application/json'};
   const fetchReference=async()=>{const response=await fetch(`${base}/test/day-invoice-reference`,{headers});assert.equal(response.status,200);return response.json();};const initial=await fetchReference();await transaction(t=>saveDayInvoiceReference(t,identity,identity,initial));
+  const otherSale={...sale,clientId:otherClient,clientName:'Autre client',syncSaleId:otherSaleId},otherEvent={operationId:otherSaleOperation,saleId:otherSaleId,version:1,sale:otherSale,refund:0};
+  db.prepare('INSERT INTO sales VALUES(2,?,?)').run(otherClient,JSON.stringify(otherSale));db.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(otherSaleOperation,otherSaleId,1,JSON.stringify(otherEvent));db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(otherSaleOperation,commercialId,otherSaleId,at);
   const lines=[{...sale.lines[0],quantity:2}],draft=await transaction(t=>captureDayInvoiceSaleEdit(t,identity,1,lines,digest));assert.equal(draft.assessment.total,1100000);assert.equal(draft.assessment.remaining,900000);
   const editId=randomUUID();await transaction(t=>confirmDayInvoiceSaleEdit(t,identity,{saleId:1,lines,fingerprint:draft.fingerprint,operationId:editId,recordedAt:'2026-01-01T10:00:00.000Z'},digest));
   const offline=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(offline.view.remaining,900000);
@@ -43,13 +46,13 @@ test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon
   let lost=true,requests=0;const post=(path:string,payload:string)=>fetch(`${base}/test/${path}`,{method:'POST',headers,body:payload});const lineage=(await pool.query('SELECT lineage_id FROM server_lineage_identity WHERE id=1')).rows[0].lineage_id;
   const io={transaction,check:()=>{},verifyServer:async()=>{const r=await fetch(`${base}/test/server-lineage`,{headers});const v=await r.json() as {commercialId:string;lineageId:string};if(!r.ok||v.commercialId!==commercialId||v.lineageId!==lineage)throw Error('Lignée incohérente');},fetchReference,
    sendSource:async(path:string,payload:string)=>{requests++;const r=await post(path==='settlements'?path:`day-invoice-sources/${path}`,payload);if(lost){lost=false;throw Error('Réponse perdue');}return r;},sendPayment:async(payload:string)=>post('day-invoice-payments',payload),sendOldDebt:async(payload:string)=>post('day-invoice-old-debt',payload)};
-  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
-  assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:1,remainingSources:0,remainingPayments:0});assert.equal(requests,2);
+  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,2);
+  assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:2,payments:1,remainingSources:0,remainingPayments:0});assert.equal(requests,3);
   assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,1100000);assert.equal(form.view.remaining,800000);
   const clients=await transaction(t=>readDayInvoiceClients(t,identity,digest));assert.equal(clients.clients.find(c=>c.id===clientId)?.balance,800000);
   assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,2);assert.equal(db.prepare('SELECT count(*) n FROM sale_revisions').get()?.n,1);assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE client_id=$1',[clientId])).rows[0].n,2);
-  const proof=await transaction(t=>captureDayInvoiceClose(t,identity,day,digest));assert.equal(proof.sales.saleStates[0].version,2);assert.equal(proof.sales.saleStates[0].total,500000);
+  const proof=await transaction(t=>captureDayInvoiceClose(t,identity,day,digest));assert.equal(proof.sales.saleStates.find(s=>s.saleId===saleId)?.version,2);assert.equal(proof.sales.saleStates.find(s=>s.saleId===saleId)?.total,500000);
   const attempt=await transaction(t=>prepareDayInvoiceCloseAttempt(t,identity,day,0,randomUUID,digest));assert.equal(attempt.cashProof,proof.cashProof);
   const close=await post('day-invoice-close',JSON.stringify({requestId:attempt.requestId,day,expectedVersion:0,cashProof:attempt.cashProof}));assert.equal(close.status,201);
   const repeated=await post('day-invoice-close',JSON.stringify({requestId:attempt.requestId,day,expectedVersion:0,cashProof:attempt.cashProof}));assert.equal(repeated.status,200);
