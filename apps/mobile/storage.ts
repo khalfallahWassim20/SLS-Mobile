@@ -712,6 +712,12 @@ export async function confirmNewDayInvoiceSalePrototype(identity:DeviceIdentity,
 /** Reprise durable préparatoire, non raccordée aux écrans actifs. */
 export async function readDaySaleAttemptPrototype(identity:DeviceIdentity){const database=await db();let result!:Awaited<ReturnType<typeof readDaySaleAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await readDaySaleAttempt(tx,identity);});return result;}
 export async function prepareDaySaleAttemptPrototype(identity:DeviceIdentity,input:NewSaleAttempt){const database=await db();let result!:Awaited<ReturnType<typeof prepareDaySaleAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await prepareDaySaleAttempt(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
-export async function confirmDaySaleAttemptPrototype(identity:DeviceIdentity){const database=await db();let result!:Awaited<ReturnType<typeof confirmDaySaleAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDaySaleAttempt(tx,identity,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function confirmDaySaleAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();let result!:Awaited<ReturnType<typeof confirmDaySaleAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDaySaleAttempt(tx,identity,operationId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
 export async function acknowledgeDaySaleAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgeDaySaleAttempt(tx,identity,operationId));}
 export async function cancelDaySaleAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelDaySaleAttempt(tx,identity,operationId));}
+
+/** Adaptateur à mémoriser par liaison commerciale, pour écran v6 non monté. */
+export function daySaleAttemptIOPrototype(identity:DeviceIdentity){return {
+ read:()=>readDaySaleAttemptPrototype(identity),prepare:(attempt:NewSaleAttempt)=>prepareDaySaleAttemptPrototype(identity,attempt),
+ confirm:(operationId:string)=>confirmDaySaleAttemptPrototype(identity,operationId),acknowledge:(operationId:string)=>acknowledgeDaySaleAttemptPrototype(identity,operationId),cancel:(operationId:string)=>cancelDaySaleAttemptPrototype(identity,operationId)
+};}

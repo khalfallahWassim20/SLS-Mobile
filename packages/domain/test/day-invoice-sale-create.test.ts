@@ -63,14 +63,16 @@ test('tentative durable : redémarrage, rollback, preuve locale après synchroni
   db.close();db=new DatabaseSync(path);tx=wrap(db);
   assert.deepEqual((await readDaySaleAttempt(tx,identity))?.attempt,input);
   const failing={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{if(sql.startsWith('UPDATE day_invoice_sale_attempt'))throw Error('panne avant reçu');await tx.runAsync(sql,...args);}};
-  db.exec('BEGIN');await assert.rejects(confirmDaySaleAttempt(failing,identity,digest),/panne avant reçu/);db.exec('ROLLBACK');
+  db.exec('BEGIN');await assert.rejects(confirmDaySaleAttempt(failing,identity,operationId,digest),/panne avant reçu/);db.exec('ROLLBACK');
   assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);assert.equal((await readDaySaleAttempt(tx,identity))?.result,null);
-  db.exec('BEGIN');assert.equal((await confirmDaySaleAttempt(tx,identity,digest)).status,'saved');db.exec('COMMIT');
+  await assert.rejects(confirmDaySaleAttempt(tx,identity,paymentId,digest),/différente/);
+  assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,0);
+  db.exec('BEGIN');assert.equal((await confirmDaySaleAttempt(tx,identity,operationId,digest)).status,'saved');db.exec('COMMIT');
   db.close();db=new DatabaseSync(path);tx=wrap(db);
   await assert.rejects(cancelDaySaleAttempt(tx,identity,operationId),/abandonnable/);
-  assert.equal((await confirmDaySaleAttempt(tx,identity,digest)).status,'duplicate');assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,1);
+  assert.equal((await confirmDaySaleAttempt(tx,identity,operationId,digest)).status,'duplicate');assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,1);
   // Simulation de retrait de la file après accusé : le reçu atomique reste lisible.
-  db.prepare('DELETE FROM sales_outbox').run();assert.equal((await confirmDaySaleAttempt(tx,identity,digest)).status,'duplicate');
+  db.prepare('DELETE FROM sales_outbox').run();assert.equal((await confirmDaySaleAttempt(tx,identity,operationId,digest)).status,'duplicate');
   await assert.rejects(readDaySaleAttempt(tx,{...identity,serverOrigin:'https://other.test'}),/Identité/);
   await assert.rejects(acknowledgeDaySaleAttempt(tx,identity,paymentId),/incohérent/);
   const raw=db.prepare('SELECT payload FROM day_invoice_sale_attempt').get()?.payload as string,corrupt=JSON.parse(raw);corrupt.result.sale.total++;db.prepare('UPDATE day_invoice_sale_attempt SET payload=?').run(JSON.stringify(corrupt));

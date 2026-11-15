@@ -1,5 +1,5 @@
-/** Prépare une tentative stable pour l'écran expérimental. Elle reste en mémoire
- * seulement : ne pas monter cet écran avant d'avoir prévu la reprise durable. */
+/** Prépare les identifiants stables pour une tentative de vente expérimentale.
+ * L'appelant doit persister la tentative avant de confirmer. */
 import type {captureNewDayInvoiceSale} from './day-invoice-sale-create';
 import {tunisDay} from './journal';
 export type NewSalePreview=Awaited<ReturnType<typeof captureNewDayInvoiceSale>>;

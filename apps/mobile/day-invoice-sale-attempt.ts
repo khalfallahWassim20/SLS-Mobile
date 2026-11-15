@@ -48,8 +48,8 @@ export async function prepareDaySaleAttempt(tx:Tx,identity:DeviceIdentity,input:
  const value:Stored={attempt:input,result:null};await tx.runAsync('INSERT INTO day_invoice_sale_attempt(id,commercial_id,server_origin,payload) VALUES(1,?,?,?)',identity.commercialId,identity.serverOrigin,JSON.stringify(value));return value;
 }
 /** Vente et reçu de confirmation sont commis ou annulés ensemble. */
-export async function confirmDaySaleAttempt(tx:Tx,identity:DeviceIdentity,digest:(text:string)=>Promise<string>){
- const stored=await readDaySaleAttempt(tx,identity);if(!stored)throw Error('Aucune tentative de vente à reprendre.');
+export async function confirmDaySaleAttempt(tx:Tx,identity:DeviceIdentity,operationId:string,digest:(text:string)=>Promise<string>){
+ const stored=await readDaySaleAttempt(tx,identity);if(!stored||stored.attempt.operationId!==operationId)throw Error('Tentative de vente absente ou différente.');
  if(stored.result)return {...stored.result,status:'duplicate' as const};
  const result=await confirmNewDayInvoiceSale(tx,identity,stored.attempt,digest);
  await tx.runAsync('UPDATE day_invoice_sale_attempt SET payload=? WHERE id=1',JSON.stringify({...stored,result}));return result;

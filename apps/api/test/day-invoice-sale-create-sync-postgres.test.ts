@@ -33,7 +33,7 @@ test('création vente v6 : SQLite, HTTP, réponse perdue, paiement unique et cl�
   const fetchReference=async()=>{const response=await fetch(`${base}/test/day-invoice-reference`,{headers});assert.equal(response.status,200);return response.json();};const initial=await fetchReference();await transaction(t=>saveDayInvoiceReference(t,identity,identity,initial));
   const draft=await transaction(t=>captureNewDayInvoiceSale(t,identity,clientId,day,sale.lines,digest));assert.equal(draft.invoiceTotal,850000);
   await transaction(t=>prepareDaySaleAttempt(t,identity,{clientId,day,lines:sale.lines,fingerprint:draft.fingerprint,saleId,operationId:saleOperation,createdAt:at},digest));
-  assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,digest))).status,'saved');
+  assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'saved');
   const offline=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(offline.view.total,850000);
   const secondPayment=randomUUID(),secondInput={clientId,day,fingerprint:offline.fingerprint,operationId:secondPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest));
   assert.equal((await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest))).view.remaining,650000);
@@ -44,7 +44,7 @@ test('création vente v6 : SQLite, HTTP, réponse perdue, paiement unique et cl�
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse de paiement perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,1);
   assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:0,payments:1,remainingSources:0,remainingPayments:0});assert.equal(requests,2);assert.equal(paymentRequests,2);
-  assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,digest))).status,'duplicate');
+  assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'duplicate');
   await transaction(t=>acknowledgeDaySaleAttempt(t,identity,saleOperation));
   assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,850000);assert.equal(form.view.remaining,650000);
