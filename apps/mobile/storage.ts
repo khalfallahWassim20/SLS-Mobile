@@ -1,3 +1,4 @@
+import {captureNewDayInvoiceSale,confirmNewDayInvoiceSale} from './day-invoice-sale-create';
 import {captureDayInvoiceSaleEdit,confirmDayInvoiceSaleEdit} from './day-invoice-sale-edit';
 import {captureOldDebtForm,confirmOldDebtForm} from './day-invoice-old-debt-form';
 import type {OldDebtEvent} from './day-invoice-old-debt-queue';
@@ -694,4 +695,14 @@ export async function captureDayInvoiceSaleEditPrototype(identity:DeviceIdentity
 export async function confirmDayInvoiceSaleEditPrototype(identity:DeviceIdentity,input:{saleId:number;lines:SavedSale['lines'];fingerprint:string;recordedAt:string}){
  const database=await db();let result!:Awaited<ReturnType<typeof confirmDayInvoiceSaleEdit>>;
  await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDayInvoiceSaleEdit(tx,identity,{...input,operationId:randomUUID()},text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+
+/** Création v6 expérimentale ; les règlements restent séparés et non ventilés. */
+export async function captureNewDayInvoiceSalePrototype(identity:DeviceIdentity,clientId:string,day:string,lines:SavedSale['lines']){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureNewDayInvoiceSale>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await captureNewDayInvoiceSale(tx,identity,clientId,day,lines,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function confirmNewDayInvoiceSalePrototype(identity:DeviceIdentity,input:{clientId:string;day:string;lines:SavedSale['lines'];fingerprint:string;createdAt:string}){
+ const database=await db();let result!:Awaited<ReturnType<typeof confirmNewDayInvoiceSale>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmNewDayInvoiceSale(tx,identity,{...input,saleId:randomUUID(),operationId:randomUUID()},text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }
