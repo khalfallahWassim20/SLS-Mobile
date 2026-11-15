@@ -650,9 +650,9 @@ export async function readDayInvoiceFormPrototype(identity:DeviceIdentity,client
  const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceForm>>;
  await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceForm(tx,identity,clientId,day,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }
-export async function confirmDayInvoiceFormPrototype(identity:DeviceIdentity,input:{clientId:string;day:string;fingerprint:string;recordedAt:string;amount:number;mode:DayInvoicePayment['mode'];chequeNumber:string;chequeBank:string;chequeDue:string}){
+export async function confirmDayInvoiceFormPrototype(identity:DeviceIdentity,input:{clientId:string;day:string;fingerprint:string;operationId:string;recordedAt:string;amount:number;mode:DayInvoicePayment['mode'];chequeNumber:string;chequeBank:string;chequeDue:string}){
  const database=await db();let result!:Awaited<ReturnType<typeof confirmDayInvoiceForm>>;
- await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDayInvoiceForm(tx,identity,{...input,operationId:randomUUID()},text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDayInvoiceForm(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }
 export async function readDayInvoiceExportPaymentsPrototype(identity:DeviceIdentity,day:string){
  const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceExportPayments>>;

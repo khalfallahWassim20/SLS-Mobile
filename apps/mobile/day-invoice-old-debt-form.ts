@@ -7,7 +7,7 @@ import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype'
 import {captureDayInvoiceForm} from './day-invoice-form';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readDayInvoiceClients} from './day-invoice-clients';
-import {appendOldDebt,validateOldDebtEvent,type OldDebtEvent} from './day-invoice-old-debt-queue';
+import {appendOldDebt,readOldDebtOutbox,validateOldDebtEvent,type OldDebtEvent} from './day-invoice-old-debt-queue';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
 export async function captureOldDebtForm(tx:Tx,identity:DeviceIdentity,clientId:string,day:string,digest:(value:string)=>Promise<string>){
@@ -23,6 +23,16 @@ export async function captureOldDebtForm(tx:Tx,identity:DeviceIdentity,clientId:
 }
 export async function confirmOldDebtForm(tx:Tx,identity:DeviceIdentity,input:{fingerprint:string;event:OldDebtEvent},digest:(value:string)=>Promise<string>){
  validateOldDebtEvent(input.event);
+ // En reprise, vérifier la file ou une preuve serveur avant de reconnaître le
+ // doublon : une ligne locale seule ne prouve pas que la transmission est sûre.
+ const existing=await tx.getFirstAsync<{payload:string}>('SELECT payload FROM day_invoice_old_debt_local WHERE operation_id=?',input.event.event.operationId);
+ if(existing){
+  const entries=await readOldDebtOutbox(tx,identity),queued=entries.find(e=>e.operationId===input.event.event.operationId);
+  if(!queued){const ref=await readDayInvoiceReferenceCache(tx,identity),id=input.event.event.operationId,settlement=input.event.event.settlement;
+   const marker=ref?.oldDebtMarkers.find(m=>m.operationId===id),state=ref?.settlementStates?.find(s=>s.operationId===id),proof=ref?.settlementProofs.find(p=>p.operationId===id);
+   if(!marker||marker.invoiceDay!==input.event.invoiceDay||state?.clientId!==settlement.clientId||!proof||proof.hash!==await digest(canonicalJson(settlement)))throw Error('Accusé de règlement indisponible : rapprochement nécessaire.');
+  }
+ }
  return appendOldDebt(tx,identity,input.event,async(locked,event)=>{
   const s=event.event.settlement,current=await captureOldDebtForm(locked,identity,s.clientId,event.invoiceDay,digest);
   const reference=await readDayInvoiceReferenceCache(locked,identity);

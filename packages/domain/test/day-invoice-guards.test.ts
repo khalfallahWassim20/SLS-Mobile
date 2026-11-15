@@ -86,6 +86,13 @@ test('formulaire unifié : capture de 850 DT, confirmation atomique et refus de 
   const input={clientId,day:payment.day,fingerprint:draft.fingerprint,operationId:payment.operationId,recordedAt:payment.recordedAt,amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
   db.exec('BEGIN');const result=await confirmDayInvoiceForm(tx,identity,input,digest);db.exec('COMMIT');assert.equal(result.payment.preInvoice?.declare,true);assert.deepEqual(result.payment.sales,[{id:saleId,version:1}]);
   const after=await captureDayInvoiceForm(tx,identity,clientId,payment.day);assert.equal(after.view.remaining,650000);assert.equal(after.view.paid,200000);assert.equal(after.view.payments[0].pending,true);
+  // Perte du résultat local après COMMIT : reprise du même identifiant, sans
+  // deuxième encaissement ni nouvelle empreinte de facture.
+  db.exec('BEGIN');const retry=await confirmDayInvoiceForm(tx,identity,input,digest);db.exec('COMMIT');assert.equal(retry.status,'duplicate');assert.deepEqual(retry.payment,result.payment);
+  await assert.rejects(confirmDayInvoiceForm(tx,identity,{...input,amount:100000},digest),/déjà utilisé/);
+  await assert.rejects(confirmDayInvoiceForm(tx,{...identity,serverOrigin:'https://other.test'},input,digest),/Identité/);
+  db.exec('BEGIN');db.prepare("UPDATE day_invoice_payment_outbox SET payload='{}'").run();await assert.rejects(confirmDayInvoiceForm(tx,identity,input,digest),/incohérente/);db.exec('ROLLBACK');
+  db.exec('BEGIN');db.prepare('DELETE FROM day_invoice_payment_outbox').run();await assert.rejects(confirmDayInvoiceForm(tx,identity,input,digest),/Accusé/);db.exec('ROLLBACK');
   db.exec('BEGIN');await assert.rejects(confirmDayInvoiceForm(tx,identity,{...input,operationId:'44444444-4444-4444-8444-444444444444'},digest),/a changé/);db.exec('ROLLBACK');
   db.exec('BEGIN');await assert.rejects(confirmDayInvoiceForm(tx,identity,{...input,fingerprint:after.fingerprint,operationId:'44444444-4444-4444-8444-444444444444',amount:650001},digest),/supérieur/);db.exec('ROLLBACK');
   assert.equal(db.prepare('SELECT count(*) AS n FROM day_invoice_payments').get()?.n,1);

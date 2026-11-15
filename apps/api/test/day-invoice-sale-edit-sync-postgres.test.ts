@@ -36,7 +36,8 @@ test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon
   const lines=[{...sale.lines[0],quantity:2}],draft=await transaction(t=>captureDayInvoiceSaleEdit(t,identity,1,lines,digest));assert.equal(draft.assessment.total,1100000);assert.equal(draft.assessment.remaining,900000);
   const editId=randomUUID();await transaction(t=>confirmDayInvoiceSaleEdit(t,identity,{saleId:1,lines,fingerprint:draft.fingerprint,operationId:editId,recordedAt:'2026-01-01T10:00:00.000Z'},digest));
   const offline=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(offline.view.remaining,900000);
-  const secondPayment=randomUUID();await transaction(t=>confirmDayInvoiceForm(t,identity,{clientId,day,fingerprint:offline.fingerprint,operationId:secondPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:100000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest));
+  const secondPayment=randomUUID(),secondInput={clientId,day,fingerprint:offline.fingerprint,operationId:secondPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:100000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest));
+  assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   assert.equal((await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest))).view.remaining,800000);
   assert.equal((await transaction(t=>readDayInvoiceClients(t,identity,digest))).clients.find(c=>c.id===clientId)?.balance,800000);
   let lost=true,requests=0;const post=(path:string,payload:string)=>fetch(`${base}/test/${path}`,{method:'POST',headers,body:payload});const lineage=(await pool.query('SELECT lineage_id FROM server_lineage_identity WHERE id=1')).rows[0].lineage_id;
@@ -44,6 +45,7 @@ test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon
    sendSource:async(path:string,payload:string)=>{requests++;const r=await post(path==='settlements'?path:`day-invoice-sources/${path}`,payload);if(lost){lost=false;throw Error('Réponse perdue');}return r;},sendPayment:async(payload:string)=>post('day-invoice-payments',payload),sendOldDebt:async(payload:string)=>post('day-invoice-old-debt',payload)};
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
   assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:1,remainingSources:0,remainingPayments:0});assert.equal(requests,2);
+  assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,1100000);assert.equal(form.view.remaining,800000);
   const clients=await transaction(t=>readDayInvoiceClients(t,identity,digest));assert.equal(clients.clients.find(c=>c.id===clientId)?.balance,800000);
   assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,2);assert.equal(db.prepare('SELECT count(*) n FROM sale_revisions').get()?.n,1);assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE client_id=$1',[clientId])).rows[0].n,2);

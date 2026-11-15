@@ -30,6 +30,8 @@ test('dette explicite hors ligne : plafond, facture inchangée, reprise et accus
   const initial=await captureOldDebtForm(tx,identity,clientId,day,digest);assert.equal(initial.balance,350000);assert.equal(initial.available,100000);
   const prepared=prepareOldDebtInput(initial,{amount:'60,000',mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},id,at);
   db.exec('BEGIN');assert.equal(await confirmOldDebtForm(tx,identity,prepared,digest),'created');db.exec('COMMIT');
+  db.exec('BEGIN');assert.equal(await confirmOldDebtForm(tx,identity,prepared,digest),'duplicate');db.exec('COMMIT');
+  await assert.rejects(confirmOldDebtForm(tx,identity,{...prepared,event:debt(id,50000)},digest),/déjà utilisé/);
   const after=await captureOldDebtForm(tx,identity,clientId,day,digest);assert.equal(after.balance,290000);assert.equal(after.available,40000);
   const invoice=await captureDayInvoiceForm(tx,identity,clientId,day,digest);assert.equal(invoice.view.total,850000);assert.equal(invoice.view.remaining,850000);
   db.exec('BEGIN');await assert.rejects(confirmOldDebtForm(tx,identity,{fingerprint:initial.fingerprint,event:debt(id2,1000)},digest),/changé/);db.exec('ROLLBACK');
@@ -41,6 +43,10 @@ test('dette explicite hors ligne : plafond, facture inchangée, reprise et accus
   assert.equal((await readOldDebtOutbox(tx,identity)).length,1);
   await uploadOldDebts(queue,identity,identity,async()=>({ok:true,status:200,json:async()=>({status:'duplicate',operationId:id})}),entry=>acknowledgeOldDebt(tx,identity,entry));
   assert.equal((await readOldDebtOutbox(tx,identity)).length,0);assert.equal(db.prepare('SELECT count(*) n FROM settlements').get()?.n,1);
+  await assert.rejects(confirmOldDebtForm(tx,identity,prepared,digest),/Accusé/);
+  const settled=prepared.event.event.settlement,hash=await digest((await import('@sls/domain')).canonicalJson(settled));
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,clients:[{...reference.clients[0],serverBalance:'290000'}],settlementStates:[{operationId:id,clientId}],settlementDays:[{operationId:id,clientId,day}],settlementProofs:[{operationId:id,hash}],oldDebtMarkers:[{operationId:id,invoiceDay:day}]});
+  assert.equal(await confirmOldDebtForm(tx,identity,prepared,digest),'duplicate');assert.equal(db.prepare('SELECT count(*) n FROM settlements').get()?.n,1);
  }finally{db.close();}
 });
 test('dette explicite : contenu altéré ou identité étrangère bloquent la file',async()=>{
