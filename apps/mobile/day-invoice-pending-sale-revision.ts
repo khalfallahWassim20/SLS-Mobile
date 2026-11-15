@@ -1,6 +1,6 @@
 /** Preuve stricte d'une révision locale v6 non encore acquittée. À appeler sous
  * verrou SQLite exclusif : toute incohérence garde l'ancienne protection. */
-import {canonicalJson} from '@sls/domain';
+import {canonicalJson,calculateInvoice} from '@sls/domain';
 import {readIdentifiedOutbox} from './identified-outbox';
 import type {DeviceIdentity} from './identified-device';
 import type {readLocalDayInvoiceSource} from './day-invoice-local';
@@ -25,7 +25,13 @@ export async function verifiedPendingSaleRevisions(tx:Tx,identity:DeviceIdentity
   if(!revision||revision.refund!==0||revision.createdAt!==entry.recordedAt)continue;
   let before:any,after:any,current:any;try{before=JSON.parse(revision.previousPayload);after=JSON.parse(revision.newPayload);current=JSON.parse(row.payload);}catch{continue;}
   if(!before||!after||!current||before.id!==row.id||after.id!==row.id||before.syncSaleId!==sale.id||after.syncSaleId!==sale.id||before.syncVersion!==remote.version||before.clientId!==local.clientId||before.total!==Number(remote.total)||before.paid!==Number(remote.paid)||after.syncVersion!==sale.version||after.clientId!==local.clientId||after.total!==sale.total||after.paid!==sale.paid||after.createdAt!==before.createdAt)continue;
-  const {id:_id,...afterPayload}=after;
+  // Une révision v6 sans remboursement ne peut changer ni le paiement initial
+  // ni les champs d'identité ; seuls les articles et totaux sont révisables.
+  const {id:_beforeId,lines:_beforeLines,total:_beforeTotal,remaining:_beforeRemaining,syncVersion:_beforeVersion,...beforeFixed}=before;
+  const {id:_id,lines:afterLines,total:_afterTotal,remaining:_afterRemaining,syncVersion:_afterVersion,...afterFixed}=after;
+  if(canonicalJson(beforeFixed)!==canonicalJson(afterFixed)||!Array.isArray(afterLines)||!afterLines.length)continue;
+  try{const total=calculateInvoice(afterLines.map((l:any)=>({quantity:l.quantity,unitPrice:l.unitPrice,discountRate:l.discount,vatRate:l.vat}))).total;if(total!==sale.total||after.remaining!==Math.max(0,sale.total-sale.paid))continue;}catch{continue;}
+  const {id:_currentId,...afterPayload}=after;
   if(event.operationId!==entry.operationId||event.saleId!==sale.id||event.version!==sale.version||event.refund!==0||canonicalJson(event.sale)!==canonicalJson(current)||canonicalJson(afterPayload)!==canonicalJson(current))continue;
   verified.add(sale.id);
  }

@@ -62,7 +62,15 @@ test('révision en attente : preuve locale altérée ou file disparue bloque la 
   assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,100000);
   const queued=String(db.prepare('SELECT payload FROM sales_outbox').get()?.payload),event=JSON.parse(queued);
   db.prepare('UPDATE sales_outbox SET payload=?').run(JSON.stringify({...event,refund:1}));await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
-  db.prepare('UPDATE sales_outbox SET payload=?').run(queued);db.prepare('UPDATE sale_revisions SET refund=1').run();await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
+  db.prepare('UPDATE sales_outbox SET payload=?').run(queued);
+  // Même si trois copies locales sont altérées ensemble, le paiement initial
+  // ne peut pas être changé sous prétexte d'une révision sans remboursement.
+  const originalCurrent=String(db.prepare('SELECT payload FROM sales').get()?.payload),originalRevision=String(db.prepare('SELECT new_payload FROM sale_revisions').get()?.new_payload);
+  const modifiedSale={...JSON.parse(originalCurrent),paid:1000,remaining:299000},modifiedRevision={...JSON.parse(originalRevision),paid:1000,remaining:299000};
+  db.prepare('UPDATE sales SET payload=?').run(JSON.stringify(modifiedSale));db.prepare('UPDATE sale_revisions SET new_payload=?').run(JSON.stringify(modifiedRevision));db.prepare('UPDATE sales_outbox SET payload=?').run(JSON.stringify({...event,sale:modifiedSale}));
+  await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
+  db.prepare('UPDATE sales SET payload=?').run(originalCurrent);db.prepare('UPDATE sale_revisions SET new_payload=?').run(originalRevision);db.prepare('UPDATE sales_outbox SET payload=?').run(queued);
+  db.prepare('UPDATE sale_revisions SET refund=1').run();await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
   db.prepare('UPDATE sale_revisions SET refund=0').run();db.prepare('DELETE FROM sales_outbox').run();await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/incohérentes/);
  }finally{db.close();}
 });
