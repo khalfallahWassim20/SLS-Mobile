@@ -702,7 +702,7 @@ export async function captureNewDayInvoiceSalePrototype(identity:DeviceIdentity,
  const database=await db();let result!:Awaited<ReturnType<typeof captureNewDayInvoiceSale>>;
  await database.withExclusiveTransactionAsync(async tx=>{result=await captureNewDayInvoiceSale(tx,identity,clientId,day,lines,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }
-export async function confirmNewDayInvoiceSalePrototype(identity:DeviceIdentity,input:{clientId:string;day:string;lines:SavedSale['lines'];fingerprint:string;createdAt:string}){
+export async function confirmNewDayInvoiceSalePrototype(identity:DeviceIdentity,input:{clientId:string;day:string;lines:SavedSale['lines'];fingerprint:string;createdAt:string;saleId:string;operationId:string}){
  const database=await db();let result!:Awaited<ReturnType<typeof confirmNewDayInvoiceSale>>;
- await database.withExclusiveTransactionAsync(async tx=>{result=await confirmNewDayInvoiceSale(tx,identity,{...input,saleId:randomUUID(),operationId:randomUUID()},text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmNewDayInvoiceSale(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }

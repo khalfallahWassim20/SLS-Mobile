@@ -20,7 +20,8 @@ test('vente sur place v6 : facture 600 + 250, règlement unique 200 et solde 650
   db.exec('BEGIN');await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-01T10:00:00.000Z',amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);db.exec('COMMIT');
   assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,650000);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,650000);
   await assert.rejects(captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),/Règlement de cette facture en attente/);
-  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,input,digest),/Règlement de cette facture en attente/);
+  assert.equal((await confirmNewDayInvoiceSale(tx,identity,input,digest)).status,'duplicate');
+  assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,1);
  }finally{db.close();}
 });
 test('vente sur place v6 : limite, prix, fraîcheur, collisions et atomicité',async()=>{
@@ -33,9 +34,14 @@ test('vente sur place v6 : limite, prix, fraîcheur, collisions et atomicité',a
   const fail={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{if(sql.startsWith('INSERT INTO sales_outbox'))throw Error('échec simulé');await tx.runAsync(sql,...args);}};
   db.exec('BEGIN');await assert.rejects(confirmNewDayInvoiceSale(fail,identity,input,digest),/échec simulé/);db.exec('ROLLBACK');assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);
   db.exec('BEGIN');await confirmNewDayInvoiceSale(tx,identity,input,digest);db.exec('COMMIT');
-  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,input,digest),/modifié/);
-  const fresh=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);
-  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,{...input,fingerprint:fresh.fingerprint},digest),/déjà utilisé/);
+  assert.equal((await confirmNewDayInvoiceSale(tx,identity,input,digest)).status,'duplicate');
+  await assert.rejects(confirmNewDayInvoiceSale(tx,{...identity,serverOrigin:'https://other.test'},input,digest),/Identité/);
+  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,{...input,saleId:'99999999-9999-4999-8999-999999999999'},digest),/autres données/);
+  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,{...input,lines:[{...line,quantity:2}]},digest),/autres données/);
+  const original=db.prepare('SELECT payload FROM sales_outbox').get()?.payload as string;db.prepare('UPDATE sales_outbox SET payload=?').run(original.replace('250000','250001'));
+  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,input,digest),/autres données/);db.prepare('UPDATE sales_outbox SET payload=?').run(original);
+  db.prepare('DELETE FROM sales_outbox').run();await assert.rejects(confirmNewDayInvoiceSale(tx,identity,input,digest),/Preuve de vente/);
+  db.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(operationId,saleId,1,original);
   await saveDayInvoiceReference(tx,identity,identity,{...reference,clients:[{...reference.clients[0],serverBalance:'100000',creditLimit:'100000'}]});
   await assert.rejects(captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),/Limite/);
  }finally{db.close();}

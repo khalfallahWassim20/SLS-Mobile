@@ -7,6 +7,7 @@ import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype'
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readDayInvoiceClients} from './day-invoice-clients';
 import {readDayInvoiceOutbox} from './day-invoice-queue';
+import {readIdentifiedOutbox} from './identified-outbox';
 import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
 import {captureDayInvoiceForm} from './day-invoice-form';
 import {recordSaleEventTime} from './sale-event-time';
@@ -49,6 +50,23 @@ export async function captureNewDayInvoiceSale(tx:Tx,identity:DeviceIdentity,cli
 }
 export async function confirmNewDayInvoiceSale(tx:Tx,identity:DeviceIdentity,input:{clientId:string;day:string;lines:Line[];fingerprint:string;saleId:string;operationId:string;createdAt:string},digest:(text:string)=>Promise<string>){
  if(!uuid.test(input.saleId)||!uuid.test(input.operationId)||input.saleId.toLowerCase()===input.operationId.toLowerCase()||typeof input.createdAt!=='string'||!Number.isFinite(Date.parse(input.createdAt))||new Date(input.createdAt).toISOString()!==input.createdAt||tunisDay(new Date(input.createdAt))!==input.day)throw Error('Identifiant ou date de vente invalide.');
+ // En cas d'incertitude après une transaction locale, ne jamais créer une
+ // seconde vente : il faut la même identité, la vente intacte et sa file.
+ const bound=await getDeviceIdentity(tx);if(!bound||bound.commercialId!==identity.commercialId||bound.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur incohérent.');
+ const marker=await tx.getFirstAsync<{commercialId:string;kind:string;entityId:string;recordedAt:string}>(`SELECT commercial_id AS commercialId,operation_kind AS kind,entity_id AS entityId,recorded_at AS recordedAt FROM identified_local_operations WHERE operation_id=?`,input.operationId);
+ if(marker){
+  if(marker.commercialId!==identity.commercialId||marker.kind!=='sale'||marker.entityId!==input.saleId||marker.recordedAt!==input.createdAt||typeof input.fingerprint!=='string'||!input.fingerprint)throw Error('Identifiant d’opération déjà utilisé avec d’autres données.');
+  const entries=(await readIdentifiedOutbox(tx,identity)).filter(e=>e.operationId===input.operationId);
+  if(entries.length!==1)throw Error('Preuve de vente en attente indisponible : rapprochement nécessaire.');
+  const entry=entries[0];let event:any;try{event=JSON.parse(entry.payload);}catch{throw Error('Vente en attente illisible.');}
+  const rows=await tx.getAllAsync<{clientId:string;createdAt:string;payload:string}>('SELECT client_id AS clientId,created_at AS createdAt,payload FROM sales');
+  const matches=rows.filter(r=>{try{return JSON.parse(r.payload).syncSaleId===input.saleId;}catch{throw Error('Vente locale illisible.');}});
+  if(matches.length!==1)throw Error('Vente locale introuvable ou ambiguë.');
+  const row=matches[0];let sale:any;try{sale=JSON.parse(row.payload);}catch{throw Error('Vente locale illisible.');}
+  let total:number;try{if(!Array.isArray(sale.lines)||!sale.lines.length||sale.lines.some((l:unknown)=>!l||typeof l!=='object'||Array.isArray(l)||Object.keys(l).sort().join(',')!==keys))throw Error();total=calculateInvoice(sale.lines.map((l:Line)=>({quantity:l.quantity,unitPrice:l.unitPrice,discountRate:l.discount,vatRate:l.vat}))).total;}catch{throw Error('Vente locale illisible.');}
+  if(entry.kind!=='sale'||entry.entityId!==input.saleId||entry.recordedAt!==input.createdAt||row.clientId!==input.clientId||row.createdAt!==input.createdAt||sale.clientId!==input.clientId||sale.createdAt!==input.createdAt||sale.syncSaleId!==input.saleId||sale.syncVersion!==1||sale.paid!==0||sale.total!==total||sale.remaining!==sale.total||sale.paymentMode!=='Crédit'||sale.chequeNumber!==''||sale.chequeBank!==''||sale.chequeDue!==''||canonicalJson(sale.lines)!==canonicalJson(input.lines)||event.operationId!==input.operationId||event.saleId!==input.saleId||event.version!==1||event.refund!==0||canonicalJson(event.sale)!==canonicalJson(sale))throw Error('Vente déjà enregistrée avec d’autres données : rapprochement nécessaire.');
+  return {status:'duplicate' as const,sale:sale as Omit<SavedSale,'id'>,operationId:input.operationId,balanceAfter:null};
+ }
  const current=await captureNewDayInvoiceSale(tx,identity,input.clientId,input.day,input.lines,digest);
  if(current.fingerprint!==input.fingerprint)throw Error('Facture ou solde modifié : vérifiez avant de confirmer.');
  const ref=await readDayInvoiceReferenceCache(tx,identity);if(!ref)throw Error('Référence indisponible.');
@@ -61,5 +79,5 @@ export async function confirmNewDayInvoiceSale(tx:Tx,identity:DeviceIdentity,inp
  await tx.runAsync('INSERT INTO sales(created_at,client_id,payload) VALUES(?,?,?)',sale.createdAt,sale.clientId,JSON.stringify(sale));
  await tx.runAsync('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)',input.operationId,input.saleId,1,JSON.stringify(event));
  await recordSaleEventTime(tx,input.operationId,input.createdAt);await recordDeviceOperation(tx,identity,input.operationId,'sale',input.saleId,input.createdAt);
- return {sale,operationId:input.operationId,balanceAfter:current.balanceAfter};
+ return {status:'saved' as const,sale,operationId:input.operationId,balanceAfter:current.balanceAfter};
 }
