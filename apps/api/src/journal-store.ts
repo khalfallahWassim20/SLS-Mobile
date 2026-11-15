@@ -4,6 +4,7 @@ import {assertTourWritable} from '@sls/domain';
 import {lockTourClosure} from './tour-closure-store.js';
 import {verifyCommercialSession} from './commercial-session.js';
 import {lockSyncMode,assertLegacyMode,assertIdentifiedMode} from './tour-sync-mode.js';
+import {assertLegacyClientDaySafe,lockDayInvoiceClient,assertDayInvoiceAwareJournalSafe} from './day-invoice-legacy-guard.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
 import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition,type JournalSnapshot } from './journal-protocol.js';
@@ -14,7 +15,7 @@ export class TourDayClosed extends JournalConflict {
  constructor(readonly day:string,readonly commercialId:string) { super('Journal clôturé : seule une réouverture par l’administrateur permet une correction.'); }
 }
 export class JournalAuthenticationError extends Error {}
-export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string;enforceMode?:boolean;creditAware?:boolean}, testGuard?: (db:PoolClient,event:JournalSnapshot)=>Promise<void>): Promise<'received' | 'duplicate'> {
+export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace: 'experimental' | 'sync' | 'identified' = 'experimental', session?:{token:string;secret:string;enforceMode?:boolean;creditAware?:boolean;dayInvoiceAware?:boolean}, testGuard?: (db:PoolClient,event:JournalSnapshot)=>Promise<void>): Promise<'received' | 'duplicate'> {
   if(testGuard && namespace!=='identified')throw new RangeError('Garde expérimentale réservée au journal identifié.');
   const prefix = namespace === 'sync' ? 'sync_journal' : namespace === 'identified' ? 'identified_journal' : 'demo_journal';
   const event = parseJournalSnapshot(input);
@@ -41,11 +42,16 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
     await db.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', ['journal-operation',event.operationId]);
     await db.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', ['journal-invoice',event.invoice.id]);
     await db.query('SELECT pg_advisory_xact_lock(hashtext($1), hashtext($2))', ['journal-client-day',`${event.invoice.clientId}:${event.invoice.journalDate}`]);
+    if(namespace==='identified')await lockDayInvoiceClient(db,event.invoice.clientId);
     const existing = await db.query(`SELECT payload_hash${namespace==='identified'?',commercial_id':''} FROM ${prefix}_events WHERE operation_id=$1`,[event.operationId]);
     if (existing.rows.length) {
       if (namespace==='identified' && existing.rows[0].commercial_id!==commercialId) throw new JournalConflict('Opération attribuée à un autre commercial.');
       if (existing.rows[0].payload_hash !== hash) throw new JournalConflict('Identifiant d’opération déjà utilisé avec d’autres données.');
       await db.query('COMMIT'); return 'duplicate';
+    }
+    if(namespace==='identified'){
+      if(session?.dayInvoiceAware)await assertDayInvoiceAwareJournalSafe(db,event.invoice.clientId,event.invoice.journalDate,event.version,event.receipts.length);
+      else await assertLegacyClientDaySafe(db,event.invoice.clientId,event.invoice.journalDate);
     }
     if(legacyMode) assertLegacyMode(legacyMode);
     if(namespace==='identified' && session?.enforceMode && !session.creditAware)await assertOldCreditProtocolSafe(db);
@@ -75,7 +81,7 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
     try { validateJournalTransition(previous,event); }
     catch (error) { throw new JournalConflict(error instanceof Error ? error.message : 'Version du journal incohérente.'); }
     if (!invoice.rows.length) {
-      const client = await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL',[event.invoice.clientId]);
+      const client = await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL FOR SHARE',[event.invoice.clientId]);
       if (!client.rows.length) throw new JournalConflict('Client introuvable sur le serveur.');
       if(namespace==='identified') await db.query(`INSERT INTO ${prefix}_invoices(id,client_id,journal_date,commercial_id) VALUES($1,$2,$3::date,$4)`,[event.invoice.id,event.invoice.clientId,event.invoice.journalDate,old?.rows.length?null:commercialId]);
       else await db.query(`INSERT INTO ${prefix}_invoices(id,client_id,journal_date) VALUES($1,$2,$3::date)`,[event.invoice.id,event.invoice.clientId,event.invoice.journalDate]);

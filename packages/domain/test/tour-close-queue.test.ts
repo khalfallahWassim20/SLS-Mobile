@@ -93,3 +93,15 @@ test('état serveur vérifié sur un autre téléphone : blocage et réouverture
    assert.equal(db.prepare('SELECT count(*) AS n FROM tour_close_admin_refund_proofs').get()?.n,0);assert.equal(db.prepare('SELECT count(*) AS n FROM tour_close_cash_proofs').get()?.n,0);
   }finally{db.close();}
  });
+
+test('clôture ancienne : refuse aussi un règlement unifié déjà synchronisé',async()=>{
+ const {db,tx}=setup();try {
+  db.exec("CREATE TABLE day_invoice_payments(operation_id TEXT PRIMARY KEY); CREATE TABLE day_invoice_payment_outbox(operation_id TEXT PRIMARY KEY);");
+  db.exec("INSERT INTO day_invoice_payments VALUES('payment-1'); INSERT INTO day_invoice_payment_outbox VALUES('payment-1')");
+  await assert.rejects(prepareTourClose(tx,id,day,0,()=>request),/Règlements unifiés/);
+  db.exec('DELETE FROM day_invoice_payment_outbox');
+  await assert.rejects(prepareTourClose(tx,id,day,0,()=>request),/Règlements unifiés/);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM day_invoice_payments').get()?.n,1);
+  assert.equal(db.prepare('SELECT count(*) AS n FROM tour_close_attempts').get()?.n,0);
+ }finally{db.close();}
+});

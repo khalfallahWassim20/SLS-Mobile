@@ -5,6 +5,7 @@ import {buildServerJournalDay} from './journal-day.js';
 import {journalDateSchema,parseJournalSnapshot} from './journal-protocol.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
+import {readDayInvoiceJournalPayments,readDayInvoiceDeclarations} from './day-invoice-journal.js';
 
 /** L'appelant doit fournir un instantané REPEATABLE READ ; cette fonction ne
  * vérifie pas le protocole et ne doit pas être utilisée seule par une route. */
@@ -43,14 +44,29 @@ export async function readIdentifiedJournalDayInTransaction(db:PoolClient,commer
   const inheritedTotal=[...inheritedByClient.values()].reduce((n,p)=>n+p.prePaid+p.oldDebtPaid,0n);
 
   const dayResult=buildServerJournalDay(day,invoices.rows.map(r=>r.payload),sales.rows.map(r=>({...r.sale,saleId:r.saleId})));
-  const total=BigInt(dayResult.totalCollected)+BigInt(settlements.rows[0].amount)+inheritedTotal;
+  const unified=await readDayInvoiceJournalPayments(db,commercialId,day);
+  const declarations=await readDayInvoiceDeclarations(db,day,dayResult.rows.filter(row=>row.preInvoiceId).map(row=>row.clientId));
+  // Un paiement peut porter sur une facture antérieure ou créée par un autre
+  // commercial : il entre dans cette caisse sans s'attribuer le facturé.
+  const amounts=new Map<string,bigint>();
+  for(const payment of unified.payments)amounts.set(payment.clientId,(amounts.get(payment.clientId)??0n)+BigInt(payment.amount));
+  const safe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw new RangeError('Total encaissé trop élevé.');return Number(n);};
+  const rows=dayResult.rows.map(row=>{
+   const declaration=row.preInvoiceId?declarations.get(row.preInvoiceId):undefined;
+   if(declaration&&(declaration.clientId!==row.clientId||declaration.total!==row.preInvoiceTotal||row.declared))throw Error('Déclaration de facture du jour incohérente.');
+   return {...row,dayInvoicePaid:safe(amounts.get(row.clientId)??0n),totalCollected:safe(BigInt(row.totalCollected)+(amounts.get(row.clientId)??0n)),declared:row.declared||!!declaration};
+  });
+  for(const payment of unified.payments)if(!rows.some(row=>row.clientId===payment.clientId))rows.push({clientId:payment.clientId,clientName:payment.clientName,sector:payment.sector,preInvoiceId:null,preInvoiceTotal:0,preInvoicePaid:0,oldDebtPaid:0,preInvoiceRemaining:0,declared:false,tourTotal:0,tourPaid:0,saleCount:0,totalClient:0,totalCollected:safe(amounts.get(payment.clientId)??0n),dayInvoicePaid:safe(amounts.get(payment.clientId)??0n)});
+  rows.sort((a,b)=>a.clientName.localeCompare(b.clientName));
+  const journalCollected=safe(BigInt(dayResult.totalCollected)+BigInt(unified.total));
+  const total=BigInt(journalCollected)+BigInt(settlements.rows[0].amount)+inheritedTotal;
   if(total>BigInt(Number.MAX_SAFE_INTEGER)||total<BigInt(Number.MIN_SAFE_INTEGER))throw new RangeError('Total encaissé trop élevé.');
   const events=await db.query(`SELECT action,actor_id AS "actorId",actor_role AS "actorRole",occurred_at AS "occurredAt",version
    FROM tour_closure_events WHERE commercial_id=$1 AND journal_date=$2::date ORDER BY version DESC LIMIT 200`,[commercialId,day]);
   const inheritedPayments=[...inheritedByClient.values()].map(p=>{if(p.prePaid>BigInt(Number.MAX_SAFE_INTEGER)||p.oldDebtPaid>BigInt(Number.MAX_SAFE_INTEGER))throw new RangeError('Total encaissé trop élevé.');return {clientId:p.clientId,clientName:p.clientName,prePaid:Number(p.prePaid),oldDebtPaid:Number(p.oldDebtPaid)};});
   const state=closure.rows[0];
-  return {...dayResult,commercial:commercial.rows[0],closure:{status:state?.status??'open',version:state?.version??0,closedAt:state?.closed_at?new Date(state.closed_at).toISOString():null},
-   journalCollected:dayResult.totalCollected,inheritedJournalPayments:inheritedPayments,inheritedJournalTotal:Number(inheritedTotal),globalSettlementCount:settlements.rows[0].count,globalSettlementTotal:Number(settlements.rows[0].amount),totalCollected:Number(total),expenseTotal:Number(expenseTotal),expenses:expenses.rows.map(e=>({operationId:e.operationId,createdAt:new Date(e.createdAt).toISOString(),description:e.description,amount:Number(e.amount),version:e.version})),expenseHistory:expenseHistory.rows.map(r=>({...r,recordedAt:new Date(r.recordedAt).toISOString(),previousAmount:Number(r.previousAmount),amount:Number(r.amount)})),expenseCancellations:expenseCancellations.rows.map(c=>({...c,recordedAt:new Date(c.recordedAt).toISOString(),amount:Number(c.amount)})),closureEvents:events.rows};
+  return {...dayResult,rows,clientCount:rows.length,dayInvoicePayments:unified.payments,dayInvoiceTotal:unified.total,commercial:commercial.rows[0],closure:{status:state?.status??'open',version:state?.version??0,closedAt:state?.closed_at?new Date(state.closed_at).toISOString():null},
+   journalCollected,inheritedJournalPayments:inheritedPayments,inheritedJournalTotal:Number(inheritedTotal),globalSettlementCount:settlements.rows[0].count,globalSettlementTotal:Number(settlements.rows[0].amount),totalCollected:Number(total),expenseTotal:Number(expenseTotal),expenses:expenses.rows.map(e=>({operationId:e.operationId,createdAt:new Date(e.createdAt).toISOString(),description:e.description,amount:Number(e.amount),version:e.version})),expenseHistory:expenseHistory.rows.map(r=>({...r,recordedAt:new Date(r.recordedAt).toISOString(),previousAmount:Number(r.previousAmount),amount:Number(r.amount)})),expenseCancellations:expenseCancellations.rows.map(c=>({...c,recordedAt:new Date(c.recordedAt).toISOString(),amount:Number(c.amount)})),closureEvents:events.rows};
 }
 export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day:string,enforceMode=false) {
  const db=await pool.connect();

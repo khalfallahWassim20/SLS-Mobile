@@ -1,3 +1,18 @@
+import {captureDayInvoiceSaleEdit,confirmDayInvoiceSaleEdit} from './day-invoice-sale-edit';
+import {captureOldDebtForm,confirmOldDebtForm} from './day-invoice-old-debt-form';
+import type {OldDebtEvent} from './day-invoice-old-debt-queue';
+import {readDayInvoiceClients} from './day-invoice-clients';
+import {captureDayInvoiceForm,confirmDayInvoiceForm} from './day-invoice-form';
+import {captureDayInvoiceExportPayments} from './day-invoice-journal-export';
+import {synchronizeDayInvoicePrototype} from './day-invoice-sync';
+import {createDayInvoiceTransportPrototype} from './day-invoice-transport';
+import {prepareDayInvoiceCloseAttempt,abandonDayInvoiceCloseAttempt,applyDayInvoiceReopenedState} from './day-invoice-close-attempt';
+import type {LineagePin} from './server-lineage-proof';
+import type {DayInvoicePayment} from '../../packages/domain/src/day-invoice';
+import {dayInvoiceQueueSchema} from './day-invoice-queue';
+import {dayInvoiceReferenceCacheSchema} from './day-invoice-reference-cache';
+import {dayInvoiceCloseAttemptSchema} from './day-invoice-close-attempt';
+import {assertLegacyMobileDayInvoiceSafe} from './day-invoice-legacy-guard';
 import {recoverAddressPrototype} from './server-address-recovery-prototype';
 import {readLocalJournalCashReconciliation} from './journal-cash-reconciliation-prototype';
 import {readLocalSaleCashComparison} from './credit-sale-cash-compare-prototype';
@@ -77,7 +92,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -97,6 +112,7 @@ export async function getSales(): Promise<SavedSale[]> {
 export async function saveSale(sale: Omit<SavedSale, 'id'>, syncEligible = false, credit?:CreditWriteContext): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
+    await assertLegacyMobileDayInvoiceSafe(tx);
     const identity=await getDeviceIdentity(tx);
     if(credit){if(!syncEligible)throw Error('Vente v5 non synchronisable.');await assertCreditWritePrototype(tx,credit,{kind:'sale',clientId:sale.clientId},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));}else await assertLegacyMobileCreditSafe(tx,identity);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(sale.createdAt))]);
@@ -127,6 +143,7 @@ export async function getClientRevisions(clientId:string):Promise<Revision[]> {
 export async function updateSale(previous: SavedSale, updated: SavedSale, refund: number, credit?:CreditWriteContext): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
+    await assertLegacyMobileDayInvoiceSafe(tx);
     await assertNoLocalCreditNote(tx,'sale',previous.syncSaleId);
     const row = await tx.getFirstAsync<{payload: string}>('SELECT payload FROM sales WHERE id = ?', previous.id);
     if (!row || JSON.stringify({ ...JSON.parse(row.payload), id: previous.id }) !== JSON.stringify(previous)) throw new Error('La vente a changé. Veuillez rouvrir son détail.');
@@ -159,6 +176,7 @@ export async function getSettlements(): Promise<Settlement[]> {
 export async function saveSettlement(settlement: Omit<Settlement, 'id'>, syncEligible = false, credit?:CreditWriteContext): Promise<void> {
   const database = await db();
   await database.withExclusiveTransactionAsync(async tx => {
+    await assertLegacyMobileDayInvoiceSafe(tx);
     const identity=await getDeviceIdentity(tx);
     if(credit){if(!syncEligible)throw Error('Règlement v5 non synchronisable.');await assertCreditWritePrototype(tx,credit,{kind:'settlement',clientId:settlement.clientId,amount:settlement.amount},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));}else await assertLegacyMobileCreditSafe(tx,identity);
     await assertDeviceWritable(tx,identity,[tunisDay(new Date(settlement.createdAt))]);
@@ -186,13 +204,13 @@ export async function getOriginalSales(): Promise<SavedSale[]> {
 export async function saveReference(payload: string): Promise<void> {
   const database = await db();
   await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
-  await database.withExclusiveTransactionAsync(async tx=>{await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));await tx.runAsync('INSERT INTO reference_snapshot (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',payload);});
+  await database.withExclusiveTransactionAsync(async tx=>{await assertLegacyMobileDayInvoiceSafe(tx);await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));await tx.runAsync('INSERT INTO reference_snapshot (id, payload) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload',payload);});
 }
 export async function getReference(): Promise<string | null> {
   const database = await db();
   await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
   let payload:string|null=null;
-  await database.withExclusiveTransactionAsync(async tx=>{await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));const row=await tx.getFirstAsync<{payload:string}>('SELECT payload FROM reference_snapshot WHERE id=1');payload=row?.payload??null;});
+  await database.withExclusiveTransactionAsync(async tx=>{await assertLegacyMobileDayInvoiceSafe(tx);await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));const row=await tx.getFirstAsync<{payload:string}>('SELECT payload FROM reference_snapshot WHERE id=1');payload=row?.payload??null;});
   return payload;
 }
 
@@ -220,7 +238,8 @@ export async function getPreInvoices(journalDate: string): Promise<TourPreInvoic
    id TEXT PRIMARY KEY, journal_date TEXT NOT NULL, client_id TEXT NOT NULL,
    payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
  )`);
- const rows = await database.getAllAsync<{payload: string}>('SELECT payload FROM tour_pre_invoices WHERE journal_date = ? ORDER BY rowid', journalDate);
+ let rows:{payload:string}[]=[];
+ await database.withExclusiveTransactionAsync(async tx=>{await assertLegacyMobileDayInvoiceSafe(tx);rows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE journal_date = ? ORDER BY rowid',journalDate);});
  return rows.map(row => JSON.parse(row.payload));
 }
 export async function savePreInvoice(value: Omit<TourPreInvoice, 'id'>, credit?:CreditWriteContext): Promise<void> {
@@ -229,6 +248,7 @@ export async function savePreInvoice(value: Omit<TourPreInvoice, 'id'>, credit?:
  await getPreInvoices(value.journalDate); // initialise la table avant l'écriture
  const id = randomUUID(), payload = { ...value, id };
  try { await database.withExclusiveTransactionAsync(async tx => {
+    await assertLegacyMobileDayInvoiceSafe(tx);
    const identity=await getDeviceIdentity(tx);
    if(credit)await assertCreditWritePrototype(tx,credit,{kind:'preinvoice',clientId:value.clientId,day:value.journalDate},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data));else await assertLegacyMobileCreditSafe(tx,identity);
    await assertDeviceWritable(tx,identity,[value.journalDate]);
@@ -254,7 +274,7 @@ async function ensureJournalReceipts() {
 export async function getAllPreInvoices(): Promise<TourPreInvoice[]> {
  const database = await db();
  let rows:{payload:string}[]=[];
- await database.withExclusiveTransactionAsync(async tx => { await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));const missing=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_pre_invoices p LEFT JOIN journal_sync_state s ON s.invoice_id=p.id WHERE s.invoice_id IS NULL) AS n');if(!missing)throw Error('État du journal indisponible.');if(missing.n)await bootstrapJournalQueue(tx,randomUUID);rows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid'); });
+ await database.withExclusiveTransactionAsync(async tx => { await assertLegacyMobileDayInvoiceSafe(tx);await assertLegacyMobileCreditSafe(tx,await getDeviceIdentity(tx));const missing=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM tour_pre_invoices p LEFT JOIN journal_sync_state s ON s.invoice_id=p.id WHERE s.invoice_id IS NULL) AS n');if(!missing)throw Error('État du journal indisponible.');if(missing.n)await bootstrapJournalQueue(tx,randomUUID);rows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices ORDER BY rowid'); });
  return rows.map(r => JSON.parse(r.payload));
 }
 export async function getTourReceipts(): Promise<TourJournalReceipt[]> {
@@ -265,6 +285,7 @@ export async function getTourReceipts(): Promise<TourJournalReceipt[]> {
 export async function saveTourReceipt(value: Omit<TourJournalReceipt,'id'>, availableOldDebt: number, credit?:CreditWriteContext): Promise<void> {
  const database = await ensureJournalReceipts();
  await database.withExclusiveTransactionAsync(async tx => {
+    await assertLegacyMobileDayInvoiceSafe(tx);
    const identity=await getDeviceIdentity(tx);
    const creditBalance=credit?await assertCreditWritePrototype(tx,credit,{kind:'receipt',clientId:value.clientId},data=>digestStringAsync(CryptoDigestAlgorithm.SHA256,data)):null;
    if(!credit)await assertLegacyMobileCreditSafe(tx,identity);
@@ -318,6 +339,7 @@ export async function bindAndCacheIdentified(identity:DeviceIdentity,reference:u
  const parsed=validateIdentifiedReference(reference),database=await db();
  await database.execAsync('CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id = 1), payload TEXT NOT NULL)');
  await database.withExclusiveTransactionAsync(async tx=>{
+  await assertLegacyMobileDayInvoiceSafe(tx);
   await bindVerifiedDevice(tx,identity);
   await assertLegacyMobileCreditSafe(tx,identity);
   await saveVerifiedIdentifiedReference(tx,identity,identity,parsed);
@@ -615,4 +637,61 @@ export async function runAddressRecoveryPrivate(old:DeviceIdentity,session:Comme
  const database=await db();
  const transaction=async<T>(fn:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await fn(tx);});return result;};
  return recoverAddressPrototype(old,session,requestId,code,4,{allowPrivateHttp:true,request:fetch,transaction,digest:text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text),isCurrent});
+}
+
+/** Adaptateurs transactionnels v6 préparés pour les futurs écrans. L'API
+ * normale ne les active pas et le pin doit provenir d'une liaison préalable
+ * vérifiée ; le jeton n'est jamais conservé dans SQLite. */
+export async function readDayInvoiceClientsPrototype(identity:DeviceIdentity){
+ const database=await db();let result!:Awaited<ReturnType<typeof readDayInvoiceClients>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readDayInvoiceClients(tx,identity,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function readDayInvoiceFormPrototype(identity:DeviceIdentity,clientId:string,day:string){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceForm>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceForm(tx,identity,clientId,day,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function confirmDayInvoiceFormPrototype(identity:DeviceIdentity,input:{clientId:string;day:string;fingerprint:string;recordedAt:string;amount:number;mode:DayInvoicePayment['mode'];chequeNumber:string;chequeBank:string;chequeDue:string}){
+ const database=await db();let result!:Awaited<ReturnType<typeof confirmDayInvoiceForm>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDayInvoiceForm(tx,identity,{...input,operationId:randomUUID()},text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function readDayInvoiceExportPaymentsPrototype(identity:DeviceIdentity,day:string){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceExportPayments>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceExportPayments(tx,identity,day);});return result;
+}
+export async function synchronizeDayInvoiceStoragePrototype(identity:DeviceIdentity,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,allowPrivateHttp=false){
+ const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
+ const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>):Promise<T>=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
+ return synchronizeDayInvoicePrototype(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{...transport,transaction});
+}
+export async function prepareDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,version:number){
+ const database=await db();let result!:Attempt;await database.withExclusiveTransactionAsync(async tx=>{result=await prepareDayInvoiceCloseAttempt(tx,identity,day,version,randomUUID,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function acknowledgeDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,response:unknown){
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
+}
+export async function abandonDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,attempt:Attempt,response:unknown){
+ const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await abandonDayInvoiceCloseAttempt(tx,identity,day,attempt,response);});
+}
+export async function reopenDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,response:unknown){
+ const database=await db();let result=false;await database.withExclusiveTransactionAsync(async tx=>{result=await applyDayInvoiceReopenedState(tx,identity,day,response);});return result;
+}
+
+/** Adaptateurs v6 expérimentaux, non branchés aux écrans actifs. */
+export async function captureOldDebtFormPrototype(identity:DeviceIdentity,clientId:string,day:string){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureOldDebtForm>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await captureOldDebtForm(tx,identity,clientId,day,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function confirmOldDebtFormPrototype(identity:DeviceIdentity,input:{fingerprint:string;event:OldDebtEvent}){
+ const database=await db();let result!:Awaited<ReturnType<typeof confirmOldDebtForm>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmOldDebtForm(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+
+/** Révision locale v6 sans trop-perçu ; non raccordée aux écrans actifs. */
+export async function captureDayInvoiceSaleEditPrototype(identity:DeviceIdentity,saleId:number,lines:SavedSale['lines']){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceSaleEdit>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceSaleEdit(tx,identity,saleId,lines,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function confirmDayInvoiceSaleEditPrototype(identity:DeviceIdentity,input:{saleId:number;lines:SavedSale['lines'];fingerprint:string;recordedAt:string}){
+ const database=await db();let result!:Awaited<ReturnType<typeof confirmDayInvoiceSaleEdit>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmDayInvoiceSaleEdit(tx,identity,{...input,operationId:randomUUID()},text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }

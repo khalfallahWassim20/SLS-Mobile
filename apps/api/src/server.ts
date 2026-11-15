@@ -24,6 +24,7 @@ import {lockSyncMode,assertLegacyMode,LegacySyncDisabled,readSyncMode} from './t
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
 import {activateIdentifiedTours,TourActivationConflict} from './tour-activation.js';
 import {CreditProtocolUpgradeRequired,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
+import {deleteClientPermanently,ClientHasOperations} from './client-delete.js';
 
 const { JWT_SECRET, ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = process.env;
 if (!JWT_SECRET || JWT_SECRET.length < 32 || !ADMIN_USERNAME || !ADMIN_PASSWORD_HASH || !/^\$2[aby]\$/.test(ADMIN_PASSWORD_HASH)) throw new Error('Configurer JWT_SECRET (32 caractères minimum), ADMIN_USERNAME et ADMIN_PASSWORD_HASH dans apps/api/.env');
@@ -131,7 +132,7 @@ app.post('/api/mobile/sales', rateLimit({windowMs: 15 * 60 * 1000, limit: 500, s
     const last = await db.query('SELECT version,payload FROM demo_sale_events WHERE sale_id=$1 ORDER BY version DESC LIMIT 1', [event.saleId]);
     if ((last.rows[0]?.version ?? 0) + 1 !== event.version) { await db.query('ROLLBACK'); res.status(409).json({error:'Version de vente manquante ou déjà utilisée.'}); return; }
     if (last.rows.length) { const old = last.rows[0].payload.sale; if (old.clientId !== event.sale.clientId || old.createdAt !== event.sale.createdAt || event.sale.paid !== old.paid - event.refund || event.refund > Math.max(0, old.paid - event.sale.total)) { await db.query('ROLLBACK'); res.status(400).json({error:'Modification ou remboursement incohérent.'}); return; } }
-    const client = await db.query('SELECT id FROM clients WHERE id=$1', [event.sale.clientId]);
+    const client = await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL FOR SHARE', [event.sale.clientId]);
     if (!client.rows.length) { await db.query('ROLLBACK'); res.status(400).json({error:'Client introuvable sur le serveur.'}); return; }
     await db.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,$3,$4,$5::jsonb,$6)', [event.operationId,event.saleId,event.version,event.sale.clientId,payload,hash]);
     await db.query('COMMIT'); res.status(201).json({status:'reçue',operationId:event.operationId});
@@ -154,7 +155,7 @@ app.post('/api/mobile/settlements', rateLimit({windowMs: 15*60*1000,limit:500,st
     const existing=await db.query('SELECT payload_hash FROM demo_settlements WHERE operation_id=$1',[event.operationId]);
     if(existing.rows.length) {await db.query('ROLLBACK'); if(existing.rows[0].payload_hash!==hash) {res.status(409).json({error:'Opération déjà utilisée avec des données différentes.'});return;} res.json({status:'déjà reçue',operationId:event.operationId});return;}
     assertLegacyMode(legacyMode);
-    if(!(await db.query('SELECT id FROM clients WHERE id=$1',[p.clientId])).rows.length) {await db.query('ROLLBACK');res.status(400).json({error:'Client introuvable sur le serveur.'});return;}
+    if(!(await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL FOR SHARE',[p.clientId])).rows.length) {await db.query('ROLLBACK');res.status(400).json({error:'Client introuvable sur le serveur.'});return;}
     await db.query('INSERT INTO demo_settlements(operation_id,client_id,payload,payload_hash) VALUES($1,$2,$3::jsonb,$4)',[event.operationId,p.clientId,data,hash]);
     await db.query('COMMIT');res.status(201).json({status:'reçue',operationId:event.operationId});
   } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
@@ -280,9 +281,20 @@ app.get('/api/audit', async (_req, res) => {
 });
 app.post('/api/clients', async (req, res) => { const c = clientSchema.parse(req.body), id = randomUUID(); const r = await changeWithAudit('clients','création',id,`INSERT INTO clients(id,name,sector,address,tax_id,phone,opening_balance,credit_limit,active) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ${clientFields}`, [id,c.name,c.sector,c.address,c.taxId,c.phone,c.openingBalance,c.creditLimit,c.active],clientFields); res.status(201).json(r); });
 app.put('/api/clients/:id', async (req, res) => { const id = uuid.parse(req.params.id), c = clientSchema.parse(req.body); const r = await changeWithAudit('clients','modification',id,`UPDATE clients SET name=$2,sector=$3,address=$4,tax_id=$5,phone=$6,opening_balance=$7,credit_limit=$8,active=$9,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING ${clientFields}`, [id,c.name,c.sector,c.address,c.taxId,c.phone,c.openingBalance,c.creditLimit,c.active],clientFields); if (!r) { res.status(404).json({error:'Client introuvable.'}); return; } res.json(r); });
+app.delete('/api/clients/:id', async (req, res) => {
+  const id = uuid.parse(req.params.id);
+  try {
+    if (!(await deleteClientPermanently(pool, username, id))) { res.status(404).json({error:'Client introuvable.'}); return; }
+    res.json({ status: 'deleted', id });
+  } catch (error) {
+    if (error instanceof ClientHasOperations) { res.status(409).json({ error: error.message, code: 'CLIENT_HAS_OPERATIONS', usage: error.usage }); return; }
+    if (typeof error === 'object' && error !== null && 'code' in error && error.code === '23503') { res.status(409).json({ error: 'Suppression impossible : ce client est encore référencé par des données enregistrées. Désactivez-le à la place.', code: 'CLIENT_HAS_OPERATIONS', usage: [] }); return; }
+    throw error;
+  }
+});
 app.post('/api/articles', async (req, res) => { const a = articleSchema.parse(req.body), id = randomUUID(); const r = await changeWithAudit('articles','création',id,`INSERT INTO articles(id,code,name,barcode,purchase_ttc,sale_ttc,vat_rate,units_per_carton,active) VALUES($1,'ART-' || lpad(nextval('article_code_seq')::text, 6, '0'),$2,$3,$4,$5,$6,$7,$8) RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); res.status(201).json(r); });
 app.put('/api/articles/:id', async (req, res) => { const id = uuid.parse(req.params.id), a = articleSchema.parse(req.body); const r = await changeWithAudit('articles','modification',id,`UPDATE articles SET name=$2,barcode=$3,purchase_ttc=$4,sale_ttc=$5,vat_rate=$6,units_per_carton=$7,active=$8,updated_at=now() WHERE id=$1 AND deleted_at IS NULL RETURNING ${articleFields}`, [id,a.name,a.barcode,a.purchaseTtc,a.saleTtc,a.vatRate,a.unitsPerCarton,a.active],articleFields); if (!r) { res.status(404).json({error:'Article introuvable.'}); return; } res.json(r); });
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof CreditProtocolUpgradeRequired) { res.status(409).json({error:err.message,code:'CREDIT_PROTOCOL_UPGRADE_REQUIRED'}); return; } if (err instanceof LegacySyncDisabled) { res.status(409).json({error:err.message}); return; } if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => { if (err instanceof JournalConflict) { res.status(409).json({error:err.message}); return; } if (err instanceof CreditProtocolUpgradeRequired) { res.status(409).json({error:err.message,code:'CREDIT_PROTOCOL_UPGRADE_REQUIRED'}); return; } if (err instanceof LegacySyncDisabled) { res.status(409).json({error:err.message}); return; } if (err instanceof ZodError) { res.status(400).json({error:'Données invalides.', details: err.flatten()}); return; } console.error(err); res.status(500).json({error:'Erreur serveur.'}); });
 const port=Number(process.env.PORT || 3001),host=process.env.API_HOST || '127.0.0.1';
 const ready=()=>console.log('API de développement prête sur le port '+port);
 if(transport.tls)createHttpsServer(transport.tls,app).listen(port,host,ready);

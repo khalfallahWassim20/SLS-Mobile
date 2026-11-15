@@ -4,11 +4,12 @@ import type { JournalRow } from './journal.js';
 import type {TourExpense} from './tour-expenses';
 import type { Settlement, TourJournalReceipt } from './storage.js';
 import type {Note} from './credit-note-offline-prototype';
+import {validateDayPayment,type DayInvoicePayment} from '../../packages/domain/src/day-invoice';
 import {canonicalJson,prepareFullCreditNote,calculatePreInvoiceCancellation} from '@sls/domain';
 import {tunisDay} from './journal';
 
 /** Instantané local, distinct du journal consolidé reçu sur le serveur. */
-export type JournalExport = { expenses?: TourExpense[]; day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; settlements?: Settlement[]; clientSectors?: Record<string,string>; credits?: {note:Note;pending:boolean}[]; remoteOwnedCredits?:OwnedCredit[]; ownedLocalCreditOperationIds?:string[]; creditOwnersKnown?:boolean; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[]; initialSalePayments?:InitialSalePayment[]; adminRefundAssignmentsKnown?:boolean; adminCreditRefunds?:{noteOperationId:string;assignmentId:string;invoiceId:string;kind:'sale'|'preinvoice';clientId:string;clientName:string;recordedAt:string;assignedAt:string;refund:number}[]; remoteSaleRefunds?: {operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[] };
+export type JournalExport = { dayInvoicePayments?: {payment:DayInvoicePayment;clientName:string;sector:string;pending:boolean}[]; expenses?: TourExpense[]; day: string; commercial: string; rows: JournalRow[]; receipts: TourJournalReceipt[]; settlements?: Settlement[]; clientSectors?: Record<string,string>; credits?: {note:Note;pending:boolean}[]; remoteOwnedCredits?:OwnedCredit[]; ownedLocalCreditOperationIds?:string[]; creditOwnersKnown?:boolean; remoteCancellations?: {kind:'sale'|'preinvoice';invoiceId:string;day:string;source:unknown}[]; remoteSaleUpdates?: {saleId:string;day:string}[]; saleRefunds?: LocalSaleRefund[]; initialSalePayments?:InitialSalePayment[]; adminRefundAssignmentsKnown?:boolean; adminCreditRefunds?:{noteOperationId:string;assignmentId:string;invoiceId:string;kind:'sale'|'preinvoice';clientId:string;clientName:string;recordedAt:string;assignedAt:string;refund:number}[]; remoteSaleRefunds?: {operationId:string;invoiceId:string;clientId:string;clientName:string;recordedAt:string;refund:number}[] };
 const amount = (value: number) => {
  if (!Number.isSafeInteger(value)) throw new Error('Montant invalide dans le journal.');
  const n = BigInt(value), abs = n < 0n ? -n : n;
@@ -61,8 +62,31 @@ function expenseEntries(data:JournalExport):TourExpense[] {
   seen.add(e.operationId);return e.day===data.day&&!e.cancelled;
  });
 }
+/** Les mouvements sont ceux encaissés par ce téléphone, datés du jour de
+ * l'encaissement, pas de la facture. Aucun montant n'est ventilé entre ses
+ * composantes. Une capture incomplète ou dupliquée est refusée. */
+function unifiedPayments(data:JournalExport) {
+ const entries=data.dayInvoicePayments??[],seen=new Set<string>();
+ if(!Array.isArray(entries)||entries.length>20000)throw Error('Règlements du jour indisponibles ou incomplets.');
+ return entries.map(entry=>{
+  if(!entry||typeof entry!=='object')throw Error('Règlement du jour invalide.');
+  const {payment,clientName,sector,pending}=entry;validateDayPayment(payment);
+  if(typeof clientName!=='string'||!clientName.trim()||typeof sector!=='string'||typeof pending!=='boolean'||seen.has(payment.operationId)||tunisDay(new Date(payment.recordedAt))!==data.day)throw Error('Règlement du jour invalide ou dupliqué.');
+  seen.add(payment.operationId);
+  if(data.receipts.some(r=>r.id===payment.operationId)||data.settlements?.some(p=>p.syncOperationId===payment.operationId))throw Error('Identifiant de règlement dupliqué.');
+  return entry;
+ });
+}
+function separateSettlements(data:JournalExport):NonNullable<JournalExport['settlements']> {
+ const result:NonNullable<JournalExport['settlements']>=[],seen=new Set<number>();
+ for(const p of data.settlements??[]){
+  if(!Number.isSafeInteger(p.id)||p.id<1||seen.has(p.id)||!p.clientId||!p.clientName?.trim()||!Number.isSafeInteger(p.amount)||p.amount<=0||!['Espèces','Chèque','Virement'].includes(p.mode)||!Number.isFinite(Date.parse(p.createdAt)))throw Error('Règlement de dette invalide dans le journal.');
+  seen.add(p.id);if(tunisDay(new Date(p.createdAt))===data.day)result.push(p);
+ }
+ return result;
+}
 function lines(data: JournalExport): string[][] {
- const expenses=expenseEntries(data);
+ const expenses=expenseEntries(data),unified=unifiedPayments(data),separate=data.dayInvoicePayments===undefined?[]:separateSettlements(data);
  const initial=initialSalePaymentMap(data);
  const allEvents=creditEvents(data),byInvoice=new Map(allEvents.map(e=>[`${e.note.kind}:${e.note.command.invoiceId}`,e]));
  const remoteByInvoice=new Map<string,NonNullable<JournalExport['remoteCancellations']>[number]>();
@@ -109,11 +133,14 @@ function lines(data: JournalExport): string[][] {
   }
   for(const p of data.receipts.filter(p=>p.clientId===r.clientId && p.journalDate===data.day)) rows.push([r.clientName,r.sector,p.creditFull?'Journal — crédit total':'Règlement journal',p.createdAt,'',amount(p.prePaid),amount(p.oldDebtPaid),p.mode,'']);
  }
+ for(const {payment:p,clientName,sector,pending} of unified)rows.push([clientName,sector,'Règlement facture du jour',`Facture du ${p.day} · ${p.recordedAt} · ${pending?'en attente':'synchronisé'}`,'',amount(p.amount),'',p.mode,'']);
+ for(const p of separate)rows.push([p.clientName,data.clientSectors?.[p.clientId]??'','Règlement ancienne dette',p.createdAt,'','',amount(p.amount),p.mode,'']);
+ if(data.dayInvoicePayments!==undefined)rows.push(['TOTAL RÈGLEMENTS FACTURE DU JOUR','','','','',amount(sum(unified.map(x=>x.payment.amount)))]);
  rows.push(['TOTAL FACTURÉ (préétabli + ventes)','','','','','','','',amount(sum(data.rows.map(r=>r.total)))]);
  const journalReceipts=data.receipts.filter(p=>p.journalDate===data.day && data.rows.some(r=>r.clientId===p.clientId));
  rows.push(['TOTAL PAIEMENTS FACTURE PRÉÉTABLIE','','','','',amount(sum(journalReceipts.map(p=>p.prePaid)))]);
- rows.push(['TOTAL ANCIENNE DETTE RÉGLÉE','','','','','',amount(sum(journalReceipts.map(p=>p.oldDebtPaid)))]);
- rows.push([initial?'TOTAL ENCAISSÉ LOCAL AVANT REMBOURSEMENTS':'TOTAL ENCAISSÉ LOCAL AVANT AVOIRS ET REMBOURSEMENTS DISTANTS','','','','',amount(sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>initial?.get(s.id)??s.paid))]))]);
+ rows.push(['TOTAL ANCIENNE DETTE RÉGLÉE','','','','','',amount(sum([...journalReceipts.map(p=>p.oldDebtPaid),...separate.map(p=>p.amount)]))]);
+ rows.push([initial?'TOTAL ENCAISSÉ LOCAL AVANT REMBOURSEMENTS':'TOTAL ENCAISSÉ LOCAL AVANT AVOIRS ET REMBOURSEMENTS DISTANTS','','','','',amount(sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>initial?.get(s.id)??s.paid)),...unified.map(x=>x.payment.amount),...separate.map(x=>x.amount)]))]);
  if(data.saleRefunds){
   const seen=new Set<string>();
   rows.push([initial?'REMBOURSEMENTS DE MODIFICATIONS — SORTIES LOCALES DU JOUR':'REMBOURSEMENTS DE MODIFICATIONS — DÉJÀ INCLUS DANS LES PAIEMENTS NETS']);
@@ -159,7 +186,7 @@ function lines(data: JournalExport): string[][] {
    rows.push([e.name,'',e.note.kind==='sale'?'Avoir vente':'Avoir facture préétablie',`${e.note.command.invoiceId} · facture du ${e.invoiceDay} · ${e.pending?'en attente':'synchronisé'}${localOwned&&!localOwned.has(e.note.command.operationId)?' · facture hors facturé de ce commercial ou propriété à confirmer':''}`,(!localOwned||localOwned.has(e.note.command.operationId))?amount(-e.invoiceTotal):'',amount(e.note.refund),'',e.note.retainedCredit?`Crédit conservé ${amount(e.note.retainedCredit)} DT`:'','']);
   }
   for(const e of data.remoteOwnedCredits??[])total+=BigInt(e.invoiceTotal);
-  const billed=sum(data.rows.map(r=>r.total)),gross=sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>initial?.get(s.id)??s.paid))]);
+  const billed=sum(data.rows.map(r=>r.total)),gross=sum([...journalReceipts.flatMap(p=>[p.prePaid,p.oldDebtPaid]),...data.rows.flatMap(r=>r.sales.map(s=>initial?.get(s.id)??s.paid)),...unified.map(x=>x.payment.amount),...separate.map(x=>x.amount)]);
   const asSafe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw Error('Total trop élevé');return Number(n);};
   rows.push(['TOTAL AVOIRS DU JOUR','','','',amount(asSafe(total))]);
   rows.push(['FACTURÉ DU JOUR MOINS AVOIRS DU JOUR','','','','','','','',amount(asSafe(BigInt(billed)-total))]);
@@ -178,7 +205,7 @@ function lines(data: JournalExport): string[][] {
  if(remoteByInvoice.size)rows.push(['Annulations enregistrées ailleurs','Les factures sont signalées comme annulées. Les avoirs reçus sur les factures de ce commercial sont déduits à leur date de création ; seuls les remboursements attribués à cette caisse sont déduits de l’encaissé. Consultez le journal serveur.']);
  for(const expense of expenses)rows.push(['Dépense de tournée','',expense.description,expense.createdAt,amount(expense.amount),'','',expense.pending?'En attente':'Synchronisée']);
  rows.push(['TOTAL CHARGES',expenses.length||(data.expenses??[]).some(e=>e.day===data.day&&e.cancelled)?amount(sum(expenses.map(e=>e.amount))):'Non renseigné']);
- rows.push(['NOMBRE DE CLIENTS',String(data.rows.length)]);
+ rows.push(['NOMBRE DE CLIENTS',String(data.dayInvoicePayments===undefined?data.rows.length:new Set([...data.rows.map(r=>r.clientId),...unified.map(x=>x.payment.clientId),...separate.map(x=>x.clientId)]).size)]);
  rows.push(['Note','Le total facturé ne représente pas un chiffre d’affaires consolidé. Les ventes affichent leur état actuel, pas leur historique de corrections.']);
  return rows;
 }
@@ -187,20 +214,16 @@ export function journalCsv(data: JournalExport): string { return '\uFEFF'+lines(
  * Les charges absentes restent non renseignées, jamais inventées. */
 export function journalHtml(data: JournalExport): string {
  lines(data); // Conserve les validations des avoirs, remboursements et références.
- const initial=initialSalePaymentMap(data),rows=new Map<string,JournalRow>();
+ const initial=initialSalePaymentMap(data),unified=unifiedPayments(data),rows=new Map<string,JournalRow>();
  for(const row of data.rows){
   if(!row.clientId||rows.has(row.clientId)||!row.clientName?.trim())throw Error('Client du journal invalide ou dupliqué.');
   const calculated=sum([row.preInvoice?.amount??0,...row.sales.map(s=>s.total)]);
   if(calculated!==row.total||row.sales.some(s=>s.clientId!==row.clientId)||row.preInvoice&&row.preInvoice.clientId!==row.clientId)throw Error('Total ou client du journal incohérent.');
   rows.set(row.clientId,{...row});
  }
- const selectedSettlements:NonNullable<JournalExport['settlements']>=[],seenSettlements=new Set<number>();
- for(const payment of data.settlements??[]){
-  if(!Number.isSafeInteger(payment.id)||payment.id<1||seenSettlements.has(payment.id)||!payment.clientId||!payment.clientName?.trim()||!Number.isSafeInteger(payment.amount)||payment.amount<=0||!['Espèces','Chèque','Virement'].includes(payment.mode)||!Number.isFinite(Date.parse(payment.createdAt)))throw Error('Règlement de dette invalide dans le journal.');
-  seenSettlements.add(payment.id);if(tunisDay(new Date(payment.createdAt))!==data.day)continue;
-  selectedSettlements.push(payment);
-  if(!rows.has(payment.clientId))rows.set(payment.clientId,{clientId:payment.clientId,clientName:payment.clientName,sector:data.clientSectors?.[payment.clientId]??'',preInvoice:null,sales:[],total:0});
- }
+ const selectedSettlements=separateSettlements(data);
+ for(const payment of selectedSettlements)if(!rows.has(payment.clientId))rows.set(payment.clientId,{clientId:payment.clientId,clientName:payment.clientName,sector:data.clientSectors?.[payment.clientId]??'',preInvoice:null,sales:[],total:0});
+ for(const {payment,clientName,sector} of unified)if(!rows.has(payment.clientId))rows.set(payment.clientId,{clientId:payment.clientId,clientName,sector,preInvoice:null,sales:[],total:0});
  const receipts=data.receipts.filter(r=>r.journalDate===data.day);
  const seenReceipts=new Set<string>();
  for(const p of receipts){
@@ -217,20 +240,22 @@ export function journalHtml(data: JournalExport): string {
   for(const {mode,value} of entries){if(!Number.isSafeInteger(value)||value<0||!['Espèces','Chèque','Virement','Crédit'].includes(mode)||value>0&&mode==='Crédit')throw Error('Mode ou montant de paiement invalide.');if(value>0){const list=grouped.get(mode)??[];list.push(value);grouped.set(mode,list);}}
   return [...grouped].map(([mode,values])=>`${mode} ${amount(sum(values))}`).join(' · ');
  };
- let billed=0,preTotal=0,saleTotal=0,oldTotal=0;
+ let billed=0,preTotal=0,saleTotal=0,oldTotal=0,unifiedTotal=0;
  const table=ordered.map(row=>{
-  const clientReceipts=receipts.filter(p=>p.clientId===row.clientId),clientSettlements=selectedSettlements.filter(p=>p.clientId===row.clientId);
+  const clientReceipts=receipts.filter(p=>p.clientId===row.clientId),clientSettlements=selectedSettlements.filter(p=>p.clientId===row.clientId),clientUnified=unified.filter(p=>p.payment.clientId===row.clientId);
   const prePaid=sum(clientReceipts.map(p=>p.prePaid)),salePaid=sum(row.sales.map(s=>initial?.get(s.id)??s.paid)),old=sum([...clientReceipts.map(p=>p.oldDebtPaid),...clientSettlements.map(p=>p.amount)]);
   const supplementary=sum(row.sales.map(s=>s.total)),bill=row.total;
-  billed=sum([billed,bill]);preTotal=sum([preTotal,prePaid]);saleTotal=sum([saleTotal,salePaid]);oldTotal=sum([oldTotal,old]);
-  const paymentMode=byMode([...clientReceipts.map(p=>({mode:p.mode,value:p.prePaid})),...row.sales.map(s=>({mode:s.paymentMode,value:initial?.get(s.id)??s.paid}))]);
+  const unifiedPaid=sum(clientUnified.map(p=>p.payment.amount));
+  billed=sum([billed,bill]);preTotal=sum([preTotal,prePaid]);saleTotal=sum([saleTotal,salePaid]);oldTotal=sum([oldTotal,old]);unifiedTotal=sum([unifiedTotal,unifiedPaid]);
+  const paymentMode=byMode([...clientReceipts.map(p=>({mode:p.mode,value:p.prePaid})),...row.sales.map(s=>({mode:s.paymentMode,value:initial?.get(s.id)??s.paid})),...clientUnified.map(({payment:p})=>({mode:p.mode,value:p.amount}))]);
   const oldMode=byMode([...clientReceipts.map(p=>({mode:p.mode,value:p.oldDebtPaid})),...clientSettlements.map(p=>({mode:p.mode,value:p.amount}))]);
-  const payment=`${amount(sum([prePaid,salePaid]))}${paymentMode?` · ${paymentMode}`:''}`;
+  const payment=`${amount(sum([prePaid,salePaid,unifiedPaid]))}${paymentMode?` · ${paymentMode}`:''}`;
   const debt=`${amount(old)}${oldMode?` · ${oldMode}`:''}${data.settlements===undefined?' · règlements séparés indisponibles':''}`;
   return [row.clientName,amount(row.preInvoice?.amount??0),amount(supplementary),payment,debt,amount(bill)];
  });
- const gross=sum([preTotal,saleTotal,oldTotal]);
+ const gross=sum([preTotal,saleTotal,unifiedTotal,oldTotal]);
  const notices:string[]=[];
+ if(data.dayInvoicePayments!==undefined)notices.push('Règlements unifiés attribués à leur date d’encaissement, sans répartition entre préétablie et ventes. Les autres appareils ne sont pas inclus.');
  if(data.settlements===undefined)notices.push('Règlements séparés de dette indisponibles : les montants affichés ne comprennent que les paiements du journal.');
  if(!initial)notices.push('Paiements de ventes : montants nets actuellement enregistrés ; les remboursements de modification peuvent y être déjà inclus.');
  if(data.remoteSaleUpdates?.length)notices.push('Modifications enregistrées ailleurs : consultez le CSV détaillé.');
@@ -240,6 +265,7 @@ export function journalHtml(data: JournalExport): string {
  }
  const headers=['Client','Mt FC préétablie','Mt FC supplémentaire','Paiement FC du jour · mode','Ancienne dette réglée · mode','Total client'];
  const expenses=expenseEntries(data);
- const summary=[['Total facturé (préétablie + supplémentaire)',amount(billed)],['Total paiements facture préétablie',amount(preTotal)],['Total paiements facture supplémentaire',amount(saleTotal)],['Total charges',expenses.length||(data.expenses??[]).some(e=>e.day===data.day&&e.cancelled)?amount(sum(expenses.map(e=>e.amount))):'Non renseigné'],['Total encaissé local avant avoirs et remboursements distants',amount(gross)],['Nombre de clients',String(ordered.length)]];
+ const charges=expenses.length||(data.expenses??[]).some(e=>e.day===data.day&&e.cancelled)?amount(sum(expenses.map(e=>e.amount))):'Non renseigné';
+ const summary=data.dayInvoicePayments===undefined?[['Total facturé (préétablie + supplémentaire)',amount(billed)],['Total paiements facture préétablie',amount(preTotal)],['Total paiements facture supplémentaire',amount(saleTotal)],['Total charges',charges],['Total encaissé local avant avoirs et remboursements distants',amount(gross)],['Nombre de clients',String(ordered.length)]]:[['Total facturé (préétablie + supplémentaire)',amount(billed)],['Total paiements factures du jour',amount(sum([preTotal,saleTotal,unifiedTotal]))],['Total ancienne dette réglée',amount(oldTotal)],['Total charges',charges],['Total encaissé local avant remboursements',amount(gross)],['Nombre de clients',String(ordered.length)]];
  return `<!doctype html><html lang="fr"><head><meta charset="utf-8"><style>@page{size:A4 landscape;margin:12mm}body{font-family:Arial,sans-serif;color:#193c35;font-size:10px}h1{font-size:20px}p{font-size:10px}table{width:100%;border-collapse:collapse;table-layout:fixed}td,th{border:1px solid #b7c9bf;padding:5px;text-align:left;overflow-wrap:anywhere}th{background:#d8eee2}tr{page-break-inside:avoid}.totals{margin-top:12px;width:68%}.totals td:last-child{text-align:right;font-weight:bold}.notice{color:#754b20}</style></head><body><h1>Journal de tournée — instantané local</h1><p>Date : ${escapeHtml(data.day)} · Commercial : ${escapeHtml(data.commercial)}<br>Secteur(s) des clients du jour : ${escapeHtml(sectorText)}</p><p>Opérations présentes sur ce téléphone. Les autres appareils ne sont pas inclus. Les charges de ce téléphone ne sont pas déduites de l’encaissé ; consultez le CSV pour leur détail et leur statut.</p><table><thead><tr>${headers.map(x=>`<th>${escapeHtml(x)}</th>`).join('')}</tr></thead><tbody>${table.map(row=>`<tr>${row.map(x=>`<td>${escapeHtml(x)}</td>`).join('')}</tr>`).join('')}</tbody></table><table class="totals"><tbody>${summary.map(row=>`<tr><td>${escapeHtml(row[0])}</td><td>${escapeHtml(row[1])}</td></tr>`).join('')}</tbody></table>${notices.map(text=>`<p class="notice">${escapeHtml(text)}</p>`).join('')}</body></html>`;
 }

@@ -9,6 +9,10 @@ import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import {readPrototypeCreditHistoryInTransaction} from './credit-note-history-prototype.js';
 import {JournalConflict} from './journal-store.js';
+import {assertLegacyDayCloseSafe,assertDayInvoiceCloseRegistry} from './day-invoice-legacy-guard.js';
+import {readDayInvoiceOwnerDeclarations} from './day-invoice-journal.js';
+import {readServerDayInvoiceCash} from './day-invoice-cash.js';
+import {dayInvoiceCashClosureCanonical} from '../../../packages/domain/src/day-invoice-cash.js';
 import {readSaleCashPreview} from './sale-cash-preview-prototype.js';
 import {readJournalCashReconciliation} from './journal-cash-reconciliation-prototype.js';
 
@@ -45,6 +49,7 @@ export async function changeTourClosure(pool:Pool,commercialId:string,day:string
   const commercial=await db.query('SELECT id FROM commercials WHERE id=$1 AND deleted_at IS NULL',[commercialId]);
   if(!commercial.rows.length) throw new ClosureConflict('Commercial introuvable.');
   const state=await lockTourClosure(db,commercialId,day);
+  if(action==='close')await assertLegacyDayCloseSafe(db,commercialId,day);
   let next;
   try {next=transitionTourClosure(state,action,actor,new Date().toISOString(),expectedVersion);}
   catch(error) {if(error instanceof RangeError) throw new ClosureConflict(error.message);throw error;}
@@ -59,8 +64,9 @@ export async function changeTourClosure(pool:Pool,commercialId:string,day:string
 /** Service expérimental uniquement : une session commerciale ne peut clôturer que sa propre journée.
  * L'admin est fourni uniquement par un middleware serveur, jamais par le corps de la requête. */
 export async function requestTourTransition(pool:Pool, input:{requestId:string;day:string;expectedVersion:number;adminRefundProof?:{noteOperationId:string;assignmentId:string;refund:number}[];cashProof?:string}, principal:
- {kind:'commercial';token:string;secret:string}|{kind:'admin';actorId:string;commercialId:string}, enforceMode=false, creditAware=false, requireCreditClose=false) {
+ {kind:'commercial';token:string;secret:string}|{kind:'admin';actorId:string;commercialId:string}, enforceMode=false, creditAware=false, requireCreditClose=false, dayInvoiceTestOnly=false) {
  const {requestId,day,expectedVersion,adminRefundProof,cashProof}=z.object({requestId:identifier,day:journalDateSchema,expectedVersion:z.number().int().min(0).max(2147483646),adminRefundProof:proofSchema.optional(),cashProof:z.string().regex(/^[0-9a-f]{64}$/).optional()}).strict().parse(input);
+ if(dayInvoiceTestOnly&&(!enforceMode||!creditAware||principal.kind!=='commercial'))throw new ClosureConflict('Clôture facture du jour expérimentale non autorisée.');
  if((adminRefundProof!==undefined||cashProof!==undefined)&&(!creditAware||principal.kind!=='commercial'))throw new ClosureConflict('Preuve de caisse non autorisée.');
  const db=await pool.connect();
  try {
@@ -93,6 +99,10 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
   if(requireCreditClose&&action==='close'&&!creditAware)throw new ClosureConflict('Clôture v5 requise : mettez à jour le téléphone et synchronisez.');
   if(enforceMode&&!creditAware)await assertOldCreditProtocolSafe(db);
   const state=await lockTourClosure(db,commercialId,day);
+  if(action==='close'){
+   if(dayInvoiceTestOnly){await assertOldCreditProtocolSafe(db);await assertDayInvoiceCloseRegistry(db);}
+   else await assertLegacyDayCloseSafe(db,commercialId,day);
+  }
   // Les écritures de vente prennent ce même verrou avant insertion ; une
   // clôture ne peut donc pas dépasser un remboursement reçu simultanément.
   if(creditAware&&action==='close'){
@@ -120,7 +130,7 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
     const sale=await readSaleCashPreview(db,commercialId,day);if(!sale.available)throw new ClosureProofConflict(`Rapprochement des ventes impossible : ${sale.reason}`);
     const sales={version:5 as const,commercialId,day,initialEvents:sale.initialEvents,refundEvents:sale.refundEvents.map(({operationId,saleId,clientId,recordedAt,refund})=>({operationId,saleId,clientId,recordedAt,refund})),saleStates:sale.entries.filter(e=>sale.initialEvents.some(p=>p.saleId===e.saleId)).map(({saleId,clientId,version,total,paid})=>({saleId,clientId,version,total,paid}))};
     const journal=await readJournalCashReconciliation(db,commercialId,day);
-    canonical=cashClosureCanonical(sales,journal,commercialId,day);
+    canonical=dayInvoiceTestOnly?dayInvoiceCashClosureCanonical(sales,journal,await readServerDayInvoiceCash(db,commercialId,day),commercialId,day,await readDayInvoiceOwnerDeclarations(db,commercialId,day)):cashClosureCanonical(sales,journal,commercialId,day);
    }catch(error){if(error instanceof ClosureConflict||error instanceof JournalConflict)throw error;if(error instanceof RangeError||error instanceof z.ZodError)throw new ClosureProofConflict('Historique de caisse incohérent ou incomplet : clôture refusée.');throw error;}
    if(createHash('sha256').update(canonical).digest('hex')!==cashProof)throw new ClosureProofConflict('Caisse différente entre téléphone et serveur : comparez les opérations et synchronisez avant clôture.');
   }

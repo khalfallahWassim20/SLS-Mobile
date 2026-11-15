@@ -42,7 +42,7 @@ export async function assertLocalTourWritable(tx:Tx,commercialId:string,day:stri
  if(known?.status==='closed')throw Error('Journée clôturée : réouverture administrateur nécessaire.');
 }
 /** Ne jamais clôturer pendant une file locale incomplète ou une donnée historique sans preuve de synchronisation. */
-export async function prepareTourClose(tx:Tx,commercialId:string,day:string,expectedVersion:number,uuid:()=>string):Promise<Attempt> {
+async function prepareClose(tx:Tx,commercialId:string,day:string,expectedVersion:number,uuid:()=>string,dayInvoiceTestOnly:boolean):Promise<Attempt> {
  valid(commercialId,day);
  if(!Number.isSafeInteger(expectedVersion)||expectedVersion<0||expectedVersion>=2147483647) throw Error('Version de clôture invalide.');
  const previous=await findTourCloseAttempt(tx,commercialId,day);
@@ -52,6 +52,22 @@ export async function prepareTourClose(tx:Tx,commercialId:string,day:string,expe
  }
  const known=await tx.getFirstAsync<{status:string;version:number}>('SELECT status,version FROM tour_known_server_states WHERE commercial_id=? AND journal_date=?',commercialId,day);
  if(known && (known.status!=='open'||known.version!==expectedVersion))throw Error('État de clôture périmé ou déjà clôturé : actualisez la journée.');
+ // Les anciens calculs de clôture n'intègrent pas encore les règlements unifiés,
+ // même ceux déjà acquittés. Ne jamais clôturer une journée sous-évaluée.
+ // La table est optionnelle tant que ce protocole reste expérimental.
+ const dayPaymentsTable=await tx.getFirstAsync<{present:number}>("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payments') AS present");
+ if(!dayPaymentsTable)throw Error('Schéma local indisponible : clôture impossible.');
+ if(dayInvoiceTestOnly){
+  if(!dayPaymentsTable.present)throw Error('Registre local de facture du jour indisponible.');
+  const queued=await tx.getFirstAsync<{present:number}>('SELECT EXISTS(SELECT 1 FROM day_invoice_payment_outbox) AS present');
+  if(!queued||queued.present)throw Error('Règlement unifié en attente : synchronisez avant clôture.');
+ }else if(dayPaymentsTable.present){
+  const dayPayments=await tx.getFirstAsync<{present:number}>('SELECT EXISTS(SELECT 1 FROM day_invoice_payments) AS present');
+  if(!dayPayments || dayPayments.present)throw Error('Règlements unifiés non intégrés à la clôture : rapprochement nécessaire.');
+ }
+ const debtTable=await tx.getFirstAsync<{present:number}>("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_old_debt_outbox') AS present");
+ if(!debtTable)throw Error('Schéma local indisponible : clôture impossible.');
+ if(debtTable.present){const debt=await tx.getFirstAsync<{present:number}>('SELECT EXISTS(SELECT 1 FROM day_invoice_old_debt_outbox) AS present');if(!debt||debt.present)throw Error('Règlement ancienne dette en attente : synchronisez avant clôture.');}
  // Conservateur sur toutes les journées : on ne sait pas encore attribuer les anciennes files.
  const pending=await tx.getFirstAsync<{pending:number}>(`SELECT
   EXISTS(SELECT 1 FROM sales_outbox) OR EXISTS(SELECT 1 FROM journal_sync_outbox)
@@ -62,6 +78,15 @@ export async function prepareTourClose(tx:Tx,commercialId:string,day:string,expe
  const requestId=uuid();if(!isUuid(requestId))throw Error('Identifiant de clôture invalide.');
  await tx.runAsync('INSERT INTO tour_close_attempts(commercial_id,journal_date,request_id,expected_version,status,closed_version) VALUES(?,?,?,?,?,NULL)',commercialId,day,requestId,expectedVersion,'closing');
  return {commercialId,day,requestId,expectedVersion,status:'closing',closedVersion:null};
+}
+/** La voie normale ne peut jamais ignorer les paiements unifiés. */
+export async function prepareTourClose(tx:Tx,commercialId:string,day:string,expectedVersion:number,uuid:()=>string):Promise<Attempt> {
+ return prepareClose(tx,commercialId,day,expectedVersion,uuid,false);
+}
+/** Réservée à la préparation transactionnelle et aux tests v6 ; ne pas relier
+ * aux écrans sans capture et preuve immuables de tous les mouvements. */
+export async function prepareExperimentalDayInvoiceTourClose(tx:Tx,commercialId:string,day:string,expectedVersion:number,uuid:()=>string):Promise<Attempt> {
+ return prepareClose(tx,commercialId,day,expectedVersion,uuid,true);
 }
 /** Vérifie tous les champs avant de conserver l'accusé ; une réponse douteuse ne libère pas les écritures. */
 export async function acknowledgeTourClose(tx:Tx,commercialId:string,day:string,response:unknown):Promise<void> {

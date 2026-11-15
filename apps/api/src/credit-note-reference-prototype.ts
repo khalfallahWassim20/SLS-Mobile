@@ -1,3 +1,4 @@
+import {assertLegacyDayInvoiceReferenceSafe} from './day-invoice-legacy-guard.js';
 import {creditAbandonInputSchema} from './credit-note-abandon-prototype.js';
 import {settlementSchema} from './identified-operations.js';
 /** Projection intégrée réservée aux tests. Aucun routeur actif ne l'expose ;
@@ -158,6 +159,7 @@ export async function readPrototypeCreditReference(pool:Pool,_includeInactive=tr
  const db=await pool.connect();
  try {
   await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
+  await assertLegacyDayInvoiceReferenceSafe(db);
   const result=await readPrototypeCreditReferenceInTransaction(db);
   await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}

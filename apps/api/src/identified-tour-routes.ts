@@ -6,6 +6,10 @@ import type {Pool} from 'pg';
 import {verifyCommercialSession} from './commercial-session.js';
 import {ClosureAuthenticationError,ClosureConflict,ClosureProofConflict,ClosureAbandoned,abandonTourClose,readTourClosure,requestTourTransition} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed,storeJournalSnapshot} from './journal-store.js';
+import {storeDayInvoicePayment} from './day-invoice-store.js';
+import {storeDayInvoiceOldDebt} from './day-invoice-old-debt.js';
+import {readServerDayInvoiceSource} from './day-invoice-source.js';
+import {readDayInvoiceReference} from './day-invoice-reference.js';
 import {readLocalSaleHistoryPrototype} from './local-sale-history-prototype.js';
 import {readRemoteSaleReceiptPrototype} from './remote-sale-receipt-prototype.js';
 import {abandonRemoteSalePrototype} from './remote-sale-abandon-prototype.js';
@@ -39,9 +43,10 @@ function errorHandler(error:unknown,res:import('express').Response,next:import('
  if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données invalides.'});return;}
  next(error);
 }
-export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enforceMode?:boolean;allowCreditProtocol?:boolean}={}) {
+export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enforceMode?:boolean;allowCreditProtocol?:boolean;dayInvoiceTestOnly?:boolean}={}) {
  const enforceMode=options.enforceMode!==false;
  if(options.allowCreditProtocol&&!enforceMode)throw Error('Le protocole d’avoirs exige le mode individuel.');
+ if(options.dayInvoiceTestOnly&&!enforceMode)throw Error('Le protocole de facture du jour exige le mode individuel.');
  const r=Router();r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
  r.use(rateLimit({windowMs:15*60*1000,limit:500,standardHeaders:'draft-8',legacyHeaders:false}));
  const supportsCredit=(req:import('express').Request)=>options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5';
@@ -110,6 +115,36 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  r.get('/day/:day',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}if(enforceMode)assertIdentifiedMode(await readSyncMode(pool));res.json(await readTourClosure(pool,actor.id,req.params.day));}catch(e){errorHandler(e,res,next);}});
  if(options.allowCreditProtocol===true)r.post('/close/abandon',async(req,res,next)=>{try{if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}res.json(await abandonTourClose(pool,req.body,{secret,token:bearer(req.get('Authorization'))}));}catch(e){errorHandler(e,res,next);}});
  r.post('/close',async(req,res,next)=>{try{const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))},enforceMode,supportsCredit(req),options.allowCreditProtocol===true);res.status(result.status==='received'?201:200).json(result);}catch(e){errorHandler(e,res,next);}});
+ // Route séparée et opt-in : aucune ancienne clôture ne peut invoquer le
+ // protocole v6 par simple en-tête. Les routes normales restent inchangées.
+ if(options.dayInvoiceTestOnly===true)r.post('/day-invoice-close/abandon',async(req,res,next)=>{try{
+  res.json(await abandonTourClose(pool,req.body,{secret,token:bearer(req.get('Authorization'))}));
+ }catch(e){errorHandler(e,res,next);}});
+ if(options.dayInvoiceTestOnly===true)r.post('/day-invoice-close',async(req,res,next)=>{try{
+  const data=input.parse(req.body);const result=await requestTourTransition(pool,data,{kind:'commercial',secret,token:bearer(req.get('Authorization'))},true,true,true,true);
+  res.status(result.status==='received'?201:200).json(result);
+ }catch(e){errorHandler(e,res,next);}});
+ // Réservé aux tests isolés : le serveur normal ne fournit pas cette option.
+ if(options.dayInvoiceTestOnly===true)r.get('/day-invoice-reference',async(req,res,next)=>{try{
+  const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));
+  if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
+  res.json(await readDayInvoiceReference(pool));
+ }catch(e){errorHandler(e,res,next);}});
+ if(options.dayInvoiceTestOnly===true)r.post('/day-invoice-payments',async(req,res,next)=>{try{
+  const status=await storeDayInvoicePayment(pool,req.body,{secret,token:bearer(req.get('Authorization'))},readServerDayInvoiceSource);
+  res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});
+ }catch(e){errorHandler(e,res,next);}});
+ if(options.dayInvoiceTestOnly===true)r.post('/day-invoice-old-debt',async(req,res,next)=>{try{
+  const status=await storeDayInvoiceOldDebt(pool,req.body,{secret,token:bearer(req.get('Authorization'))});
+  res.status(status==='received'?201:200).json({status,operationId:req.body.event.operationId});
+ }catch(e){errorHandler(e,res,next);}});
+ // Sources v6 : chemins distincts, uniquement pour les essais isolés. Les
+ // anciennes routes ne peuvent jamais s'auto-déclarer compatibles par en-tête.
+ if(options.dayInvoiceTestOnly===true)for(const kind of ['journal','sales'] as const)r.post('/day-invoice-sources/'+kind,async(req,res,next)=>{try{
+  const session={secret,token:bearer(req.get('Authorization')),enforceMode,dayInvoiceAware:true};
+  const status=kind==='journal'?await storeJournalSnapshot(pool,req.body,'identified',session):await storeIdentifiedSale(pool,req.body,session);
+  res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});
+ }catch(e){errorHandler(e,res,next);}});
  r.post('/expenses',async(req,res,next)=>{try{const status=await storeTourExpense(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
  r.post('/expense-revisions',async(req,res,next)=>{try{const status=await storeExpenseRevision(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});
  r.post('/expense-cancellations',async(req,res,next)=>{try{const status=await storeExpenseCancellation(pool,req.body,{secret,token:bearer(req.get('Authorization')),enforceMode});res.status(status==='received'?201:200).json({status,operationId:req.body.operationId});}catch(e){errorHandler(e,res,next);}});

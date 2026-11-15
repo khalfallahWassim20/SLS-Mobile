@@ -58,3 +58,10 @@ test('avoirs intercommerciaux : sortie imputée à l’auteur, admin non attribu
  assert.throws(()=>journalServerCsv({...unassigned,adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[],creditRefundUnassignedTotal:0},'maintenant'),/manquant/);
  assert.throws(()=>journalServerCsv({...unassigned,adminCashCreditRefundEvents:[],unassignedCreditRefundEvents:[{...adminNote,refund:10000,retainedCredit:40000,balanceDelta:-109000}]},'maintenant'),/incohérente/);
 });
+
+test('règlement unifié du jour distinct dans les exports',()=>{
+ const report={...day,journalCollected:775000,totalCollected:805000,rows:[{...day.rows[0],dayInvoicePaid:125000,totalCollected:775000}]};
+ for(const output of [journalServerCsv(report,'maintenant'),journalServerHtml(report,'maintenant')]){
+  assert.match(output,/Règlement facture du jour DT/);assert.match(output,/125,000/);assert.match(output,/805,000/);assert.match(output,/jour de leur encaissement/);
+ }
+});

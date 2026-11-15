@@ -89,3 +89,30 @@ test('PDF journal synthétique : secteurs, une ligne par client, paiements et d�
  assert.throws(()=>journalHtml({...data,settlements:[data.settlements[0],data.settlements[0]]}),/Règlement de dette invalide/);
  assert.throws(()=>journalHtml({...data,rows:[data.rows[0],data.rows[0]]}),/dupliqué/);
 });
+
+test('export unifié : montant complet, encaissement à sa date et aucune ventilation artificielle',()=>{
+ const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invoiceId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',saleId='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+ const payment={operationId:'11111111-1111-4111-8111-111111111111',clientId,day:'2026-01-01',recordedAt:'2026-01-01T12:00:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoiceId,version:1,total:600000,declare:true},sales:[{id:saleId,version:1}]};
+ const preInvoice={id:invoiceId,clientId,clientName:'Client',journalDate:'2026-01-01',sector:'Nord',amount:600000,createdAt:'2026-01-01T09:00:00.000Z'};
+ const sale={id:1,clientId,clientName:'Client',createdAt:'2026-01-01T10:00:00.000Z',syncSaleId:saleId,syncVersion:1,total:250000,paid:0,paymentMode:'Crédit' as const,lines:[],remaining:250000,chequeNumber:'',chequeBank:'',chequeDue:''};
+ const movement={payment,clientName:'Client',sector:'Nord',pending:true};
+ const data={day:'2026-01-01',commercial:'Commercial',rows:[{clientId,clientName:'Client',sector:'Nord',preInvoice,sales:[sale],total:850000}],receipts:[],settlements:[],dayInvoicePayments:[movement]};
+ const html=journalHtml(data),csv=journalCsv(data);
+ assert.match(html,/850,000/);assert.match(html,/600,000/);assert.match(html,/250,000/);assert.match(html,/200,000 · Espèces 200,000/);assert.match(html,/Total paiements factures du jour<\/td><td>200,000/);assert.match(html,/Total encaissé local avant remboursements<\/td><td>200,000/);
+ assert.doesNotMatch(html,/Total paiements facture préétablie/);assert.match(csv,/Règlement facture du jour/);assert.match(csv,/en attente/);assert.match(csv,/TOTAL RÈGLEMENTS FACTURE DU JOUR/);
+ assert.throws(()=>journalHtml({...data,dayInvoicePayments:[movement,movement]}),/dupliqué/);
+ assert.throws(()=>journalCsv({...data,dayInvoicePayments:[{...movement,payment:{...payment,amount:0}}]}),/Paiement invalide/);
+ const tomorrow={...movement,payment:{...payment,recordedAt:'2026-01-02T10:00:00.000Z'},pending:false};
+ assert.throws(()=>journalHtml({...data,dayInvoicePayments:[tomorrow]}),/invalide/);
+ const following=journalHtml({...data,day:'2026-01-02',rows:[],dayInvoicePayments:[tomorrow]});assert.match(following,/Paiement FC du jour/);assert.match(following,/200,000 · Espèces 200,000/);assert.match(following,/Total facturé \(préétablie \+ supplémentaire\)<\/td><td>0,000/);
+});
+
+test('export unifié : ancienne dette indépendante, même sans facture locale',()=>{
+ const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+ const payment={operationId:'11111111-1111-4111-8111-111111111111',clientId,day:'2026-01-01',recordedAt:'2026-01-02T09:00:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',version:1,total:600000,declare:true},sales:[]};
+ const debt={id:1,clientId,clientName:'Client',createdAt:'2026-01-02T10:00:00.000Z',amount:30000,mode:'Virement',chequeNumber:'',chequeBank:'',chequeDue:''};
+ const data={day:'2026-01-02',commercial:'Test',rows:[],receipts:[],settlements:[debt],dayInvoicePayments:[{payment,clientName:'Client',sector:'Nord',pending:true}]};
+ const html=journalHtml(data),csv=journalCsv(data);
+ assert.match(html,/200,000 · Espèces 200,000/);assert.match(html,/30,000 · Virement 30,000/);assert.match(html,/Total encaissé local avant remboursements<\/td><td>230,000/);assert.match(csv,/Règlement ancienne dette/);assert.match(csv,/230,000/);assert.match(csv,/"NOMBRE DE CLIENTS";"1"/);
+ assert.throws(()=>journalCsv({...data,settlements:[debt,debt]}),/invalide/);
+});

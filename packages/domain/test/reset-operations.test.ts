@@ -5,6 +5,7 @@ import {DatabaseSync} from 'node:sqlite';
 import {PGlite} from '@electric-sql/pglite';
 import type {Pool} from 'pg';
 import {schemaSql} from '../../../apps/api/src/schema.js';
+import {dayInvoiceServerSchema} from '../../../apps/api/src/day-invoice-store.js';
 import {resetTestOperations} from '../../../apps/api/src/reset-test-operations.js';
 import {resetLocalTestOperations} from '../../../apps/mobile/reset-test-operations.js';
 
@@ -17,6 +18,7 @@ test('nettoyage serveur : atomique, sans effacer référentiel, comptes, soldes 
   await db.query('INSERT INTO commercial_credentials(commercial_id,login,password_hash) VALUES($1,$2,$3)',[commercial,'commercial','hash']);
   await db.query("INSERT INTO articles(id,code,name,purchase_ttc,sale_ttc) VALUES($1,'CODE','Article',100,200)",[article]);
   await db.query("UPDATE tour_sync_mode SET mode='identified'");
+  await db.exec(dayInvoiceServerSchema);await db.query("INSERT INTO identified_day_invoice_payments(operation_id,client_id,commercial_id,invoice_day,event_day,payload,payload_hash) VALUES($1,$2,$3,'2026-11-10','2026-11-10','{}','hash')",[randomUUID(),client,commercial]);
   await db.query("INSERT INTO tour_closures(commercial_id,journal_date,status,version,closed_at) VALUES($1,'2026-11-10','closed',1,now())",[commercial]);
   await db.query("INSERT INTO tour_closure_events(id,commercial_id,journal_date,action,actor_id,actor_role,occurred_at,version) VALUES($1,$2,'2026-11-10','close',$3,'commercial',now(),1)",[randomUUID(),commercial,commercial]);
   await db.query("INSERT INTO tour_close_abandoned_requests(request_id,commercial_id,journal_date,expected_version) VALUES($1,$2,'2026-11-10',0)",[randomUUID(),commercial]);
@@ -28,9 +30,10 @@ test('nettoyage serveur : atomique, sans effacer référentiel, comptes, soldes 
   const pool={connect:async()=>conn} as unknown as Pool;
   await assert.rejects(resetTestOperations(pool),/simulée/);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM tour_closures')).rows[0].n,1);
+  assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM identified_day_invoice_payments')).rows[0].n,1);
   assert.equal((await db.query<{n:number}>('SELECT count(*)::int AS n FROM tour_close_abandoned_requests')).rows[0].n,1);
   fail=false;await resetTestOperations(pool);
-  for(const table of ['tour_close_abandoned_requests','tour_closures','tour_closure_events','sync_journal_invoices','sync_journal_events','demo_sale_events'])assert.equal((await db.query<{n:number}>(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n,0);
+  for(const table of ['tour_close_abandoned_requests','tour_closures','tour_closure_events','sync_journal_invoices','sync_journal_events','demo_sale_events','identified_day_invoice_payments'])assert.equal((await db.query<{n:number}>(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n,0);
   assert.deepEqual((await db.query('SELECT opening_balance::text,credit_limit::text FROM clients WHERE id=$1',[client])).rows[0],{opening_balance:'1000000',credit_limit:'2000000'});
   assert.equal((await db.query<{mode:string}>('SELECT mode FROM tour_sync_mode')).rows[0].mode,'identified');
   for(const table of ['clients','articles','commercials','commercial_credentials','audit_log'])assert.equal((await db.query<{n:number}>(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n,1);
@@ -39,15 +42,24 @@ test('nettoyage serveur : atomique, sans effacer référentiel, comptes, soldes 
 
 test('nettoyage local : files, caches et clôtures effacés, liaison commerciale conservée',async()=>{
  const db=new DatabaseSync(':memory:');
- const tables=['tour_expense_cancellations','tour_expense_revisions','tour_expenses','credit_abandoned_note_prototype','credit_local_sale_reconcile_prototype','credit_remote_sale_receipt_prototype','credit_remote_sale_abandoned_prototype','credit_remote_sale_failure_prototype','credit_remote_sale_confirm_prototype','credit_remote_sale_draft_prototype','credit_protocol_quarantine','credit_sources_prototype_cache','credit_reference_prototype_cache','offline_credit_prototype','sales_outbox','sale_event_times','sale_revisions','sales','settlements','journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices','identified_local_operations','identified_reference_cache','tour_close_cash_proofs','tour_close_admin_refund_proofs','tour_close_attempts','tour_known_server_states','reference_snapshot'];
+ const tables=['tour_expense_cancellations','tour_expense_revisions','tour_expenses','credit_abandoned_note_prototype','credit_local_sale_reconcile_prototype','credit_remote_sale_receipt_prototype','credit_remote_sale_abandoned_prototype','credit_remote_sale_failure_prototype','credit_remote_sale_confirm_prototype','credit_remote_sale_draft_prototype','credit_protocol_quarantine','credit_sources_prototype_cache','credit_reference_prototype_cache','offline_credit_prototype','sales_outbox','sale_event_times','sale_revisions','sales','settlements','journal_sync_outbox','journal_sync_state','tour_journal_receipts','tour_pre_invoices','identified_local_operations','identified_reference_cache','tour_close_cash_proofs','tour_close_admin_refund_proofs','tour_close_attempts','tour_known_server_states','reference_snapshot','day_invoice_payment_outbox','day_invoice_payments','day_invoice_reference_cache','day_invoice_close_attempt_markers','day_invoice_old_debt_outbox','day_invoice_old_debt_local'];
  try {
   for(const table of tables)db.exec(`CREATE TABLE ${table}(id TEXT); INSERT INTO ${table} VALUES('fictif')`);
   db.exec("CREATE TABLE identified_device(id TEXT); INSERT INTO identified_device VALUES('commercial')");
-  const tx={runAsync:async(sql:string)=>{db.prepare(sql).run()}};
+  const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).get(...args) as T||null,runAsync:async(sql:string)=>{db.prepare(sql).run()}};
   db.exec('BEGIN');await resetLocalTestOperations(tx);db.exec('ROLLBACK');
   for(const table of tables)assert.equal((db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as {n:number}).n,1);
   db.exec('BEGIN');await resetLocalTestOperations(tx);db.exec('COMMIT');
   for(const table of tables)assert.equal((db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as {n:number}).n,0);
   assert.equal((db.prepare('SELECT count(*) AS n FROM identified_device').get() as {n:number}).n,1);
+ }finally{db.close();}
+});
+
+
+test('nettoyage local refuse une migration v6 partielle et conserve les données',async()=>{
+ const db=new DatabaseSync(':memory:');try{
+  db.exec("CREATE TABLE day_invoice_payments(id TEXT); INSERT INTO day_invoice_payments VALUES('mouvement')");
+  const tx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).get(...args) as T||null,runAsync:async(sql:string)=>{db.prepare(sql).run()}};
+  await assert.rejects(resetLocalTestOperations(tx),/Migration facture du jour incomplète/);assert.equal(db.prepare('SELECT count(*) AS n FROM day_invoice_payments').get()?.n,1);
  }finally{db.close();}
 });

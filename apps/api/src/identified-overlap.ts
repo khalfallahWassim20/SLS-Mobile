@@ -1,4 +1,5 @@
 import type {PoolClient} from 'pg';
+import {assertNoDayInvoiceOperation} from './day-invoice-legacy-guard.js';
 export class IdentifiedOverlap extends Error {}
 type Kind='sale'|'settlement'|'journal'|'expense'|'expense-revision'|'expense-cancellation';
 /** Toujours verrouiller l'UUID avant les autres verrous d'opération identifiée. */
@@ -7,6 +8,7 @@ export async function lockIdentifiedOperation(db:PoolClient,id:string):Promise<v
 }
 /** L'ancien espace est immuable lors du mode individuel ; aucun UUID ne peut désigner deux opérations. */
 export async function assertOperationUnambiguous(db:PoolClient,id:string,kind:Kind):Promise<void> {
+ await assertNoDayInvoiceOperation(db,id);
  const table=await db.query("SELECT to_regclass('remote_sale_abandon_prototype') IS NOT NULL AS present");
  if(typeof table.rows[0]?.present!=='boolean')throw Error('État des révisions abandonnées indisponible.');
  if(table.rows[0].present&&(await db.query('SELECT 1 FROM remote_sale_abandon_prototype WHERE operation_id=$1',[id])).rows.length)throw new IdentifiedOverlap('Opération abandonnée : cet identifiant ne peut plus être utilisé.');

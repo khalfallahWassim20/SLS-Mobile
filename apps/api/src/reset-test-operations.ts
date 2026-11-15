@@ -18,6 +18,12 @@ export async function resetTestOperations(pool:Pool):Promise<void> {
   const remote=await db.query("SELECT to_regclass('remote_sale_abandon_prototype') IS NOT NULL AS present");
   if(typeof remote.rows[0]?.present!=='boolean')throw Error('État des révisions indisponible.');
   if(remote.rows[0].present)await db.query('DELETE FROM remote_sale_abandon_prototype');
+  const unified=await db.query("SELECT to_regclass('identified_day_invoice_payments') IS NOT NULL AS present");
+  if(typeof unified.rows[0]?.present!=='boolean')throw Error('État facture du jour indisponible.');
+  const debts=await db.query("SELECT to_regclass('identified_day_invoice_old_debt') IS NOT NULL AS present");
+  if(typeof debts.rows[0]?.present!=='boolean')throw Error('État ancienne dette indisponible.');
+  if(debts.rows[0].present)await db.query('DELETE FROM identified_day_invoice_old_debt');
+  if(unified.rows[0].present)await db.query('DELETE FROM identified_day_invoice_payments');
   for(const table of [
    'tour_close_abandoned_requests','tour_closure_requests','tour_closure_events','tour_closures',
    'identified_journal_events','identified_journal_receipt_ids','identified_journal_invoices',

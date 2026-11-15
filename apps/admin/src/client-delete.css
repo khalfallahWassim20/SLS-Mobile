@@ -1,0 +1,5 @@
+/* Bouton et fenêtre de suppression définitive d'un client. */
+.edit.danger{color:#b3372d}
+.edit.danger:hover{background:#fdeceb}
+button.danger{background:#b3372d;color:#fff}
+.danger-text{color:#b3372d}
