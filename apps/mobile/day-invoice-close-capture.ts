@@ -33,15 +33,23 @@ export async function captureDayInvoiceClose(tx:Tx,identity:DeviceIdentity,day:s
  const localSales=saleRows.map(row=>({...parse(row.payload),id:row.id}) as SavedSale);
  const ledger=await readLocalSaleCashLedger(tx,identity,localSales,day),byId=new Map(localSales.map(s=>[s.id,s]));
  const initialEvents:{operationId:string;saleId:string;clientId:string;recordedAt:string;paid:number}[]=[],saleStates:{saleId:string;clientId:string;version:number;total:number;paid:number}[]=[],refundEvents:{operationId:string;saleId:string;clientId:string;recordedAt:string;refund:number}[]=[];
+ async function verifySaleContent(sale:SavedSale){
+  if(!reference!.hasSaleProofs)return; // ancien cache lisible, sans preuve complète
+  const {id:_id,...payload}=sale,proof=reference!.saleProofs.find(p=>p.saleId===sale.syncSaleId);
+  if(!proof||proof.version!==sale.syncVersion||proof.hash!==await digest(canonicalJson(payload)))throw Error('Preuve de vente locale incohérente : clôture refusée.');
+ }
+
  for(const payment of ledger.initialPayments){const sale=byId.get(payment.saleId);if(!sale?.syncSaleId||!sale.syncVersion)throw Error('Vente locale indisponible.');
   const state=reference.saleStates?.find(s=>s.saleId===sale.syncSaleId);
   if(!state||state.version!==sale.syncVersion||state.clientId!==sale.clientId||state.total!==String(sale.total)||state.paid!==String(sale.paid))throw Error('Vente locale non confirmée par la référence v6.');
+  await verifySaleContent(sale);
   initialEvents.push({operationId:await origin('sale',sale.syncSaleId,sale.createdAt),saleId:sale.syncSaleId,clientId:sale.clientId,recordedAt:sale.createdAt,paid:payment.paid});
   saleStates.push({saleId:sale.syncSaleId,clientId:sale.clientId,version:sale.syncVersion,total:sale.total,paid:sale.paid});
  }
  for(const refund of ledger.refunds){const sale=byId.get(refund.saleId);if(!sale?.syncSaleId||sale.clientId!==refund.clientId)throw Error('Remboursement de vente incohérent.');
   const state=reference.saleStates?.find(s=>s.saleId===sale.syncSaleId);
   if(!state||state.version!==sale.syncVersion||state.clientId!==sale.clientId||state.total!==String(sale.total)||state.paid!==String(sale.paid))throw Error('Remboursement non confirmé par la référence v6.');
+  await verifySaleContent(sale);
   refundEvents.push({operationId:await origin('sale',sale.syncSaleId,refund.recordedAt),saleId:sale.syncSaleId,clientId:sale.clientId,recordedAt:refund.recordedAt,refund:refund.refund});
  }
  const events:any[]=[];

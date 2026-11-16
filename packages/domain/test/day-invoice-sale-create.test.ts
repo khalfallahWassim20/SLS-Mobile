@@ -184,14 +184,18 @@ test('vente synchronisée : garder la file tant que les marqueurs serveur ne son
   const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(tx);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
   await transaction(t=>saveDayInvoiceReference(t,identity,identity,reference));const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);
   await transaction(t=>confirmNewDayInvoiceSale(t,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest));
-  const server={...reference,clients:[{...reference.clients[0],serverBalance:'250000'}],saleStates:[{saleId,clientId,version:1,total:'250000',paid:'0'}],saleDays:[{saleId,clientId,day}]};
-  let calls=0,sends=0,mode:'cut'|'stale'|'wrong'|'ok'='cut';
-  const io={transaction,digest,check:()=>{},verifyServer:async()=>{},fetchReference:async()=>{calls++;if(mode==='cut'&&calls===2)throw Error('référence interrompue');if(mode==='wrong'&&calls>1)return {...server,saleStates:[{...server.saleStates[0],total:'249000'}]};return mode==='ok'?server:reference;},sendSource:async()=>{sends++;return {ok:true,status:200,json:async()=>({status:sends===1?'received':'duplicate',operationId})};},sendPayment:async()=>{throw Error('inattendu');}};
+  const sale=JSON.parse(db.prepare('SELECT payload FROM sales').get()?.payload as string),{canonicalJson}=await import('@sls/domain'),hash=await digest(canonicalJson(sale));
+  const server={...reference,clients:[{...reference.clients[0],serverBalance:'250000'}],saleStates:[{saleId,clientId,version:1,total:'250000',paid:'0'}],saleDays:[{saleId,clientId,day}],saleProofs:[{saleId,version:1,hash}]};
+  let calls=0,sends=0,mode:'cut'|'stale'|'wrong'|'wrongHash'|'ok'='cut';
+  const io={transaction,digest,check:()=>{},verifyServer:async()=>{},fetchReference:async()=>{calls++;if(mode==='cut'&&calls===2)throw Error('référence interrompue');if(mode==='wrong'&&calls>1)return {...server,saleStates:[{...server.saleStates[0],total:'249000'}]};if(mode==='wrongHash'&&calls>1)return {...server,saleProofs:[{saleId,version:1,hash:'b'.repeat(64)}]};return mode==='ok'?server:reference;},sendSource:async()=>{sends++;return {ok:true,status:200,json:async()=>({status:sends===1?'received':'duplicate',operationId})};},sendPayment:async()=>{throw Error('inattendu');}};
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/référence interrompue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
   mode='stale';await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Marqueur serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
   // La référence erronée n'est pas sauvegardée si la preuve échoue.
   mode='wrong';calls=0;await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Marqueur serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
-  mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:0,remainingSources:0,remainingPayments:0});assert.equal(sends,4);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,250000);
+  mode='wrongHash';calls=0;await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Marqueur serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
+  mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:0,remainingSources:0,remainingPayments:0});assert.equal(sends,5);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,250000);
+  db.prepare('UPDATE sales SET payload=?').run(JSON.stringify({...sale,lines:[{...sale.lines[0],name:'Autre produit'}]}));
+  await assert.rejects(readDayInvoiceClients(tx,identity,digest),/Preuve de vente locale/);
  }finally{db.close();}
 });
 

@@ -27,6 +27,7 @@ export async function readDayInvoiceReferenceInTransaction(db:PoolClient,include
   return {saleId:row.saleId as string,clientId:row.clientId as string,day:tunisDay(sale.createdAt)};
  });
  if(saleDays.length!==base.saleStates.length)throw Error('Journées de vente serveur incomplètes.');
+ const saleProofs=dayRows.rows.map(row=>({saleId:row.saleId as string,version:row.version as number,hash:createHash('sha256').update(canonicalJson(row.payload.sale)).digest('hex')}));
  const settlementRows=await db.query(`WITH combined AS (
   SELECT operation_id,client_id,payload FROM demo_settlements UNION ALL SELECT operation_id,client_id,payload FROM identified_settlements
  ) SELECT p.operation_id AS "operationId",p.client_id AS "clientId",p.payload FROM combined p
@@ -67,7 +68,7 @@ export async function readDayInvoiceReferenceInTransaction(db:PoolClient,include
  const delta=new Map<string,bigint>();
  for(const payment of payments){const before=delta.get(payment.clientId)??0n;delta.set(payment.clientId,before-BigInt(payment.amount)+(payment.preInvoice?.declare?BigInt(payment.preInvoice.total):0n));}
  const projected=base.clients.map(c=>{const balance=BigInt(c.serverBalance)+ (delta.get(c.id)??0n);if(balance>BigInt(Number.MAX_SAFE_INTEGER)||balance<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Solde trop élevé.');return {...c,serverBalance:String(balance)};});
- return {...base,version:6 as const,clients:projected,saleDays,settlementDays,settlementProofs,oldDebtMarkers,dayPayments:payments,journalStates:base.journalStates.map(j=>({...j,declaredByDayPayment:declared.has(j.id)}))};
+ return {...base,version:6 as const,clients:projected,saleDays,saleProofs,settlementDays,settlementProofs,oldDebtMarkers,dayPayments:payments,journalStates:base.journalStates.map(j=>({...j,declaredByDayPayment:declared.has(j.id)}))};
 }
 export async function readDayInvoiceReference(pool:Pool,includeInactive=false) {
  const db=await pool.connect();try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);const result=await readDayInvoiceReferenceInTransaction(db,includeInactive);await db.query('COMMIT');return result;}catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}

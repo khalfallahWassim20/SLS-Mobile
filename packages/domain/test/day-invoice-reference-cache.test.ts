@@ -56,3 +56,16 @@ test('cache v6 : marqueur de dette immuable, aucune reclassification rétroactiv
   await assert.rejects(saveDayInvoiceReference(tx,identity,identity,unmarked),/Marqueur de dette périmé/);
  }finally{db.close();}
 });
+
+test('preuves complètes de vente : migration, immutabilité et nouvelle version',async()=>{
+ const {db,tx}=setup();try{
+  const proved={...old,saleProofs:[{saleId,version:1,hash:'a'.repeat(64)}]};
+  await saveDayInvoiceReference(tx,identity,identity,old);await saveDayInvoiceReference(tx,identity,identity,proved);
+  assert.equal((await readDayInvoiceReferenceCache(tx,identity))?.hasSaleProofs,true);
+  await assert.rejects(saveDayInvoiceReference(tx,identity,identity,old),/Preuves de vente absentes/);
+  await assert.rejects(saveDayInvoiceReference(tx,identity,identity,{...proved,saleProofs:[{saleId,version:1,hash:'b'.repeat(64)}]}),/Preuve de vente périmée/);
+  await assert.rejects(saveDayInvoiceReference(tx,identity,identity,{...proved,saleProofs:[]}),/incomplètes/);
+  const newer={...proved,saleStates:[{...old.saleStates[0],version:2}],saleProofs:[{saleId,version:2,hash:'b'.repeat(64)}]};
+  await saveDayInvoiceReference(tx,identity,identity,newer);assert.equal((await readDayInvoiceReferenceCache(tx,identity))?.saleProofs[0].version,2);
+ }finally{db.close();}
+});

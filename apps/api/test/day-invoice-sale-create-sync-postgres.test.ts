@@ -52,6 +52,11 @@ test('création vente v6 : SQLite, HTTP, réponse perdue, paiement unique et cl�
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,850000);assert.equal(form.view.remaining,650000);
   const clients=await transaction(t=>readDayInvoiceClients(t,identity,digest));assert.equal(clients.clients.find(c=>c.id===clientId)?.balance,650000);
   assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE client_id=$1',[clientId])).rows[0].n,1);
+  // Même montant et même version ne suffisent pas si le détail local change.
+  const originalSale=db.prepare('SELECT payload FROM sales').get()?.payload as string,alteredSale=JSON.parse(originalSale);alteredSale.lines[0].name='Produit altéré';
+  db.prepare('UPDATE sales SET payload=?').run(JSON.stringify(alteredSale));
+  await assert.rejects(transaction(t=>captureDayInvoiceClose(t,identity,day,digest)),/Preuve de vente locale/);
+  db.prepare('UPDATE sales SET payload=?').run(originalSale);
   const proof=await transaction(t=>captureDayInvoiceClose(t,identity,day,digest));assert.equal(proof.sales.saleStates.find(s=>s.saleId===saleId)?.version,1);assert.equal(proof.sales.saleStates.find(s=>s.saleId===saleId)?.total,250000);
   const attempt=await transaction(t=>prepareDayInvoiceCloseAttempt(t,identity,day,0,randomUUID,digest));assert.equal(attempt.cashProof,proof.cashProof);
   const close=await post('day-invoice-close',JSON.stringify({requestId:attempt.requestId,day,expectedVersion:0,cashProof:attempt.cashProof}));assert.equal(close.status,201);

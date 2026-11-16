@@ -17,6 +17,16 @@ export function validateDayInvoiceReference(input:unknown) {
   saleDays.set(raw.saleId,{saleId:raw.saleId,clientId:raw.clientId,day:raw.day});
  }
  if(saleDays.size!==saleStates.size)throw Error('Journées de vente incomplètes.');
+ // Un cache plus ancien peut ne pas contenir ces preuves. Il reste lisible,
+ // mais une vente ne peut être acquittée qu'après réception d'une preuve.
+ if(input.saleProofs!==undefined&&!Array.isArray(input.saleProofs))throw Error('Preuves de vente invalides.');
+ const saleProofs=new Map<string,{saleId:string;version:number;hash:string}>();
+ for(const raw of (input.saleProofs??[]) as unknown[]){
+  if(!object(raw)||Object.keys(raw).sort().join(',')!=='hash,saleId,version'||typeof raw.saleId!=='string'||typeof raw.version!=='number'||!Number.isSafeInteger(raw.version)||typeof raw.hash!=='string'||!/^[0-9a-f]{64}$/.test(raw.hash)||saleProofs.has(raw.saleId)||saleStates.get(raw.saleId)?.version!==raw.version)throw Error('Preuve de vente invalide.');
+  saleProofs.set(raw.saleId,{saleId:raw.saleId,version:raw.version,hash:raw.hash});
+ }
+ if(input.saleProofs!==undefined&&saleProofs.size!==saleStates.size)throw Error('Preuves de vente incomplètes.');
+
  const settlements=new Map(base.settlementStates.map(s=>[s.operationId,s]));
  const settlementDays=new Map<string,{operationId:string;clientId:string;day:string}>();
  for(const raw of input.settlementDays){
@@ -59,7 +69,7 @@ export function validateDayInvoiceReference(input:unknown) {
  });
  for(const invoice of base.journalStates){if(flags.get(invoice.id)!==declared.has(invoice.id))throw Error('Déclaration de facture serveur incohérente.');}
  for(const payment of dayPayments)if(payment.preInvoice&&!payment.preInvoice.declare){const invoice=base.journalStates.find(j=>j.id===payment.preInvoice!.id)!;if(!declared.has(invoice.id)&&!summarizePreInvoice(invoice.total,invoice.receipts).declared)throw Error('Facture serveur non déclarée.');}
- return {...base,version:6 as const,saleDays:[...saleDays.values()],settlementDays:[...settlementDays.values()],settlementProofs:[...settlementProofs.values()],oldDebtMarkers:[...oldDebtMarkers.values()],dayPayments,declaredByDayPayment:[...declared]};
+ return {...base,version:6 as const,saleDays:[...saleDays.values()],saleProofs:[...saleProofs.values()],hasSaleProofs:input.saleProofs!==undefined,settlementDays:[...settlementDays.values()],settlementProofs:[...settlementProofs.values()],oldDebtMarkers:[...oldDebtMarkers.values()],dayPayments,declaredByDayPayment:[...declared]};
 }
 
 import {reconcileClientBalance,reconcileJournalBalance} from '@sls/domain';

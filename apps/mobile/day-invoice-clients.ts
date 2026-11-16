@@ -30,6 +30,7 @@ export async function readDayInvoiceClients(tx:Tx,identity:DeviceIdentity,digest
   const s=object(row.payload);if(s.clientId!==row.clientId||!known.has(row.clientId)||'id' in s||typeof s.syncSaleId!=='string'||!Number.isSafeInteger(s.syncVersion)||s.syncVersion<1)throw Error('Vente locale non synchronisable.');
   const server=ref.saleStates.find(x=>x.saleId===s.syncSaleId),queued=queueSales.get(s.syncSaleId);
   if(server&&(server.clientId!==s.clientId||server.version>s.syncVersion||(server.version===s.syncVersion&&(server.total!==String(s.total)||server.paid!==String(s.paid)))))throw Error('Vente locale et serveur incohérentes.');
+  if(server&&server.version===s.syncVersion&&ref.hasSaleProofs){const proof=ref.saleProofs.find(p=>p.saleId===s.syncSaleId);if(!proof||proof.hash!==await digest(canonicalJson(s)))throw Error('Preuve de vente locale incohérente.');}
   if(!server||server.version<s.syncVersion){if(!queued||queued.version!==s.syncVersion||canonicalJson(queued.sale)!==canonicalJson(s))throw Error('Version de vente en attente indisponible.');}
   sales.push({...s,id:row.id} as SavedSale);
  }

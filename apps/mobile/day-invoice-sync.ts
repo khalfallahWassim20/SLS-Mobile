@@ -52,10 +52,10 @@ export async function synchronizeDayInvoicePrototype(identity:DeviceIdentity,ver
      check();await saveDayInvoiceReference(tx,identity,verified,reference);const ref=await readDayInvoiceReferenceCache(tx,identity),event=JSON.parse(entry.payload);
      if(!ref)throw Error('Référence de source indisponible : opération conservée.');
      if(entry.kind==='sale'){
-      // La référence ne contient pas le détail de vente : l'accusé exact et
-      // les marqueurs vérifient la version et les montants, pas chaque ligne.
-      const sale=event.sale,state=ref.saleStates?.find(s=>s.saleId===entry.entityId),dated=ref.saleDays.find(s=>s.saleId===entry.entityId);
-      if(!sale||!state||state.clientId!==sale.clientId||state.version!==event.version||state.total!==String(sale.total)||state.paid!==String(sale.paid)||dated?.clientId!==sale.clientId||dated?.day!==tunisDay(new Date(sale.createdAt)))throw Error('Marqueur serveur de vente incohérent : opération conservée.');
+      // Comparer aussi le contenu complet : mêmes montants ne garantissent
+      // pas que les articles ou les remises sont identiques.
+      const sale=event.sale,state=ref.saleStates?.find(s=>s.saleId===entry.entityId),dated=ref.saleDays.find(s=>s.saleId===entry.entityId),proof=ref.saleProofs.find(p=>p.saleId===entry.entityId);
+      if(!sale||!state||state.clientId!==sale.clientId||state.version!==event.version||state.total!==String(sale.total)||state.paid!==String(sale.paid)||dated?.clientId!==sale.clientId||dated?.day!==tunisDay(new Date(sale.createdAt))||!proof||proof.version!==event.version||proof.hash!==await io.digest(canonicalJson(sale)))throw Error('Marqueur serveur de vente incohérent : opération conservée.');
      }else if(entry.kind==='journal'){
       const proof=ref.journalProofs.find(p=>p.id===entry.entityId),state=ref.journalStates?.find(s=>s.id===entry.entityId);
       if(!event.invoice||!state||state.clientId!==event.invoice.clientId||state.journalDate!==event.invoice.journalDate||!proof||proof.version!==event.version||proof.hash!==await io.digest(canonicalJson(event)))throw Error('Preuve serveur du journal incohérente : opération conservée.');
