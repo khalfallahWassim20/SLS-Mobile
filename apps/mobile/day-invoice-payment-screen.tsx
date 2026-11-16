@@ -1,11 +1,11 @@
 /** Écran de paiement v6 expérimental, non monté dans l'application active. */
 import React,{useEffect,useRef,useState} from 'react';
 import {StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
-import {parseDinars} from '@sls/domain';
+import {makeDayPaymentAttempt} from './day-invoice-payment-input';
 import {randomUUID} from 'expo-crypto';
 import type {captureDayInvoiceForm} from './day-invoice-form';
 import type {DayInvoicePayment} from '../../packages/domain/src/day-invoice';
-import type {PaymentAttempt,StoredPaymentAttempt} from './day-invoice-payment-attempt';
+import type {StoredPaymentAttempt} from './day-invoice-payment-attempt';
 import {startPaymentAttempt,resumePaymentAttempt,finishPaymentAttempt,abandonPaymentAttempt,type PaymentAttemptIO} from './day-invoice-payment-attempt-flow';
 type Form=Awaited<ReturnType<typeof captureDayInvoiceForm>>;
 /** bindingKey change à chaque changement de commercial ou serveur lié. */
@@ -16,7 +16,7 @@ export function DayInvoicePaymentScreen({bindingKey,clientId,clientName,day,read
  const [number,setNumber]=useState(''),[bank,setBank]=useState(''),[due,setDue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[reload,setReload]=useState(0),[loaded,setLoaded]=useState(false),[stored,setStored]=useState<StoredPaymentAttempt|null>(null);
  const working=useRef(false),generation=useRef(0),mounted=useRef(true);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;generation.current++;};},[]);
- useEffect(()=>{const current=++generation.current;setLoaded(false);setStored(null);setForm(null);setError('');setAmount('');
+ useEffect(()=>{const current=++generation.current;setLoaded(false);setStored(null);setForm(null);setError('');setAmount('');setMode('Espèces');setNumber('');setBank('');setDue('');
   void (async()=>{const pending=await attempts.read();if(pending)return {pending,form:null};return {pending:null,form:await read()};})().then(value=>{if(mounted.current&&generation.current===current){if(value.form&&(value.form.view.clientId!==clientId||value.form.view.day!==day))throw Error('Client ou journée incohérent.');setStored(value.pending);setForm(value.form);setLoaded(true);}},e=>{if(mounted.current&&generation.current===current){setError(e instanceof Error?e.message:'Lecture impossible.');setLoaded(false);}}).catch(e=>{if(mounted.current&&generation.current===current){setError(e instanceof Error?e.message:'Lecture impossible.');setLoaded(false);}});
   return()=>{generation.current++;};
  },[bindingKey,clientId,day,reload]);
@@ -24,10 +24,10 @@ export function DayInvoicePaymentScreen({bindingKey,clientId,clientName,day,read
  const run=async(work:(current:()=>boolean)=>Promise<void>)=>{if(working.current)return;working.current=true;setBusy(true);setError('');const current=generation.current;
   try{await work(()=>mounted.current&&generation.current===current);}catch(e){if(mounted.current&&generation.current===current){setLoaded(false);setError(e instanceof Error?e.message:'Résultat inconnu : vérifiez la tentative.');}}finally{working.current=false;if(mounted.current)setBusy(false);}
  };
- const submit=()=>{if(working.current||!loaded||stored||!form)return;let value:number;
-  try{value=mode==='Crédit'?0:parseDinars(amount);if(mode==='Crédit'&&(!form.source.preInvoice||form.view.declared||form.view.paid!==0))throw Error('Crédit total réservé à une facture entièrement impayée.');if(mode!=='Crédit'&&(value<=0||value>form.view.remaining))throw Error('Le montant doit être supérieur à zéro et inférieur ou égal au reste de la facture.');if(mode==='Chèque'&&(!number.trim()||!bank.trim()||!due.trim()))throw Error('Renseignez le numéro, la banque et l’échéance du chèque.');}catch(e){setError(e instanceof Error?e.message:'Montant invalide.');return;}
-  const input:PaymentAttempt={clientId,day,fingerprint:form.fingerprint,operationId:randomUUID(),recordedAt:new Date().toISOString(),amount:value,mode,chequeNumber:mode==='Chèque'?number.trim():'',chequeBank:mode==='Chèque'?bank.trim():'',chequeDue:mode==='Chèque'?due.trim():''};
-  void run(async current=>{const result=await startPaymentAttempt(attempts,input);if(current()){setStored(result);setForm(null);}});
+ const submit=()=>{if(working.current||!loaded||stored||!form)return;
+  try{const input=makeDayPaymentAttempt(form,clientId,day,{amount,mode,chequeNumber:number,chequeBank:bank,chequeDue:due},randomUUID(),new Date().toISOString());
+   void run(async current=>{const result=await startPaymentAttempt(attempts,input);if(current()){setStored(result);setForm(null);}});
+  }catch(e){setError(e instanceof Error?e.message:'Montant invalide.');}
  };
  const resume=()=>{if(!stored||other||stored.result)return;void run(async current=>{const result=await resumePaymentAttempt(attempts,stored.attempt);if(current())setStored(result);});};
  const finish=()=>{if(!stored||other||!stored.result)return;void run(async current=>{await finishPaymentAttempt(attempts,stored.attempt);if(current()){setStored(null);onSaved();}});};
