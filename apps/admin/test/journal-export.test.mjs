@@ -74,3 +74,22 @@ test('ancienne dette identifiée : modes, absence de double comptage et contrôl
  assert.throws(()=>journalServerHtml({...report,dayInvoiceOldDebtPayments:[...report.dayInvoiceOldDebtPayments,...report.dayInvoiceOldDebtPayments]},'maintenant'),/incohérent/);
  assert.throws(()=>journalServerCsv({...report,rows:[]},'maintenant'),/absent/);
 });
+
+test('règlements facture du jour : modes sans ventilation, crédit et contrôles',async()=>{
+ const {randomUUID}=await import('node:crypto'),clientId=randomUUID(),invoiceId=randomUUID();
+ function entry(mode,amountValue,recordedAt){const operationId=randomUUID(),payment={operationId,clientId,day:'2026-11-07',recordedAt,amount:amountValue,mode,chequeNumber:mode==='Chèque'?'=123':'',chequeBank:mode==='Chèque'?'<Banque>':'',chequeDue:mode==='Chèque'?'2026-12-01':'',preInvoice:{id:invoiceId,version:1,total:600000,declare:mode==='Crédit'},sales:[]};return {payment,operationId,clientId,clientName:'<Client>',sector:'Nord',invoiceDay:payment.day,recordedAt,amount:amountValue,mode,chequeNumber:payment.chequeNumber,chequeBank:payment.chequeBank,chequeDue:payment.chequeDue,declaresInvoice:payment.preInvoice.declare,preInvoiceId:invoiceId};}
+ const entries=[entry('Chèque',125000,'2026-11-07T23:30:00.000Z'),entry('Crédit',0,'2026-11-08T09:00:00.000Z')];
+ const report={...day,dayInvoicePayments:entries,dayInvoiceTotal:125000,rows:[{...day.rows[0],clientId,dayInvoicePaid:125000,totalCollected:775000}]};
+ const csv=journalServerCsv(report,'maintenant'),html=journalServerHtml(report,'maintenant');
+ assert.match(csv,/Modes règlement facture du jour/);assert.match(csv,/Chèque 125,000 DT/);assert.match(csv,/Crédit total · aucun encaissement/);assert.match(html,/&lt;Banque&gt;/);assert.match(html,/jour de leur encaissement/);
+ assert.throws(()=>journalServerCsv({...report,dayInvoiceTotal:1},'maintenant'),/incohérent/);
+ assert.throws(()=>journalServerCsv({...report,dayInvoicePayments:[entries[0],entries[0]]},'maintenant'),/incohérent/);
+ assert.throws(()=>journalServerCsv({...report,dayInvoicePayments:[{...entries[0],amount:1},entries[1]]},'maintenant'),/incohérent/);
+ assert.throws(()=>journalServerCsv({...report,dayInvoicePayments:[{...entries[0],recordedAt:'2026-11-06T20:00:00.000Z'},entries[1]]},'maintenant'),/incohérent/);
+ assert.throws(()=>journalServerCsv({...report,rows:[]},'maintenant'),/absent/);
+});
+
+test('export répété sans mutation des modes ancienne dette',async()=>{
+ const {randomUUID}=await import('node:crypto'),clientId=randomUUID(),operationId=randomUUID();const report={...day,dayInvoiceOldDebtTotal:25000,globalSettlementTotal:25000,dayInvoiceOldDebtPayments:[{operationId,clientId,clientName:'Client',recordedAt:'2026-11-08T10:00:00.000Z',amount:25000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}],rows:[{...day.rows[0],clientId,oldDebtPaid:425000,dayInvoiceOldDebtPaid:25000}]};
+ assert.equal(journalServerCsv(report,'maintenant'),journalServerCsv(report,'maintenant'));
+});

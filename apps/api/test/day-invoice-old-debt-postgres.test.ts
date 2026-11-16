@@ -13,6 +13,7 @@ import {storeDayInvoiceOldDebt} from '../src/day-invoice-old-debt.js';
 import {storeJournalSnapshot} from '../src/journal-store.js';
 import {storeIdentifiedSettlement,storeIdentifiedSale} from '../src/identified-operations.js';
 import {readIdentifiedJournalDay} from '../src/identified-journal-day.js';
+import {journalServerCsv,journalServerHtml} from '../../admin/src/journal-export.js';
 import {readDayInvoiceReference} from '../src/day-invoice-reference.js';
 import {storeDayInvoicePayment} from '../src/day-invoice-store.js';
 import {readServerDayInvoiceSource} from '../src/day-invoice-source.js';
@@ -55,6 +56,7 @@ test('ancienne dette explicite : plafond, concurrence, reprise et facture indép
   const loneId=randomUUID(),otherId=randomUUID();await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,$3)',[loneId,'Client sans facture',100000]);await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[otherId,'Autre commercial']);
   const lone=debt(25000);lone.event.settlement.clientId=loneId;lone.event.settlement.clientName='Client sans facture';lone.event.settlement.mode='Chèque';lone.event.settlement.chequeNumber='123';lone.event.settlement.chequeBank='Banque';lone.event.settlement.chequeDue='2026-02-01';await storeDayInvoiceOldDebt(pool,lone,session);
   const withLone=await readIdentifiedJournalDay(pool,commercialId,day,true),loneRow=withLone.rows.find(r=>r.clientId===loneId);assert.ok(loneRow);assert.equal(loneRow.totalClient,0);assert.equal(loneRow.oldDebtPaid,25000);assert.equal(loneRow.totalCollected,25000);assert.equal(withLone.totalCollected,315000);assert.equal(withLone.dayInvoiceOldDebtPayments.find(p=>p.clientId===loneId)?.chequeNumber,'123');
+  const csv=journalServerCsv(withLone,'2026-01-01T12:00:00Z'),html=journalServerHtml(withLone,'2026-01-01T12:00:00Z');assert.match(csv,/Espèces 200,000 DT/);assert.match(csv,/Chèque 25,000 DT/);assert.match(html,/315,000/);
   const other=await readIdentifiedJournalDay(pool,otherId,day,true),next=await readIdentifiedJournalDay(pool,commercialId,'2026-01-02',true);assert.equal(other.dayInvoiceOldDebtTotal,0);assert.equal(next.dayInvoiceOldDebtTotal,0);
   await assert.rejects(storeIdentifiedSettlement(pool,debt(1000).event,{...session,enforceMode:true}),/ancien traitement/);
   await pool.query('UPDATE identified_day_invoice_old_debt SET invoice_day=$1::date WHERE operation_id=$2',['2026-01-02',first.event.operationId]);
