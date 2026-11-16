@@ -1,3 +1,4 @@
+import {captureDayInvoiceTimeline} from './day-invoice-timeline';
 import {dayInvoicePreinvoiceAttemptSchema,readPreinvoiceAttempt,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt,cancelPreinvoiceAttempt} from './day-invoice-preinvoice-attempt';
 import {captureNewDayPreinvoice,confirmNewDayPreinvoice,type NewDayPreinvoice} from './day-invoice-preinvoice-create';
 import {dayInvoiceOldDebtAttemptSchema,readOldDebtAttempt,prepareOldDebtAttempt,confirmOldDebtAttempt,acknowledgeOldDebtAttempt,cancelOldDebtAttempt,type OldDebtAttempt} from './day-invoice-old-debt-attempt';
@@ -761,3 +762,13 @@ export async function confirmPreinvoiceAttemptPrototype(identity:DeviceIdentity,
 export async function acknowledgePreinvoiceAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgePreinvoiceAttempt(tx,identity,id));}
 export async function cancelPreinvoiceAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelPreinvoiceAttempt(tx,identity,id));}
 export function preinvoiceAttemptIOPrototype(identity:DeviceIdentity){return {read:()=>readPreinvoiceAttemptPrototype(identity),prepare:(input:NewDayPreinvoice)=>preparePreinvoiceAttemptPrototype(identity,input),confirm:(id:string)=>confirmPreinvoiceAttemptPrototype(identity,id),acknowledge:(id:string)=>acknowledgePreinvoiceAttemptPrototype(identity,id),cancel:(id:string)=>cancelPreinvoiceAttemptPrototype(identity,id)};}
+
+/** Historique v6 local vérifié ; les autres téléphones ne sont pas inclus. */
+export async function getDayInvoiceTimelinePrototype(identity:DeviceIdentity,clientId:string,day?:string){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceTimeline>>;await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceTimeline(tx,identity,clientId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text),day);});return result;
+}
+/** Facture et chronologie locales capturées dans le même instant SQLite. */
+export async function getDayInvoiceDetailPrototype(identity:DeviceIdentity,clientId:string,day:string){
+ const database=await db();let result!:{invoice:Awaited<ReturnType<typeof captureDayInvoiceForm>>;timeline:Awaited<ReturnType<typeof captureDayInvoiceTimeline>>};
+ await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result={invoice:await captureDayInvoiceForm(tx,identity,clientId,day,digest),timeline:await captureDayInvoiceTimeline(tx,identity,clientId,digest)};});return result;
+}

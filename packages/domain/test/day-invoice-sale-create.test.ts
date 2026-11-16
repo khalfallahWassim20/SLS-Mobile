@@ -1,3 +1,4 @@
+import {captureDayInvoiceTimeline} from '../../../apps/mobile/day-invoice-timeline.js';
 import {dayInvoicePreinvoiceAttemptSchema,readPreinvoiceAttempt,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt,cancelPreinvoiceAttempt} from '../../../apps/mobile/day-invoice-preinvoice-attempt.js';
 import {startPreinvoiceAttempt,resumePreinvoiceAttempt,finishPreinvoiceAttempt,abandonPreinvoiceAttempt} from '../../../apps/mobile/day-invoice-preinvoice-attempt-flow.js';
 import {captureNewDayPreinvoice,confirmNewDayPreinvoice} from '../../../apps/mobile/day-invoice-preinvoice-create.js';
@@ -13,6 +14,7 @@ const line={name:'Produit',code:'X',quantity:1,unitPrice:210084,discount:0,vat:1
 const reference={version:6,clients:[{id:clientId,name:'Client',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[{id:'33333333-3333-4333-8333-333333333333',code:'X',name:'Produit',barcode:'',saleTtc:'250000',vatRate:1900,unitsPerCarton:1}],saleStates:[],saleDays:[],settlementStates:[],settlementDays:[],settlementProofs:[],oldDebtMarkers:[],journalStates:[{id:invoiceId,clientId,journalDate:day,total:600000,receipts:[],declaredByDayPayment:false}],journalProofs:[{id:invoiceId,version:1,hash:'a'.repeat(64)}],dayPayments:[]};
 function wrap(db:DatabaseSync){return {getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};}
 function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}${dayInvoicePreinvoiceAttemptSchema}
+ CREATE TABLE sale_revisions(id INTEGER PRIMARY KEY,sale_id INTEGER,created_at TEXT,previous_payload TEXT,new_payload TEXT,refund INTEGER);
  CREATE TABLE sales(id INTEGER PRIMARY KEY,created_at TEXT,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
  CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
  CREATE TABLE tour_pre_invoices(id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);`);
@@ -282,5 +284,31 @@ test('orchestration préétablie : réponse locale perdue, relecture et même id
   let lose=true;const io={read:()=>transaction(t=>readPreinvoiceAttempt(t,identity)),prepare:(a:typeof input)=>transaction(t=>preparePreinvoiceAttempt(t,identity,a,digest)),confirm:async(id:string)=>{const result=await transaction(t=>confirmPreinvoiceAttempt(t,identity,id,digest));if(lose){lose=false;throw Error('réponse locale perdue');}return result;},acknowledge:(id:string)=>transaction(t=>acknowledgePreinvoiceAttempt(t,identity,id)),cancel:(id:string)=>transaction(t=>cancelPreinvoiceAttempt(t,identity,id))};
   await assert.rejects(startPreinvoiceAttempt(io,input),/réponse locale perdue/);assert.equal((await io.read())?.result?.status,'created');
   await assert.rejects(abandonPreinvoiceAttempt(io,input),/non abandonnable/);const resumed=await resumePreinvoiceAttempt(io,input);assert.equal(resumed.result?.invoice.id,invoiceId);await finishPreinvoiceAttempt(io,input);assert.equal(await io.read(),null);assert.equal(db.prepare('SELECT count(*) n FROM journal_sync_outbox').get()?.n,1);
+ }finally{db.close();}
+});
+
+
+test('chronologie v6 : montant unique, jour tunisien du mouvement et preuve conservée',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,journalStates:[],journalProofs:[]});
+  const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);await confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest);
+  const pre=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest);await confirmNewDayPreinvoice(tx,identity,{clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId:'44444444-4444-4444-8444-444444444444',createdAt:'2026-01-01T10:00:00.000Z'},digest);
+  const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest);await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-01T23:30:00.000Z',amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);
+  const all=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.deepEqual(all.map(x=>x.type),['payment','invoice','sale']);assert.equal(all[0].type==='payment'&&all[0].amount,200000);
+  assert.deepEqual((await captureDayInvoiceTimeline(tx,identity,clientId,digest,day)).map(x=>x.type),['invoice','sale']);const next=await captureDayInvoiceTimeline(tx,identity,clientId,digest,'2026-01-02');assert.equal(next.length,1);assert.equal(next[0].type==='payment'&&next[0].invoiceDay,day);
+  db.prepare('DELETE FROM day_invoice_payment_outbox').run();await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/Preuve de paiement/);
+ }finally{db.close();}
+});
+
+test('chronologie v6 : modification classée à son heure de Tunisie, avec ancien et nouveau total',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,journalStates:[],journalProofs:[]});const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);
+  await confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest);
+  const row=db.prepare('SELECT id,payload FROM sales').get() as {id:number;payload:string},before={...JSON.parse(row.payload),id:row.id};
+  const after={...before,lines:[{...line,quantity:2}],total:500000,remaining:500000,syncVersion:2},changedAt='2026-01-01T23:30:00.000Z',{id:_id,...payload}=after;
+  db.prepare('UPDATE sales SET payload=? WHERE id=?').run(JSON.stringify(payload),row.id);db.prepare('INSERT INTO sale_revisions(sale_id,created_at,previous_payload,new_payload,refund) VALUES(?,?,?,?,0)').run(row.id,changedAt,JSON.stringify(before),JSON.stringify(after));
+  db.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(paymentId,saleId,2,JSON.stringify({operationId:paymentId,saleId,version:2,sale:payload,refund:0}));db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(paymentId,identity.commercialId,saleId,changedAt);
+  const all=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.deepEqual(all.map(x=>x.type),['revision','sale']);assert.equal(all[0].type==='revision'&&all[0].previousTotal,250000);assert.equal(all[0].type==='revision'&&all[0].currentTotal,500000);assert.equal(all[1].type==='sale'&&all[1].originalTotal,250000);
+  assert.deepEqual((await captureDayInvoiceTimeline(tx,identity,clientId,digest,'2026-01-02')).map(x=>x.type),['revision']);
  }finally{db.close();}
 });
