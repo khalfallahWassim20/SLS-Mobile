@@ -1,3 +1,4 @@
+import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
 /** Tentative de préétablie v6 : registre local et confirmation atomique.
  * Toute fonction exige une transaction SQLite exclusive. */
 import {canonicalJson} from '@sls/domain';
@@ -35,12 +36,12 @@ export async function readPreinvoiceAttempt(tx:Tx,identity:DeviceIdentity):Promi
 }
 export async function preparePreinvoiceAttempt(tx:Tx,identity:DeviceIdentity,input:NewDayPreinvoice,digest:(text:string)=>Promise<string>){
  validate(input);const existing=await readPreinvoiceAttempt(tx,identity);if(existing){if(canonicalJson(existing.attempt)!==canonicalJson(input))throw Error('Une autre préétablie attend confirmation ou vérification.');return existing;}
- assertDayInvoiceSyncIdle();const form=await captureNewDayPreinvoice(tx,identity,input.clientId,input.day,input.amount,digest);if(form.fingerprint!==input.fingerprint)throw Error('Facture ou solde modifié : vérifiez à nouveau.');
+ assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity);const form=await captureNewDayPreinvoice(tx,identity,input.clientId,input.day,input.amount,digest);if(form.fingerprint!==input.fingerprint)throw Error('Facture ou solde modifié : vérifiez à nouveau.');
  const value:StoredPreinvoiceAttempt={attempt:input,result:null};await tx.runAsync('INSERT INTO day_invoice_preinvoice_attempt(id,commercial_id,server_origin,payload) VALUES(1,?,?,?)',identity.commercialId,identity.serverOrigin,JSON.stringify(value));return value;
 }
 export async function confirmPreinvoiceAttempt(tx:Tx,identity:DeviceIdentity,operationId:string,digest:(text:string)=>Promise<string>){
  const stored=await readPreinvoiceAttempt(tx,identity);if(!stored||stored.attempt.operationId!==operationId)throw Error('Tentative de préétablie absente ou différente.');
- if(stored.result)return {...stored.result,status:'duplicate' as const};const result=await confirmNewDayPreinvoice(tx,identity,stored.attempt,digest);
+ if(stored.result)return {...stored.result,status:'duplicate' as const};assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity,{kind:'preinvoice',operationId});const result=await confirmNewDayPreinvoice(tx,identity,stored.attempt,digest);
  await tx.runAsync('UPDATE day_invoice_preinvoice_attempt SET payload=? WHERE id=1',JSON.stringify({...stored,result}));return result;
 }
 export async function acknowledgePreinvoiceAttempt(tx:Tx,identity:DeviceIdentity,operationId:string){const stored=await readPreinvoiceAttempt(tx,identity);if(!stored||!stored.result||stored.attempt.operationId!==operationId)throw Error('Préétablie non confirmée ou reçu incohérent.');await tx.runAsync('DELETE FROM day_invoice_preinvoice_attempt WHERE id=1');}

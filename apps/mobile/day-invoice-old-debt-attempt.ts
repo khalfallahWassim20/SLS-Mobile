@@ -1,3 +1,4 @@
+import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
 /** Reprise durable expérimentale du règlement d'ancienne dette, distinct du
  * paiement de la facture. Transaction SQLite exclusive obligatoire. */
 import {canonicalJson} from '@sls/domain';
@@ -31,13 +32,13 @@ export async function readOldDebtAttempt(tx:Tx,identity:DeviceIdentity):Promise<
 }
 export async function prepareOldDebtAttempt(tx:Tx,identity:DeviceIdentity,input:OldDebtAttempt,digest:(text:string)=>Promise<string>){
  validate(input);const existing=await readOldDebtAttempt(tx,identity);if(existing){if(canonicalJson(existing.attempt)!==canonicalJson(input))throw Error('Un autre règlement attend confirmation ou vérification.');return existing;}
- assertDayInvoiceSyncIdle();const s=input.event.event.settlement,form=await captureOldDebtForm(tx,identity,s.clientId,input.event.invoiceDay,digest);
+ assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity);const s=input.event.event.settlement,form=await captureOldDebtForm(tx,identity,s.clientId,input.event.invoiceDay,digest);
  if(form.fingerprint!==input.fingerprint||form.clientName!==s.clientName)throw Error('Solde ou facture modifié : vérifiez avant de confirmer.');if(s.amount>form.available)throw Error('Règlement supérieur à l’ancienne dette disponible.');
  const value:StoredOldDebtAttempt={attempt:input,result:null};await tx.runAsync('INSERT INTO day_invoice_old_debt_attempt(id,commercial_id,server_origin,payload) VALUES(1,?,?,?)',identity.commercialId,identity.serverOrigin,JSON.stringify(value));return value;
 }
 export async function confirmOldDebtAttempt(tx:Tx,identity:DeviceIdentity,operationId:string,digest:(text:string)=>Promise<string>){
  const stored=await readOldDebtAttempt(tx,identity);if(!stored||stored.attempt.event.event.operationId!==operationId)throw Error('Tentative de règlement absente ou différente.');
- if(stored.result)return 'duplicate' as const;const result=await confirmOldDebtForm(tx,identity,stored.attempt,digest);
+ if(stored.result)return 'duplicate' as const;assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity,{kind:'oldDebt',operationId});const result=await confirmOldDebtForm(tx,identity,stored.attempt,digest);
  await tx.runAsync('UPDATE day_invoice_old_debt_attempt SET payload=? WHERE id=1',JSON.stringify({...stored,result}));return result;
 }
 export async function acknowledgeOldDebtAttempt(tx:Tx,identity:DeviceIdentity,operationId:string){const stored=await readOldDebtAttempt(tx,identity);if(!stored||!stored.result||stored.attempt.event.event.operationId!==operationId)throw Error('Règlement non confirmé ou reçu incohérent.');await tx.runAsync('DELETE FROM day_invoice_old_debt_attempt WHERE id=1');}

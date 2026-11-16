@@ -1,3 +1,4 @@
+import {dayInvoiceSaleAttemptSchema,prepareDaySaleAttempt} from '../../../apps/mobile/day-invoice-sale-attempt.js';
 import {tourExpenseSchema} from '../../../apps/mobile/tour-expenses.js';
 import {captureDayInvoiceJournalExport} from '../../../apps/mobile/day-invoice-journal-export.js';
 import {journalHtml} from '../../../apps/mobile/journal-export.js';
@@ -129,5 +130,20 @@ test('export v6 : ancienne dette prouvée distincte de la facture du jour',async
   const data=await captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest);assert.equal(data.settlements?.length,1);assert.equal(data.dayInvoicePayments?.length,0);
   assert.match(journalHtml(data),/60,000/);assert.match(journalHtml(data),/ancienne dette/i);
   db.prepare('UPDATE settlements SET payload=?').run(JSON.stringify({...debt(id,60000).event.settlement,amount:61000}));await assert.rejects(captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest),/incohérent/);
+ }finally{db.close();}
+});
+
+
+test('ancienne dette et vente : pas de seconde intention avant confirmation et reçu',async()=>{
+ const {db,tx}=setup();try{
+  db.exec(dayInvoiceSaleAttemptSchema);await saveDayInvoiceReference(tx,identity,identity,reference);
+  const form=await captureOldDebtForm(tx,identity,clientId,day,digest),input={fingerprint:form.fingerprint,event:debt(id,60000)};
+  const draft={clientId,day,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:1,discount:0,vat:0}],fingerprint:'aperçu',saleId:'dddddddd-dddd-4ddd-8ddd-dddddddddddd',operationId:id2,createdAt:at};
+  await prepareOldDebtAttempt(tx,identity,input,digest);
+  await assert.rejects(prepareDaySaleAttempt(tx,identity,draft,digest),/autre opération/);
+  db.exec('BEGIN');await confirmOldDebtAttempt(tx,identity,id,digest);db.exec('COMMIT');
+  await assert.rejects(prepareDaySaleAttempt(tx,identity,draft,digest),/autre opération/);
+  await acknowledgeOldDebtAttempt(tx,identity,id);
+  await assert.rejects(prepareDaySaleAttempt(tx,identity,draft,digest),/Règlement de dette en attente/);
  }finally{db.close();}
 });

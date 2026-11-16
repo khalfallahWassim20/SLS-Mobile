@@ -4,7 +4,7 @@ import {canonicalJson,calculateInvoice} from '@sls/domain';
 import {assessDayInvoiceSaleRevision} from '../../packages/domain/src/day-invoice';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {assertDayInvoiceSyncIdle} from './day-invoice-sync-lock';
-import {assertDayInvoiceAttemptsSettled} from './day-invoice-attempt-guard';
+import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
 import {captureDayInvoiceSaleEdit,confirmDayInvoiceSaleEdit} from './day-invoice-sale-edit';
 import {tunisDay} from './journal';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
@@ -47,7 +47,7 @@ export async function readSaleEditAttempt(tx:Tx,identity:DeviceIdentity):Promise
 export async function prepareSaleEditAttempt(tx:Tx,identity:DeviceIdentity,input:SaleEditAttempt,digest:(text:string)=>Promise<string>){
  validAttempt(input);const existing=await readSaleEditAttempt(tx,identity);
  if(existing){if(canonicalJson(existing.attempt)!==canonicalJson(input))throw Error('Une autre modification attend vérification.');return existing;}
- assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptsSettled(tx,identity);const preview=await captureDayInvoiceSaleEdit(tx,identity,input.saleId,input.lines,digest);
+ assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity);const preview=await captureDayInvoiceSaleEdit(tx,identity,input.saleId,input.lines,digest);
  if(preview.previous.clientId!==input.clientId||preview.day!==input.day||preview.fingerprint!==input.fingerprint)throw Error('Facture ou solde modifié : vérifiez avant de confirmer.');
  if(preview.assessment.requiresChoice)throw Error('Total inférieur au montant payé : remboursement ou crédit requis.');
  const stored:StoredSaleEditAttempt={attempt:input,result:null};await tx.runAsync('INSERT INTO day_invoice_sale_edit_attempt(id,commercial_id,server_origin,payload) VALUES(1,?,?,?)',identity.commercialId,identity.serverOrigin,JSON.stringify(stored));return stored;
@@ -55,7 +55,7 @@ export async function prepareSaleEditAttempt(tx:Tx,identity:DeviceIdentity,input
 export async function confirmSaleEditAttempt(tx:Tx,identity:DeviceIdentity,operationId:string,digest:(text:string)=>Promise<string>){
  const stored=await readSaleEditAttempt(tx,identity);if(!stored||stored.attempt.operationId!==operationId)throw Error('Tentative de modification absente ou différente.');
  if(stored.result)return stored.result;
- assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptsSettled(tx,identity,undefined,undefined,operationId);const a=stored.attempt;const result=await confirmDayInvoiceSaleEdit(tx,identity,a,digest);
+ assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity,{kind:'saleEdit',operationId});const a=stored.attempt;const result=await confirmDayInvoiceSaleEdit(tx,identity,a,digest);
  await tx.runAsync('UPDATE day_invoice_sale_edit_attempt SET payload=? WHERE id=1',JSON.stringify({...stored,result}));return result;
 }
 export async function acknowledgeSaleEditAttempt(tx:Tx,identity:DeviceIdentity,operationId:string){

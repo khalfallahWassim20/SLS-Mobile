@@ -1,3 +1,4 @@
+import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
 /** Reprise locale expérimentale d'une vente v6. Toutes les fonctions doivent
  * être appelées dans une transaction SQLite exclusive liée au téléphone.
  * Une seule tentative est ouverte à la fois ; aucune donnée n'est supprimée
@@ -44,7 +45,7 @@ export async function readDaySaleAttempt(tx:Tx,identity:DeviceIdentity):Promise<
 export async function prepareDaySaleAttempt(tx:Tx,identity:DeviceIdentity,input:NewSaleAttempt,digest:(text:string)=>Promise<string>){
  validAttempt(input);const existing=await readDaySaleAttempt(tx,identity);
  if(existing){if(canonicalJson(existing.attempt)!==canonicalJson(input))throw Error('Une autre vente attend confirmation ou vérification.');return existing;}
- assertDayInvoiceSyncIdle();
+ assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity);
  const draft=await captureNewDayInvoiceSale(tx,identity,input.clientId,input.day,input.lines,digest);
  if(input.fingerprint!==draft.fingerprint)throw Error('Facture ou solde modifié : vérifiez avant de confirmer.');
  const value:Stored={attempt:input,result:null};await tx.runAsync('INSERT INTO day_invoice_sale_attempt(id,commercial_id,server_origin,payload) VALUES(1,?,?,?)',identity.commercialId,identity.serverOrigin,JSON.stringify(value));return value;
@@ -53,6 +54,7 @@ export async function prepareDaySaleAttempt(tx:Tx,identity:DeviceIdentity,input:
 export async function confirmDaySaleAttempt(tx:Tx,identity:DeviceIdentity,operationId:string,digest:(text:string)=>Promise<string>){
  const stored=await readDaySaleAttempt(tx,identity);if(!stored||stored.attempt.operationId!==operationId)throw Error('Tentative de vente absente ou différente.');
  if(stored.result)return {...stored.result,status:'duplicate' as const};
+ assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity,{kind:'sale',operationId});
  const result=await confirmNewDayInvoiceSale(tx,identity,stored.attempt,digest);
  await tx.runAsync('UPDATE day_invoice_sale_attempt SET payload=? WHERE id=1',JSON.stringify({...stored,result}));return result;
 }

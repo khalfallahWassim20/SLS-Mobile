@@ -28,3 +28,18 @@ export async function assertDayInvoiceAttemptsSettled(tx:Tx,identity:DeviceIdent
  if(sale&&!sale.result&&(!day||sale.attempt.day===day))throw Error('Vente en attente de confirmation : reprenez ou abandonnez la tentative.');
  if(payment&&!payment.result&&(!day||payment.attempt.day===day||tunisDay(new Date(payment.attempt.recordedAt))===day))throw Error('Règlement en attente de confirmation : reprenez ou abandonnez la tentative.');
 }
+
+/** Une seule intention ou reçu non acquitté à la fois, quelle que soit la
+ * journée. À appeler sous transaction exclusive avant préparation et avant
+ * confirmation. Les reçus restent autorisés pour la synchronisation mais pas
+ * pour une nouvelle saisie qui pourrait invalider leur preuve. */
+export async function assertDayInvoiceAttemptExclusive(tx:Tx,identity:DeviceIdentity,ignore?:{kind:'preinvoice'|'sale'|'saleEdit'|'payment'|'oldDebt';operationId:string}){
+ const tables=await tx.getFirstAsync<{sale:number;payment:number;debt:number;preinvoice:number;edit:number}>(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_attempt') AS sale, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payment_attempt') AS payment, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_old_debt_attempt') AS debt, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_preinvoice_attempt') AS preinvoice, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_edit_attempt') AS edit`);
+ if(!tables||![tables.sale,tables.payment,tables.debt,tables.preinvoice,tables.edit].every(n=>n===0||n===1))throw Error('État des tentatives indisponible.');
+ const check=(kind:NonNullable<typeof ignore>['kind'],id:string)=>{if(!ignore||ignore.kind!==kind||ignore.operationId!==id)throw Error('Une autre opération attend confirmation ou vérification : reprenez-la avant de continuer.');};
+ if(tables.preinvoice){const x=await readPreinvoiceAttempt(tx,identity);if(x)check('preinvoice',x.attempt.operationId);}
+ if(tables.sale){const x=await readDaySaleAttempt(tx,identity);if(x)check('sale',x.attempt.operationId);}
+ if(tables.edit){const x=await readSaleEditAttempt(tx,identity);if(x)check('saleEdit',x.attempt.operationId);}
+ if(tables.payment){const x=await readDayPaymentAttempt(tx,identity);if(x)check('payment',x.attempt.operationId);}
+ if(tables.debt){const x=await readOldDebtAttempt(tx,identity);if(x)check('oldDebt',x.attempt.event.event.operationId);}
+}

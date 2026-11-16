@@ -146,6 +146,8 @@ test('tentatives v6 : synchronisation et clôture ne précèdent pas une décisi
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Vente en attente/);assert.equal(sends,0);
   db.exec('BEGIN');await confirmDaySaleAttempt(tx,identity,operationId,digest);db.exec('COMMIT');await assertDayInvoiceAttemptsSettled(tx,identity);
   const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest),payment={clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-02T10:00:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+  await assert.rejects(prepareDayPaymentAttempt(tx,identity,payment,digest),/autre opération/);
+  await acknowledgeDaySaleAttempt(tx,identity,operationId);
   db.prepare("INSERT INTO tour_known_server_states(commercial_id,journal_date,status,version) VALUES(?,?,'closed',1)").run(identity.commercialId,'2026-01-02');
   await assert.rejects(prepareDayPaymentAttempt(tx,identity,payment,digest),/clôturée/);db.prepare('DELETE FROM tour_known_server_states').run();
   await prepareDayPaymentAttempt(tx,identity,payment,digest);
@@ -361,5 +363,51 @@ test('journal v6 : refuse de classer un règlement global historique comme ancie
   db.prepare('INSERT INTO settlements(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(settlement));
   await assert.rejects(captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest),/Règlement historique non attribué/);
   assert.equal(db.prepare('SELECT count(*) n FROM settlements').get()?.n,1);
+ }finally{db.close();}
+});
+
+test('exclusivité des tentatives : une autre intention ou un reçu non acquitté bloque toute nouvelle saisie',async()=>{
+ const {db,tx}=setup();try{await saveDayInvoiceReference(tx,identity,identity,reference);
+  const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);
+  const saleInput={clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at};
+  const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest);
+  const payment={clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:at,amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+  await prepareDaySaleAttempt(tx,identity,saleInput,digest);
+  await assert.rejects(prepareDayPaymentAttempt(tx,identity,payment,digest),/autre opération/);
+  // Simule une ancienne version ayant laissé deux registres ouverts, y compris
+  // une collision d'identifiant : aucun des deux ne peut passer devant l'autre.
+  db.prepare('INSERT INTO day_invoice_payment_attempt VALUES(1,?,?,?)').run(identity.commercialId,identity.serverOrigin,JSON.stringify({attempt:{...payment,operationId},result:null}));
+  await assert.rejects(confirmDaySaleAttempt(tx,identity,operationId,digest),/autre opération/);
+  assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,0);
+  db.prepare('DELETE FROM day_invoice_payment_attempt').run();
+  db.exec('BEGIN');await confirmDaySaleAttempt(tx,identity,operationId,digest);db.exec('COMMIT');
+  const after=await captureDayInvoiceForm(tx,identity,clientId,day,digest);
+  const next={...payment,fingerprint:after.fingerprint};
+  await assert.rejects(prepareDayPaymentAttempt(tx,identity,next,digest),/autre opération/);
+  await acknowledgeDaySaleAttempt(tx,identity,operationId);
+  await prepareDayPaymentAttempt(tx,identity,next,digest);
+  db.exec('BEGIN');await confirmDayPaymentAttempt(tx,identity,paymentId,digest);db.exec('COMMIT');
+  await acknowledgeDayPaymentAttempt(tx,identity,paymentId);
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,650000);
+ }finally{db.close();}
+});
+
+test('préétablie et vente ne peuvent pas laisser deux tentatives ou reçus ouverts',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,journalStates:[],journalProofs:[]});
+  const pre=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest);
+  const input={clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId,createdAt:at};
+  const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);
+  const saleInput={clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId:paymentId,createdAt:at};
+  await preparePreinvoiceAttempt(tx,identity,input,digest);
+  await assert.rejects(prepareDaySaleAttempt(tx,identity,saleInput,digest),/autre opération/);
+  db.exec('BEGIN');await confirmPreinvoiceAttempt(tx,identity,operationId,digest);db.exec('COMMIT');
+  await assert.rejects(prepareDaySaleAttempt(tx,identity,saleInput,digest),/autre opération/);
+  await acknowledgePreinvoiceAttempt(tx,identity,operationId);
+  const refreshed=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);
+  await prepareDaySaleAttempt(tx,identity,{...saleInput,fingerprint:refreshed.fingerprint},digest);
+  db.exec('BEGIN');await confirmDaySaleAttempt(tx,identity,paymentId,digest);db.exec('COMMIT');
+  await acknowledgeDaySaleAttempt(tx,identity,paymentId);
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.total,850000);
  }finally{db.close();}
 });

@@ -37,6 +37,7 @@ test('création vente v6 : SQLite, HTTP, réponse perdue, paiement unique et cl�
   const draft=await transaction(t=>captureNewDayInvoiceSale(t,identity,clientId,day,sale.lines,digest));assert.equal(draft.invoiceTotal,850000);
   await transaction(t=>prepareDaySaleAttempt(t,identity,{clientId,day,lines:sale.lines,fingerprint:draft.fingerprint,saleId,operationId:saleOperation,createdAt:at},digest));
   assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'saved');
+  assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'duplicate');await transaction(t=>acknowledgeDaySaleAttempt(t,identity,saleOperation));
   const offline=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(offline.view.total,850000);
   const secondPayment=randomUUID(),secondInput={clientId,day,fingerprint:offline.fingerprint,operationId:secondPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};await transaction(t=>prepareDayPaymentAttempt(t,identity,secondInput,digest));await transaction(t=>confirmDayPaymentAttempt(t,identity,secondPayment,digest));
   assert.equal((await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest))).view.remaining,650000);
@@ -47,8 +48,6 @@ test('création vente v6 : SQLite, HTTP, réponse perdue, paiement unique et cl�
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse de paiement perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,1);
   assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:0,payments:1,remainingSources:0,remainingPayments:0});assert.equal(requests,2);assert.equal(paymentRequests,2);
-  assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'duplicate');
-  await transaction(t=>acknowledgeDaySaleAttempt(t,identity,saleOperation));
   assert.equal((await transaction(t=>confirmDayPaymentAttempt(t,identity,secondPayment,digest))).status,'duplicate');await transaction(t=>acknowledgeDayPaymentAttempt(t,identity,secondPayment));
   assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,850000);assert.equal(form.view.remaining,650000);
@@ -92,10 +91,12 @@ test('préétablie et vente créées hors ligne : synchronisation, paiement uniq
   const draft=await transaction(t=>captureNewDayInvoiceSale(t,identity,clientId,day,sale.lines,digest));assert.equal(draft.invoiceTotal,250000);
   await transaction(t=>prepareDaySaleAttempt(t,identity,{clientId,day,lines:sale.lines,fingerprint:draft.fingerprint,saleId,operationId:saleOperation,createdAt:at},digest));
   assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'saved');
+  assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'duplicate');await transaction(t=>acknowledgeDaySaleAttempt(t,identity,saleOperation));
   const pre=await transaction(t=>captureNewDayPreinvoice(t,identity,clientId,day,600000,digest));assert.equal(pre.invoiceTotal,850000);
   const preInput={clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId:invoiceOperation,createdAt:at};
   await transaction(t=>preparePreinvoiceAttempt(t,identity,preInput,digest));
   assert.equal((await transaction(t=>confirmPreinvoiceAttempt(t,identity,invoiceOperation,digest))).status,'created');
+  assert.equal((await transaction(t=>confirmPreinvoiceAttempt(t,identity,invoiceOperation,digest))).status,'duplicate');await transaction(t=>acknowledgePreinvoiceAttempt(t,identity,invoiceOperation));
   const offline=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(offline.view.total,850000);
   const secondPayment=randomUUID(),secondInput={clientId,day,fingerprint:offline.fingerprint,operationId:secondPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};await transaction(t=>prepareDayPaymentAttempt(t,identity,secondInput,digest));await transaction(t=>confirmDayPaymentAttempt(t,identity,secondPayment,digest));
   assert.equal((await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest))).view.remaining,650000);
@@ -106,12 +107,9 @@ test('préétablie et vente créées hors ligne : synchronisation, paiement uniq
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse de paiement perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,1);
   assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:0,payments:1,remainingSources:0,remainingPayments:0});assert.equal(requests,3);assert.equal(paymentRequests,2);
-  assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'duplicate');
-  await transaction(t=>acknowledgeDaySaleAttempt(t,identity,saleOperation));
   assert.equal((await transaction(t=>confirmDayPaymentAttempt(t,identity,secondPayment,digest))).status,'duplicate');await transaction(t=>acknowledgeDayPaymentAttempt(t,identity,secondPayment));
   assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   assert.equal((await transaction(t=>confirmNewDayPreinvoice(t,identity,preInput,digest))).status,'duplicate');
-  assert.equal((await transaction(t=>confirmPreinvoiceAttempt(t,identity,invoiceOperation,digest))).status,'duplicate');await transaction(t=>acknowledgePreinvoiceAttempt(t,identity,invoiceOperation));
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,850000);assert.equal(form.view.remaining,650000);
   const clients=await transaction(t=>readDayInvoiceClients(t,identity,digest));assert.equal(clients.clients.find(c=>c.id===clientId)?.balance,650000);
   assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE client_id=$1',[clientId])).rows[0].n,1);

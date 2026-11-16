@@ -1,3 +1,4 @@
+import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
 /** Reprise durable expérimentale d'un règlement unifié. Toutes les fonctions
  * exigent une transaction SQLite exclusive ; le reçu et le paiement sont
  * écrits ensemble et ne sont pas effacés automatiquement. */
@@ -41,7 +42,7 @@ export async function readDayPaymentAttempt(tx:Tx,identity:DeviceIdentity):Promi
 export async function prepareDayPaymentAttempt(tx:Tx,identity:DeviceIdentity,input:PaymentAttempt,digest:(text:string)=>Promise<string>){
  validateAttempt(input);const existing=await readDayPaymentAttempt(tx,identity);
  if(existing){if(canonicalJson(existing.attempt)!==canonicalJson(input))throw Error('Un autre règlement attend confirmation ou vérification.');return existing;}
- assertDayInvoiceSyncIdle();await assertDeviceWritable(tx,identity,[input.day,tunisDay(new Date(input.recordedAt))]);
+ assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity);await assertDeviceWritable(tx,identity,[input.day,tunisDay(new Date(input.recordedAt))]);
  const form=await captureDayInvoiceForm(tx,identity,input.clientId,input.day,digest);if(input.fingerprint!==form.fingerprint)throw Error('Facture modifiée : vérifiez avant de confirmer.');
  const pre=form.source.preInvoice;
  const payment:DayInvoicePayment={operationId:input.operationId,clientId:input.clientId,day:input.day,recordedAt:input.recordedAt,amount:input.amount,mode:input.mode,chequeNumber:input.chequeNumber,chequeBank:input.chequeBank,chequeDue:input.chequeDue,preInvoice:pre?{id:pre.id,version:pre.version,total:pre.total,declare:!pre.declared}:null,sales:form.source.sales.map(s=>({id:s.id,version:s.version}))};
@@ -51,6 +52,7 @@ export async function prepareDayPaymentAttempt(tx:Tx,identity:DeviceIdentity,inp
 export async function confirmDayPaymentAttempt(tx:Tx,identity:DeviceIdentity,operationId:string,digest:(text:string)=>Promise<string>){
  const stored=await readDayPaymentAttempt(tx,identity);if(!stored||stored.attempt.operationId!==operationId)throw Error('Tentative de règlement absente ou différente.');
  if(stored.result)return {...stored.result,status:'duplicate' as const};
+ assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptExclusive(tx,identity,{kind:'payment',operationId});
  const result=await confirmDayInvoiceForm(tx,identity,stored.attempt,digest);
  await tx.runAsync('UPDATE day_invoice_payment_attempt SET payload=? WHERE id=1',JSON.stringify({...stored,result}));return result;
 }
