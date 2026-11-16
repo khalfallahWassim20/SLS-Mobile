@@ -113,30 +113,32 @@ async function readDayInvoiceCompensationProjectionInTransaction(db:PoolClient,o
 }
 /** Contrôle exhaustif des compensations indépendantes : un client ne peut
  * apparaître qu'une fois tant que le rejeu de plusieurs révisions n'existe pas. */
-export async function readIndependentCompensationProjectionsInTransaction(db:PoolClient){
+async function readVerifiedCompensationsAndReference(db:PoolClient){
  const rows=await db.query('SELECT operation_id,client_id FROM identified_day_invoice_compensations ORDER BY operation_id LIMIT 1001');
  if(rows.rows.length>1000)throw Error('Trop de compensations pour un rapprochement complet.');
  const clients=new Set<string>(),result:Awaited<ReturnType<typeof readDayInvoiceCompensationProjectionInTransaction>>[]=[];
  for(const row of rows.rows){if(clients.has(row.client_id))throw Error('Compensations ambiguës pour ce client : historique complet requis.');clients.add(row.client_id);}
  // Même instantané de base pour tous les clients ; ne pas recharger les
  // articles et toute la référence une fois par compensation.
- if(!rows.rows.length)return result;
+ if(!rows.rows.length)return {projections:result,reference:null};
  const reference=await readUnprojectedDayInvoiceReference(db,true);
  for(const row of rows.rows){
   const projection=await readDayInvoiceCompensationProjectionInTransaction(db,row.operation_id,reference);
   if(projection.clientId!==row.client_id)throw Error('Client de compensation incohérent.');
   result.push(projection);
  }
- return result;
+ return {projections:result,reference};
+}
+export async function readIndependentCompensationProjectionsInTransaction(db:PoolClient){
+ return (await readVerifiedCompensationsAndReference(db)).projections;
 }
 /** Photographie consolidée expérimentale après compensations indépendantes. Aucun
  * ancien lecteur ne doit consommer `reference` séparément : le paiement brut
  * dépasse désormais le total et la compensation est indispensable au calcul.
  * Ne l'exposer ni aux routes normales ni à la clôture avant migration complète. */
 export async function readCompensatedDayInvoiceSnapshotInTransaction(db:PoolClient,operationId:string){
-  const projections=await readIndependentCompensationProjectionsInTransaction(db),compensation=projections.find(p=>p.operationId===operationId);
-  if(!compensation)throw Error('Compensation introuvable.');
-  const reference=await readUnprojectedDayInvoiceReference(db,true);
+  const {projections,reference}=await readVerifiedCompensationsAndReference(db),compensation=projections.find(p=>p.operationId===operationId);
+  if(!compensation||!reference)throw Error('Compensation introuvable.');
   const client=reference.clients.find(c=>c.id===compensation.clientId);
   if(!client)throw Error('Client de compensation indisponible.');
   const balance=BigInt(client.serverBalance)+BigInt(compensation.refund);
@@ -150,13 +152,15 @@ export async function readCompensatedDayInvoiceSnapshotInTransaction(db:PoolClie
   const salesTotal=sales.reduce((n,s)=>n+BigInt(s.total),0n),preInvoiceTotal=BigInt(invoice?.total??0);
   const paid=BigInt(summary?.prePaid??0)+sales.reduce((n,s)=>n+BigInt(s.paid),0n)+payments.reduce((n,p)=>n+BigInt(p.amount),0n);
   if(preInvoiceTotal+salesTotal!==BigInt(compensation.total)||paid!==BigInt(compensation.paidBeforeCompensation)||paid-BigInt(compensation.compensation)!==BigInt(compensation.applied))throw Error('Facture ou paiements de compensation incohérents.');
+  const byClient=new Map(projections.map(p=>[p.clientId,p])),seen=new Set<string>();
   const clients=reference.clients.map(c=>{
-   const p=projections.find(item=>item.clientId===c.id);if(!p)return c;
+   const p=byClient.get(c.id);if(!p)return c;
+   seen.add(c.id);
    const corrected=BigInt(c.serverBalance)+BigInt(p.refund);
    if(corrected!==BigInt(p.balance))throw Error('Solde de compensation incohérent.');
    return {...c,serverBalance:String(corrected)};
   });
-  if(projections.some(p=>!clients.some(c=>c.id===p.clientId)))throw Error('Client de compensation indisponible.');
+  if(seen.size!==byClient.size)throw Error('Client de compensation indisponible.');
   return {reference:{...reference,clients},compensation,invoice:{clientId:compensation.clientId,day:compensation.invoiceDay,preInvoiceTotal:safe(preInvoiceTotal),salesTotal:safe(salesTotal),total:compensation.total,paid:safe(paid),applied:compensation.applied,remaining:compensation.remaining,payments}};
 }
 export async function readCompensatedDayInvoiceSnapshot(pool:Pool,operationId:string){

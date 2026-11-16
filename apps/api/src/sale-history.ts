@@ -3,6 +3,8 @@ import {Router} from 'express';
 import type {Pool} from 'pg';
 import {z} from 'zod';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
+import {compensationRegistryExists,assertNoUnprojectedCompensation} from './day-invoice-compensation.js';
+import {readIndependentCompensationProjectionsInTransaction} from './day-invoice-reference.js';
 
 export function saleHistoryRoutes(pool:Pool) {
  const r=Router();
@@ -15,6 +17,18 @@ export function saleHistoryRoutes(pool:Pool) {
    const mode=(await db.query('SELECT mode FROM tour_sync_mode WHERE id=1')).rows[0]?.mode;
    if(mode!=='legacy'&&mode!=='identified')throw Error('Mode de synchronisation indisponible.');
    if(mode==='identified')await assertOldCreditProtocolSafe(db);
+   else await assertNoUnprojectedCompensation(db);
+   // Une révision compensée porte refund=0 dans l'ancien événement : afficher
+   // seulement ce champ masquerait le choix réel. Vérifier toutes les preuves
+   // avant d'enrichir l'historique, sans jamais l'assimiler à un versement.
+   let compensationByOperation=new Map<string,{choice:'refund'|'credit';amount:number}>();
+   if(mode==='identified'&&await compensationRegistryExists(db)){
+    const affected=await db.query('SELECT 1 FROM identified_day_invoice_compensations c JOIN identified_sale_events s ON s.operation_id=c.operation_id WHERE s.sale_id=$1 LIMIT 1',[id.data]);
+    if(affected.rows.length){
+     const proofs=await readIndependentCompensationProjectionsInTransaction(db);
+     compensationByOperation=new Map(proofs.map(p=>[p.operationId,{choice:p.choice,amount:p.compensation}]));
+    }
+   }
    const events=await db.query(`SELECT * FROM (
     SELECT e.operation_id AS "operationId",e.version,e.payload,e.received_at AS "receivedAt",NULL::uuid AS "commercialId",NULL::text AS "commercialName",'ancien' AS source
     FROM demo_sale_events e WHERE e.sale_id=$1
@@ -23,7 +37,7 @@ export function saleHistoryRoutes(pool:Pool) {
    ) history ORDER BY version DESC,"receivedAt" DESC,"operationId" DESC LIMIT 201`,[id.data]);
    await db.query('COMMIT');
    if(!events.rows.length){res.status(404).json({error:'Vente introuvable parmi les données reçues.'});return;}
-   res.set('Cache-Control','no-store').json({saleId:id.data,truncated:events.rows.length>200,versions:events.rows.slice(0,200).map(e=>({operationId:e.operationId,version:e.version,sale:e.payload.sale,refund:e.payload.refund,recordedAt:e.source==='identifié'?e.payload.recordedAt:null,receivedAt:e.receivedAt,commercialId:e.commercialId,commercialName:e.commercialName,source:e.source}))});
+   res.set('Cache-Control','no-store').json({saleId:id.data,truncated:events.rows.length>200,versions:events.rows.slice(0,200).map(e=>({operationId:e.operationId,version:e.version,sale:e.payload.sale,refund:e.payload.refund,recordedAt:e.source==='identifié'?e.payload.recordedAt:null,receivedAt:e.receivedAt,commercialId:e.commercialId,commercialName:e.commercialName,source:e.source,...(compensationByOperation.has(e.operationId)?{dayInvoiceCompensation:compensationByOperation.get(e.operationId)}:{})}))});
   } catch(error){await db.query('ROLLBACK');next(error);}finally{db.release();}
  });
  return r;

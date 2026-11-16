@@ -2,6 +2,7 @@
 import express from 'express';
 import {createServer,type Server} from 'node:http';
 import {identifiedCommercialRoutes} from '../src/identified-tour-routes.js';
+import {saleHistoryRoutes} from '../src/sale-history.js';
 import {uploadCompensatedSale} from '../../mobile/day-invoice-compensation-upload.js';
 import {readCompensationReceipt} from '../src/day-invoice-compensation-receipt.js';
 import {test} from 'node:test';
@@ -66,8 +67,10 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession));
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);
   await pool.query('ALTER TABLE identified_day_invoice_compensations DROP CONSTRAINT reject_test');
-  const app=express();app.use(express.json());app.use('/normal',identifiedCommercialRoutes(pool,secret));app.use('/test',identifiedCommercialRoutes(pool,secret,{dayInvoiceTestOnly:true}));
+  const app=express();app.use(express.json());app.use('/normal',identifiedCommercialRoutes(pool,secret));app.use('/test',identifiedCommercialRoutes(pool,secret,{dayInvoiceTestOnly:true}));app.use('/admin-sales',saleHistoryRoutes(pool));
   server=createServer(app);await new Promise<void>((resolve,reject)=>server!.listen(0,'127.0.0.1',()=>resolve()).once('error',reject));const address=server.address();assert.ok(address&&typeof address!=='string');const base=`http://127.0.0.1:${address.port}`;
+  const historyUrl=`${base}/admin-sales/${saleId}/history`,historyBefore=await fetch(historyUrl);assert.equal(historyBefore.status,200);
+  const beforeBody=await historyBefore.json() as {versions:Record<string,unknown>[]};assert.equal(beforeBody.versions.length,1);assert.ok(!('dayInvoiceCompensation' in beforeBody.versions[0]));
   const send=(path:string,body:unknown,token=editSession.token)=>fetch(`${base}/${path}/day-invoice-compensated-sale`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
   assert.equal((await send('normal',{event:edit,compensation})).status,404);
   assert.equal((await send('test',{event:edit,compensation},'invalid')).status,401);
@@ -78,6 +81,10 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   assert.deepEqual(responses.map(r=>r.status).sort(),[200,201]);
   const received=await Promise.all(responses.map(r=>r.json())) as {status:string;operationId:string}[];
   assert.deepEqual(received.map(r=>r.status).sort(),['duplicate','received']);assert.ok(received.every(r=>r.operationId===edit.operationId));
+  const historyAfter=await fetch(historyUrl);assert.equal(historyAfter.status,200);assert.match(historyAfter.headers.get('cache-control')??'',/no-store/);
+  const afterBody=await historyAfter.json() as {versions:{operationId:string;refund:number;dayInvoiceCompensation?:unknown}[]};
+  const changed=afterBody.versions.find(v=>v.operationId===edit.operationId);assert.ok(changed);assert.equal(changed.refund,0);assert.deepEqual(changed.dayInvoiceCompensation,{choice,amount:50000});
+  assert.ok(!('dayInvoiceCompensation' in afterBody.versions.find(v=>v.operationId===creationId)!));
   const mismatch=await send('test',{event:edit,compensation:{...compensation,choice:choice==='refund'?'credit':'refund'}});assert.equal(mismatch.status,409);
   const receiptUrl=`${base}/test/day-invoice-compensated-sale/${edit.operationId}/receipt`;
   assert.equal((await fetch(receiptUrl)).status,401);
@@ -129,7 +136,9 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   await assert.rejects(readCompensatedDayInvoiceSnapshot(pool,edit.operationId),/Preuve de compensation incohérente/);
   await assert.rejects(readCompensatedJournalDay(pool,actorId,eventDay,edit.operationId),/Preuve de compensation incohérente/);
   await assert.rejects(readCompensationReceipt(pool,edit.operationId,editSession),/Preuve de compensation incohérente/);
+  assert.equal((await fetch(historyUrl)).status,500,'historique refuse une preuve altérée');
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',[originalHash,edit.operationId]);
+  assert.equal((await fetch(historyUrl)).status,200);
   const previousHash=(await pool.query('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[creationId])).rows[0].payload_hash;
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),creationId]);
   await assert.rejects(readDayInvoiceCompensationProjection(pool,edit.operationId),/Version précédente incohérente/);
