@@ -1,4 +1,4 @@
-import {test} from 'node:test';
+import {test} from 'node:test';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {createHash} from 'node:crypto';
@@ -8,6 +8,8 @@ import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-r
 import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../../apps/mobile/day-invoice-reference-cache.js';
 import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';
+import {dayInvoiceOldDebtAttemptSchema,readOldDebtAttempt,prepareOldDebtAttempt,confirmOldDebtAttempt,acknowledgeOldDebtAttempt,cancelOldDebtAttempt} from '../../../apps/mobile/day-invoice-old-debt-attempt.js';
+import {assertDayInvoiceAttemptsSettled} from '../../../apps/mobile/day-invoice-attempt-guard.js';
 import {captureOldDebtForm,confirmOldDebtForm} from '../../../apps/mobile/day-invoice-old-debt-form.js';
 import {prepareOldDebtInput} from '../../../apps/mobile/day-invoice-old-debt-input.js';
 import {captureDayInvoiceForm} from '../../../apps/mobile/day-invoice-form.js';
@@ -16,12 +18,13 @@ import {uploadOldDebts} from '../../../apps/mobile/day-invoice-old-debt-upload.j
 const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',saleId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',invoiceId='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const identity={commercialId:clientId,serverOrigin:'https://example.test'},day='2026-01-01',at='2026-01-01T09:00:00.000Z';
 const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');
-function setup(){const db=new DatabaseSync(':memory:');db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}
+function wrap(db:DatabaseSync){return {getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};}
+function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${dayInvoiceOldDebtAttemptSchema}
  CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,created_at TEXT,client_id TEXT,payload TEXT);
  CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,payload TEXT);
  CREATE TABLE tour_pre_invoices(id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT,version INTEGER,payload TEXT);`);
  db.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(identity.commercialId,identity.serverOrigin);
- const tx={getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};return {db,tx};}
+ const tx=wrap(db);return {db,tx};}
 const reference={version:6,clients:[{id:clientId,name:'Client',sector:'Nord',openingBalance:'100000',creditLimit:'0',serverBalance:'350000'}],articles:[],saleStates:[{saleId,clientId,version:1,total:'250000',paid:'0'}],saleDays:[{saleId,clientId,day}],settlementStates:[],settlementDays:[],settlementProofs:[],journalStates:[{id:invoiceId,clientId,journalDate:day,total:600000,receipts:[],declaredByDayPayment:false}],journalProofs:[{id:invoiceId,version:1,hash:'a'.repeat(64)}],dayPayments:[]};
 function debt(id:string,amount:number):OldDebtEvent{return {invoiceDay:day,event:{operationId:id,settlement:{syncOperationId:id,createdAt:at,clientId,clientName:'Client',amount,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}}};}
 const id='11111111-1111-4111-8111-111111111111',id2='22222222-2222-4222-8222-222222222222';
@@ -55,4 +58,26 @@ test('dette explicite : contenu altéré ou identité étrangère bloquent la fi
   db.prepare('UPDATE settlements SET payload=?').run(JSON.stringify({...debt(id,60000).event.settlement,amount:50000}));await assert.rejects(readOldDebtOutbox(tx,identity),/Historique/);
   assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_old_debt_outbox').get()?.n,1);
  }finally{db.close();}
+});
+
+test('ancienne dette durable : redémarrage, atomicité, file acquittée et garde de clôture',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'sls-old-debt-')),path=join(dir,'phone.db');let {db,tx}=setup(path);
+ try{await saveDayInvoiceReference(tx,identity,identity,reference);
+  const form=await captureOldDebtForm(tx,identity,clientId,day,digest),input={fingerprint:form.fingerprint,event:debt(id,60000)};
+  await assert.rejects(prepareOldDebtAttempt(tx,identity,{...input,event:debt(id,100001)},digest),/supérieur/);
+  await prepareOldDebtAttempt(tx,identity,input,digest);await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity),/Ancienne dette en attente/);await assertDayInvoiceAttemptsSettled(tx,identity,'2026-01-02');
+  await assert.rejects(prepareOldDebtAttempt(tx,identity,{...input,event:debt(id2,1000)},digest),/autre règlement/);await assert.rejects(acknowledgeOldDebtAttempt(tx,identity,id),/non confirmé/);
+  await cancelOldDebtAttempt(tx,identity,id);assert.equal(await readOldDebtAttempt(tx,identity),null);await prepareOldDebtAttempt(tx,identity,input,digest);
+  db.close();db=new DatabaseSync(path);tx=wrap(db);assert.deepEqual((await readOldDebtAttempt(tx,identity))?.attempt,input);
+  const failing={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{if(sql.startsWith('UPDATE day_invoice_old_debt_attempt'))throw Error('panne avant reçu');await tx.runAsync(sql,...args);}};
+  db.exec('BEGIN');await assert.rejects(confirmOldDebtAttempt(failing,identity,id,digest),/panne avant reçu/);db.exec('ROLLBACK');assert.equal(db.prepare('SELECT count(*) n FROM settlements').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_old_debt_outbox').get()?.n,0);
+  await assert.rejects(confirmOldDebtAttempt(tx,identity,id2,digest),/différente/);
+  db.exec('BEGIN');assert.equal(await confirmOldDebtAttempt(tx,identity,id,digest),'created');db.exec('COMMIT');await assertDayInvoiceAttemptsSettled(tx,identity);
+  db.close();db=new DatabaseSync(path);tx=wrap(db);assert.equal(await confirmOldDebtAttempt(tx,identity,id,digest),'duplicate');
+  db.prepare('DELETE FROM day_invoice_old_debt_outbox').run();assert.equal(await confirmOldDebtAttempt(tx,identity,id,digest),'duplicate');assert.equal(db.prepare('SELECT count(*) n FROM settlements').get()?.n,1);
+  await assert.rejects(cancelOldDebtAttempt(tx,identity,id),/abandonnable/);await assert.rejects(readOldDebtAttempt(tx,{...identity,serverOrigin:'https://other.test'}),/Identité/);
+  const original=db.prepare('SELECT payload FROM day_invoice_old_debt_attempt').get()?.payload as string,tampered=JSON.parse(original);tampered.attempt.event.event.settlement.amount++;db.prepare('UPDATE day_invoice_old_debt_attempt SET payload=?').run(JSON.stringify(tampered));
+  await assert.rejects(readOldDebtAttempt(tx,identity),/incohérente/);await assert.rejects(acknowledgeOldDebtAttempt(tx,identity,id),/incohérente/);
+  db.prepare('UPDATE day_invoice_old_debt_attempt SET payload=?').run(original);await acknowledgeOldDebtAttempt(tx,identity,id);assert.equal(await readOldDebtAttempt(tx,identity),null);assert.equal(db.prepare('SELECT count(*) n FROM settlements').get()?.n,1);
+ }finally{db.close();rmSync(dir,{recursive:true,force:true});}
 });

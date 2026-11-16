@@ -1,3 +1,4 @@
+import {dayInvoiceOldDebtAttemptSchema,readOldDebtAttempt,prepareOldDebtAttempt,confirmOldDebtAttempt,acknowledgeOldDebtAttempt,cancelOldDebtAttempt,type OldDebtAttempt} from './day-invoice-old-debt-attempt';
 import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt,type PaymentAttempt} from './day-invoice-payment-attempt';
 import {dayInvoiceSaleAttemptSchema,prepareDaySaleAttempt,readDaySaleAttempt,confirmDaySaleAttempt,acknowledgeDaySaleAttempt,cancelDaySaleAttempt} from './day-invoice-sale-attempt';
 import type {NewSaleAttempt} from './day-invoice-sale-create-input';
@@ -96,7 +97,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoicePaymentAttemptSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -734,3 +735,11 @@ export function dayPaymentAttemptIOPrototype(identity:DeviceIdentity){return {
  read:()=>readDayPaymentAttemptPrototype(identity),prepare:(attempt:PaymentAttempt)=>prepareDayPaymentAttemptPrototype(identity,attempt),
  confirm:(operationId:string)=>confirmDayPaymentAttemptPrototype(identity,operationId),acknowledge:(operationId:string)=>acknowledgeDayPaymentAttemptPrototype(identity,operationId),cancel:(operationId:string)=>cancelDayPaymentAttemptPrototype(identity,operationId)
 };}
+
+/** Reprise durable de l'ancienne dette, expérimentale et non activée. */
+export async function readOldDebtAttemptPrototype(identity:DeviceIdentity){const database=await db();let result!:Awaited<ReturnType<typeof readOldDebtAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await readOldDebtAttempt(tx,identity);});return result;}
+export async function prepareOldDebtAttemptPrototype(identity:DeviceIdentity,input:OldDebtAttempt){const database=await db();let result!:Awaited<ReturnType<typeof prepareOldDebtAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await prepareOldDebtAttempt(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function confirmOldDebtAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();let result!:Awaited<ReturnType<typeof confirmOldDebtAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmOldDebtAttempt(tx,identity,operationId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function acknowledgeOldDebtAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgeOldDebtAttempt(tx,identity,operationId));}
+export async function cancelOldDebtAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelOldDebtAttempt(tx,identity,operationId));}
+export function oldDebtAttemptIOPrototype(identity:DeviceIdentity){return {read:()=>readOldDebtAttemptPrototype(identity),prepare:(input:OldDebtAttempt)=>prepareOldDebtAttemptPrototype(identity,input),confirm:(id:string)=>confirmOldDebtAttemptPrototype(identity,id),acknowledge:(id:string)=>acknowledgeOldDebtAttemptPrototype(identity,id),cancel:(id:string)=>cancelOldDebtAttemptPrototype(identity,id)};}

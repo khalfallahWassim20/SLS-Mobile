@@ -3,6 +3,7 @@
  * sont vérifiés puis traités normalement par les files et preuves de caisse. */
 import {readDaySaleAttempt} from './day-invoice-sale-attempt';
 import {readDayPaymentAttempt} from './day-invoice-payment-attempt';
+import {readOldDebtAttempt} from './day-invoice-old-debt-attempt';
 import {tunisDay} from './journal';
 import type {DeviceIdentity} from './identified-device';
 type Bind=string|number|null;
@@ -10,9 +11,11 @@ type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync
 /** Sans day : toute décision inachevée bloque la synchronisation. Avec day :
  * seules la journée de facture ou celle du mouvement bloquent la clôture. */
 export async function assertDayInvoiceAttemptsSettled(tx:Tx,identity:DeviceIdentity,day?:string){
- const tables=await tx.getFirstAsync<{sale:number;payment:number}>(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_attempt') AS sale, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payment_attempt') AS payment`);
- if(!tables||![0,1].includes(tables.sale)||![0,1].includes(tables.payment))throw Error('État des tentatives indisponible.');
+ const tables=await tx.getFirstAsync<{sale:number;payment:number;debt:number}>(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_attempt') AS sale, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payment_attempt') AS payment, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_old_debt_attempt') AS debt`);
+ if(!tables||![0,1].includes(tables.sale)||![0,1].includes(tables.payment)||![0,1].includes(tables.debt))throw Error('État des tentatives indisponible.');
  const sale=tables.sale?await readDaySaleAttempt(tx,identity):null,payment=tables.payment?await readDayPaymentAttempt(tx,identity):null;
+ const debt=tables.debt?await readOldDebtAttempt(tx,identity):null;
+ if(debt&&!debt.result&&(!day||debt.attempt.event.invoiceDay===day||tunisDay(new Date(debt.attempt.event.event.settlement.createdAt))===day))throw Error('Ancienne dette en attente de confirmation : reprenez ou abandonnez la tentative.');
  if(sale&&!sale.result&&(!day||sale.attempt.day===day))throw Error('Vente en attente de confirmation : reprenez ou abandonnez la tentative.');
  if(payment&&!payment.result&&(!day||payment.attempt.day===day||tunisDay(new Date(payment.attempt.recordedAt))===day))throw Error('Règlement en attente de confirmation : reprenez ou abandonnez la tentative.');
 }

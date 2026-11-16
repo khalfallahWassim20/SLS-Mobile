@@ -1,0 +1,9 @@
+/** Orchestration UI expérimentale ; une erreur impose une relecture durable. */
+import {canonicalJson} from '@sls/domain';
+import type {OldDebtAttempt,StoredOldDebtAttempt} from './day-invoice-old-debt-attempt';
+export type OldDebtAttemptIO={read:()=>Promise<StoredOldDebtAttempt|null>;prepare:(attempt:OldDebtAttempt)=>Promise<StoredOldDebtAttempt>;confirm:(id:string)=>Promise<'created'|'duplicate'>;acknowledge:(id:string)=>Promise<void>;cancel:(id:string)=>Promise<void>};
+const same=(a:OldDebtAttempt,b:OldDebtAttempt)=>canonicalJson(a)===canonicalJson(b);
+export async function resumeOldDebtAttempt(io:OldDebtAttemptIO,attempt:OldDebtAttempt){const before=await io.read();if(!before||!same(before.attempt,attempt))throw Error('Tentative de règlement absente ou différente.');if(!before.result)await io.confirm(attempt.event.event.operationId);const after=await io.read();if(!after||!after.result||!same(after.attempt,attempt))throw Error('Reçu de règlement indisponible : rapprochement nécessaire.');return after;}
+export async function startOldDebtAttempt(io:OldDebtAttemptIO,attempt:OldDebtAttempt){const prepared=await io.prepare(attempt);if(!same(prepared.attempt,attempt))throw Error('Tentative de règlement différente.');return resumeOldDebtAttempt(io,attempt);}
+export async function finishOldDebtAttempt(io:OldDebtAttemptIO,attempt:OldDebtAttempt){const before=await io.read();if(!before||!before.result||!same(before.attempt,attempt))throw Error('Reçu de règlement absent ou différent.');try{await io.acknowledge(attempt.event.event.operationId);}catch(error){const after=await io.read();if(after)throw error;}}
+export async function abandonOldDebtAttempt(io:OldDebtAttemptIO,attempt:OldDebtAttempt){const before=await io.read();if(!before||before.result||!same(before.attempt,attempt))throw Error('Tentative de règlement non abandonnable.');await io.cancel(attempt.event.event.operationId);}

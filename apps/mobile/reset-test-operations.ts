@@ -14,6 +14,9 @@ export async function resetLocalTestOperations(tx:Tx):Promise<void> {
  const paymentAttempt=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='day_invoice_payment_attempt'");
  if(!paymentAttempt||![0,1].includes(paymentAttempt.n))throw Error('Migration tentative de règlement incohérente.');
  if(paymentAttempt.n===1)await tx.runAsync('DELETE FROM day_invoice_payment_attempt');
+ const oldDebtAttempt=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='day_invoice_old_debt_attempt'");
+ if(!oldDebtAttempt||![0,1].includes(oldDebtAttempt.n))throw Error('Migration tentative ancienne dette incohérente.');
+ if(oldDebtAttempt.n===1)await tx.runAsync('DELETE FROM day_invoice_old_debt_attempt');
  const debt=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name IN ('day_invoice_old_debt_local','day_invoice_old_debt_outbox')");
  if(!debt||![0,2].includes(debt.n))throw Error('Migration ancienne dette incomplète : nettoyage refusé.');
  if(debt.n===2){await tx.runAsync('DELETE FROM day_invoice_old_debt_outbox');await tx.runAsync('DELETE FROM day_invoice_old_debt_local');}
