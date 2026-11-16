@@ -27,3 +27,14 @@ export function operationDayLabel(date:string):string {
 export function operationsOnTunisDay<T extends {createdAt:string}>(items:readonly T[],day:string):T[]{
  return items.filter(item=>operationDay(item.createdAt)===day);
 }
+
+/** Excédent supplémentaire conservé lors d'une modification de vente locale.
+ * Les anciens historiques n'enregistrent pas un choix séparé : on ne déduit un
+ * crédit que si le paiement est inchangé, sans remboursement, et si l'excédent
+ * augmente. Ce n'est pas nécessairement le solde global du client. */
+export function revisionCreditAdded(revision:{previous:{total:number;paid:number};current:{total:number;paid:number};refund:number}):number|null {
+ const {previous,current,refund}=revision;
+ if(!previous||!current||![previous.total,previous.paid,current.total,current.paid,refund].every(n=>Number.isSafeInteger(n)&&n>=0)||refund!==0||previous.paid!==current.paid)return null;
+ const before=Math.max(0,previous.paid-previous.total),after=Math.max(0,current.paid-current.total);
+ return after>before?after-before:null;
+}

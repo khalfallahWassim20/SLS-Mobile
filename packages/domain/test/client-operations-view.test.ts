@@ -38,3 +38,15 @@ test('sections par jour tunisien : ordre chronologique conservé au changement d
   assert.match(operationDayLabel(list[0].date),/2 janvier 2026/);
   assert.equal(operationDayLabel('inconnu'),'Date indisponible');
 });
+
+test('historique : crédit supplémentaire conservé, sans confondre avec remboursement ou ancien crédit',async()=>{
+ const {revisionCreditAdded}=await import('../../../apps/mobile/client-timeline.js');
+ const r=(oldTotal:number,oldPaid:number,newTotal:number,newPaid:number,refund:number)=>({previous:{total:oldTotal,paid:oldPaid},current:{total:newTotal,paid:newPaid},refund});
+ assert.equal(revisionCreditAdded(r(250000,200000,150000,200000,0)),50000);
+ assert.equal(revisionCreditAdded(r(150000,200000,120000,200000,0)),30000);
+ assert.equal(revisionCreditAdded(r(150000,200000,160000,200000,0)),null);
+ assert.equal(revisionCreditAdded(r(250000,200000,150000,150000,50000)),null);
+ assert.equal(revisionCreditAdded(r(250000,200000,220000,200000,0)),null);
+ assert.equal(revisionCreditAdded(r(250000,200000,150000,199999,0)),null);
+ assert.equal(revisionCreditAdded(r(250000,200000,NaN,200000,0)),null);
+});
