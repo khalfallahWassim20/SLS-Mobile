@@ -191,6 +191,9 @@ for(const choice of ['refund','credit'] as const)test(`compensation locale ${cho
   assert.equal(result.status,'created');assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);
   assert.equal((JSON.parse(String(db.prepare('SELECT payload FROM sales WHERE id=1').get()?.payload))).total,150000);
   assert.equal((await confirmLocalCompensation(tx,identity,input,digest)).status,'duplicate');
+  const {captureWorkspaceState}=await import('../../../apps/mobile/day-invoice-workspace-state.js');
+  const workspace=await captureWorkspaceState({compensation:()=>readLocalCompensationView(tx,identity),preinvoice:async()=>null,sale:async()=>null,saleEdit:()=>readSaleEditAttempt(tx,identity),payment:async()=>null,oldDebt:async()=>null,clients:async()=>{throw Error('Lecture de clients interdite');}});
+  assert.deepEqual(workspace,{pending:{kind:'compensation',clientId,day},clients:null});
   const view=await readLocalCompensationView(tx,identity);assert.ok(view);assert.equal(view.syncStatus,'pending');assert.equal(view.localBalanceBefore,50000);assert.equal(view.localBalanceAfter,choice==='refund'?0:-50000);assert.equal(view.serverBalanceAtReceipt,null);assert.equal(view.balanceNeedsReview,null);
   assert.deepEqual(await readLocalCompensationCollectionImpact(tx,identity,identity.commercialId,day),{refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0,netCollectedChange:choice==='refund'?-50000:0,operationId:editOperation,syncStatus:'pending'});
   assert.equal((await readLocalCompensationCollectionImpact(tx,identity,identity.commercialId,'2026-01-02')).operationId,null);

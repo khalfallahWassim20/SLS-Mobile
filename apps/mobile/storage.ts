@@ -17,6 +17,9 @@ import {readDayInvoiceClients} from './day-invoice-clients';
 import {captureDayInvoiceForm,confirmDayInvoiceForm} from './day-invoice-form';
 import {captureDayInvoiceExportPayments,captureDayInvoiceJournalExport} from './day-invoice-journal-export';
 import {synchronizeDayInvoicePrototype} from './day-invoice-sync';
+import {dayInvoiceCompensationLocalSchema,confirmLocalCompensation,type LocalCompensationInput} from './day-invoice-compensation-local';
+import {readLocalCompensationView} from './day-invoice-compensation-view';
+import {synchronizeLocalCompensation} from './day-invoice-compensation-sync';
 import {createDayInvoiceTransportPrototype} from './day-invoice-transport';
 import {prepareDayInvoiceCloseAttempt,abandonDayInvoiceCloseAttempt,applyDayInvoiceReopenedState,acknowledgeDayInvoiceCloseAttempt} from './day-invoice-close-attempt';
 import type {LineagePin} from './server-lineage-proof';
@@ -104,7 +107,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoiceSaleEditAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema} ${dayInvoicePreinvoiceAttemptSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoiceSaleEditAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema} ${dayInvoicePreinvoiceAttemptSchema} ${dayInvoiceCompensationLocalSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -701,6 +704,24 @@ export async function confirmOldDebtFormPrototype(identity:DeviceIdentity,input:
 export async function readEditableDaySalePrototype(identity:DeviceIdentity,clientId:string,day:string,saleId:number){const database=await db();let result!:SavedSale;await database.withExclusiveTransactionAsync(async tx=>{result=await readEditableDaySale(tx,identity,clientId,day,saleId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
 
 /** Révision locale v6 sans trop-perçu ; non raccordée aux écrans actifs. */
+/** Exclusivement pour un serveur et des données fictives isolées. Les écrans
+ * normaux ne savent pas encore projeter la compensation ni rouvrir la caisse. */
+export async function confirmCompensationTestPrototype(identity:DeviceIdentity,input:LocalCompensationInput,testOnly:string){
+ if(testOnly!=='DONNEES_FICTIVES_ISOLEES')throw Error('Essai de compensation isolé désactivé.');
+ const database=await db();let result!:Awaited<ReturnType<typeof confirmLocalCompensation>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await confirmLocalCompensation(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function readCompensationViewPrototype(identity:DeviceIdentity){
+ const database=await db();let result!:Awaited<ReturnType<typeof readLocalCompensationView>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readLocalCompensationView(tx,identity);});return result;
+}
+export async function synchronizeCompensationTestPrototype(identity:DeviceIdentity,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,testOnly:string,allowPrivateHttp=false){
+ if(testOnly!=='DONNEES_FICTIVES_ISOLEES')throw Error('Essai de compensation isolé désactivé.');
+ const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
+ const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
+ return synchronizeLocalCompensation(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{transaction,check:transport.check,verifyServer:transport.verifyServer,send:transport.sendCompensation,receipt:transport.readCompensationReceipt});
+}
+
 export async function captureDayInvoiceSaleEditPrototype(identity:DeviceIdentity,saleId:number,lines:SavedSale['lines']){
  const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceSaleEdit>>;
  await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceSaleEdit(tx,identity,saleId,lines,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
@@ -785,7 +806,7 @@ export function saleEditAttemptIOPrototype(identity:DeviceIdentity){return {read
 /** Registres de reprise et clients lus dans le même instant SQLite. */
 export async function captureDayInvoiceWorkspacePrototype(identity:DeviceIdentity){
  const database=await db();let result!:Awaited<ReturnType<typeof captureWorkspaceState<Awaited<ReturnType<typeof readDayInvoiceClients>>>>>;
- await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result=await captureWorkspaceState({preinvoice:()=>readPreinvoiceAttempt(tx,identity),sale:()=>readDaySaleAttempt(tx,identity),saleEdit:()=>readSaleEditAttempt(tx,identity),payment:()=>readDayPaymentAttempt(tx,identity),oldDebt:()=>readOldDebtAttempt(tx,identity),clients:()=>readDayInvoiceClients(tx,identity,digest)});});return result;
+ await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result=await captureWorkspaceState({compensation:()=>readLocalCompensationView(tx,identity),preinvoice:()=>readPreinvoiceAttempt(tx,identity),sale:()=>readDaySaleAttempt(tx,identity),saleEdit:()=>readSaleEditAttempt(tx,identity),payment:()=>readDayPaymentAttempt(tx,identity),oldDebt:()=>readOldDebtAttempt(tx,identity),clients:()=>readDayInvoiceClients(tx,identity,digest)});});return result;
 }
 /** Facture et chronologie locales capturées dans le même instant SQLite. */
 export async function getDayInvoiceDetailPrototype(identity:DeviceIdentity,clientId:string,day:string){

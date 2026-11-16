@@ -5,6 +5,8 @@ import {randomUUID} from 'expo-crypto';
 import {operationDay} from './client-timeline';
 import type {SavedSale} from './storage';
 import {DayInvoiceSaleEditScreen} from './day-invoice-sale-edit-screen';
+import {DayInvoiceCompensationRecoveryScreen} from './day-invoice-compensation-recovery-screen';
+import {confirmCompensationTestPrototype,readCompensationViewPrototype} from './storage';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import {journalHtml,journalCsv} from './journal-export';
@@ -21,11 +23,11 @@ import type {DayTimelineItem} from './day-invoice-timeline';
 import {type PendingDayWork} from './day-invoice-workspace-state';
 type Snapshot=Awaited<ReturnType<typeof readDayInvoiceClientsPrototype>>;
 type Invoice=Awaited<ReturnType<typeof readDayInvoiceFormPrototype>>;
-type Props={identity:DeviceIdentity;day:string;commercial:string;onSynchronize?:()=>Promise<void>;onClose?:()=>Promise<void>};
+type Props={identity:DeviceIdentity;day:string;commercial:string;onSynchronize?:()=>Promise<void>;onClose?:()=>Promise<void>;compensationTestOnly?:'DONNEES_FICTIVES_ISOLEES';onSynchronizeCompensation?:()=>Promise<void>};
 type Client={id:string;name:string};
 type Screen='clients'|'detail'|'saleEditDraft'|PendingDayWork['kind'];
 const money=(value:number)=>`${(value/1000).toFixed(3)} DT`;
-export function DayInvoiceWorkspace({identity,day,commercial,onSynchronize,onClose}:Props){
+export function DayInvoiceWorkspace({identity,day,commercial,onSynchronize,onClose,compensationTestOnly,onSynchronizeCompensation}:Props){
  const [editing,setEditing]=useState<SavedSale|null>(null);
  const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[invoice,setInvoice]=useState<Invoice|null>(null),[timeline,setTimeline]=useState<DayTimelineItem[]>([]),[selected,setSelected]=useState<Client|null>(null),[work,setWork]=useState<PendingDayWork|null>(null),[screen,setScreen]=useState<Screen>('clients'),[query,setQuery]=useState(''),[limit,setLimit]=useState(40),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const mounted=useRef(false),running=useRef(0),generation=useRef(0),key=`${identity.commercialId}\n${identity.serverOrigin}`;
@@ -70,7 +72,8 @@ export function DayInvoiceWorkspace({identity,day,commercial,onSynchronize,onClo
    else{label='Reçu du journal historique';detail=`Facture ${money(item.prePaid)} · dette ${money(item.oldDebtPaid)} · ${item.mode}${item.creditFull?' · crédit total':''}`;}
    return <View key={item.key} style={styles.card}><Text style={styles.name}>{label}</Text><Text style={styles.muted}>{date} · heure de Tunisie</Text><Text style={styles.value}>{detail}</Text>{item.type==='sale'&&operationDay(item.date)===day&&button('Modifier cette vente',()=>editSale(Number(item.key.slice(5))))}</View>;})}
   {button('Nouvelle préétablie',()=>setScreen('preinvoice'))}{button('Nouvelle vente sur place',()=>setScreen('sale'))}{button('Régler la facture du jour',()=>setScreen('payment'))}{button('Régler l’ancienne dette',()=>setScreen('oldDebt'))}{button('Retour aux clients',retry)}</>}
-  {screen==='saleEditDraft'&&editing&&detailsClient&&<DayInvoiceSaleEditScreen sale={editing} articles={snapshot?.articles??[]} capture={(id,lines)=>captureDayInvoiceSaleEditPrototype(identity,id,lines)} confirm={input=>io.saleEdit.prepare({...input,clientId:detailsClient.id,day,operationId:randomUUID()})} onBack={backToDetail} onSaved={retry}/>}
+  {screen==='saleEditDraft'&&editing&&detailsClient&&<DayInvoiceSaleEditScreen sale={editing} articles={snapshot?.articles??[]} capture={(id,lines)=>captureDayInvoiceSaleEditPrototype(identity,id,lines)} confirm={input=>io.saleEdit.prepare({...input,clientId:detailsClient.id,day,operationId:randomUUID()})} confirmCompensation={compensationTestOnly==='DONNEES_FICTIVES_ISOLEES'?input=>confirmCompensationTestPrototype(identity,input,compensationTestOnly):undefined} onBack={backToDetail} onSaved={retry}/>}
+  {screen==='compensation'&&work?.kind==='compensation'&&<DayInvoiceCompensationRecoveryScreen bindingKey={key} clientId={work.clientId} day={work.day} read={()=>readCompensationViewPrototype(identity)} synchronize={compensationTestOnly==='DONNEES_FICTIVES_ISOLEES'?onSynchronizeCompensation:undefined} onCheck={retry}/>}
   {screen==='saleEdit'&&work?.kind==='saleEdit'&&work.saleId!==undefined&&<DayInvoiceSaleEditRecoveryScreen bindingKey={key} clientId={work.clientId} day={work.day} saleId={work.saleId} attempts={io.saleEdit} onDone={retry}/>}
   {screen==='preinvoice'&&detailsClient&&<DayInvoicePreinvoiceScreen bindingKey={key} clientId={detailsClient.id} clientName={detailsClient.name} day={detailsDay} capture={(id,d,amount)=>captureNewDayPreinvoicePrototype(identity,id,d,amount)} attempts={io.preinvoice} onBack={work?retry:backToDetail} onSaved={retry} onAbandoned={retry}/>}
   {screen==='sale'&&detailsClient&&<DayInvoiceSaleCreateScreen bindingKey={key} clientId={detailsClient.id} clientName={detailsClient.name} day={detailsDay} articles={snapshot?.articles??[]} capture={(id,d,lines)=>captureNewDayInvoiceSalePrototype(identity,id,d,lines)} attempts={io.sale} onBack={work?retry:backToDetail} onSaved={retry} onAbandoned={retry}/>}

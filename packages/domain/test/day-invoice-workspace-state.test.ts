@@ -34,3 +34,12 @@ test('capture espace : ne lit les clients que si tous les registres sont vides',
  await assert.rejects(captureWorkspaceState({...read,payment:async()=>{throw Error('SQLite indisponible');}}),/SQLite indisponible/);
  assert.ok(!calls.includes('clients'));
 });
+
+test('espace facture : compensation durable ou reçue impose un écran de reprise',async()=>{
+ const {captureWorkspaceState}=await import('../../../apps/mobile/day-invoice-workspace-state.js');let clients=0;
+ const read={compensation:async()=>({clientId:'client',invoiceDay:'2026-01-01'}),preinvoice:async()=>null,sale:async()=>null,saleEdit:async()=>null,payment:async()=>null,oldDebt:async()=>null,clients:async()=>{clients++;return [];}};
+ assert.deepEqual(await captureWorkspaceState(read),{pending:{kind:'compensation',clientId:'client',day:'2026-01-01'},clients:null});assert.equal(clients,0);
+ const sale={attempt:{clientId:'b',day:'2026-01-02'},result:null} as StoredSaleAttempt;
+ await assert.rejects(captureWorkspaceState({...read,sale:async()=>sale}),/Plusieurs opérations/);assert.equal(clients,0);
+ await assert.rejects(captureWorkspaceState({...read,compensation:async()=>{throw Error('Preuve illisible');}}),/Preuve illisible/);assert.equal(clients,0);
+});

@@ -34,6 +34,8 @@ export function createDayInvoiceTransportPrototype(session:CommercialSession,ide
   sendSource:(path:string,payload:string)=>{verified();if(!['sales','settlements','journal'].includes(path))throw Error('Type d’opération invalide.');return request(path==='settlements'?path:`day-invoice-sources/${path}`,'POST',payload);},
   sendPayment:(payload:string)=>{verified();return request('day-invoice-payments','POST',payload);},
   sendOldDebt:(payload:string)=>{verified();return request('day-invoice-old-debt','POST',payload);},
+  sendCompensation:(payload:string)=>{verified();return request('day-invoice-compensated-sale','POST',payload);},
+  readCompensationReceipt:(operationId:string)=>{verified();if(!uuid(operationId))throw Error('Identifiant de compensation invalide.');return request(`day-invoice-compensated-sale/${operationId}/receipt`,'GET');},
   sendClose:(payload:string)=>{verified();return request('day-invoice-close','POST',payload);},
   abandonClose:(payload:string)=>{verified();return request('day-invoice-close/abandon','POST',payload);},
   readDay:async(day:string)=>{verified();const date=new Date(`${day}T00:00:00.000Z`);if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==day)throw Error('Date de journée invalide.');return request(`day/${day}`,'GET');}

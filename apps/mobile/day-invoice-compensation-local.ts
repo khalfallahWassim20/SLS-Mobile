@@ -15,7 +15,8 @@ import type {SavedSale} from './storage';
 
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
-type Input={saleId:number;lines:SavedSale['lines'];fingerprint:string;operationId:string;recordedAt:string;choice:'refund'|'credit'};
+export type LocalCompensationInput={saleId:number;lines:SavedSale['lines'];fingerprint:string;operationId:string;recordedAt:string;choice:'refund'|'credit'};
+type Input=LocalCompensationInput;
 type Row={operationId:string;saleId:number;commercialId:string;serverOrigin:string;input:string;payload:string;receipt:string|null};
 const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const dayInvoiceCompensationLocalSchema=`CREATE TABLE IF NOT EXISTS day_invoice_compensation_local (

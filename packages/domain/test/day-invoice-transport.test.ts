@@ -7,10 +7,11 @@ test('transport v6 : aucune écriture sans identité et lignée vérifiées',asy
  const calls:string[]=[];let current=true;
  const io={now:()=>now,isCurrentSession:()=>current,allowPrivateHttp:true,request:async(url:string)=>{calls.push(url);return {ok:true,status:200,json:async()=>url.endsWith('/server-lineage')?{version:1,commercialId:identity.commercialId,lineageId}:{version:6}};}};
  const transport=createDayInvoiceTransportPrototype(session,identity,pin,io);
- assert.throws(()=>transport.sendPayment('{}'),/non vérifiée/);assert.throws(()=>transport.sendOldDebt('{}'),/non vérifiée/);assert.equal(calls.length,0);
+ assert.throws(()=>transport.sendPayment('{}'),/non vérifiée/);assert.throws(()=>transport.sendOldDebt('{}'),/non vérifiée/);assert.throws(()=>transport.sendCompensation('{}'),/non vérifiée/);assert.throws(()=>transport.readCompensationReceipt(lineageId),/non vérifiée/);assert.equal(calls.length,0);
  await transport.verifyServer(identity,transport.check);await transport.fetchReference();await transport.sendPayment('{}');await transport.sendOldDebt('{}');assert.equal(calls.length,4);assert.match(calls[3],/day-invoice-old-debt$/);
- assert.throws(()=>transport.sendSource('autre','{}'),/Type/);
- current=false;assert.throws(()=>transport.sendPayment('{}'),/Session expirée/);assert.equal(calls.length,4);
+ assert.throws(()=>transport.sendSource('autre','{}'),/Type/);assert.throws(()=>transport.readCompensationReceipt('../bad'),/invalide/);
+ await transport.sendCompensation('{}');await transport.readCompensationReceipt(lineageId);assert.equal(calls.length,6);assert.match(calls[4],/day-invoice-compensated-sale$/);assert.match(calls[5],new RegExp(`${lineageId}/receipt$`));
+ current=false;assert.throws(()=>transport.sendPayment('{}'),/Session expirée/);assert.equal(calls.length,6);
 });
 test('lignée différente, absence de pin et HTTP non autorisé bloquent avant écriture',async()=>{
  let calls=0;const io={now:()=>now,isCurrentSession:()=>true,request:async()=>{calls++;return {ok:true,status:200,json:async()=>({version:1,commercialId:identity.commercialId,lineageId:'cccccccc-cccc-4ccc-8ccc-cccccccccccc'})};}};
