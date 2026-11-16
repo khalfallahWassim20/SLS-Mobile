@@ -7,7 +7,7 @@ import {verifyCommercialSession} from './commercial-session.js';
 import {lockTourClosure} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
-import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
+import {lockSyncMode,lockSyncModeExclusive,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertLegacyClientDaySafe,lockDayInvoiceClient,assertDayInvoiceAwareSaleSafe} from './day-invoice-legacy-guard.js';
 import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import {readServerDayInvoiceSource} from './day-invoice-source.js';
@@ -47,7 +47,11 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
  const day=tunisDay(sale.createdAt),operationDay=tunisDay(event.recordedAt),payload=JSON.stringify(event),hash=digest(payload),db=await pool.connect();
  try {
   await db.query('BEGIN');
-  if(session.enforceMode) assertIdentifiedMode(await lockSyncMode(db));
+  // La projection actuelle accepte une seule compensation pour toute la base.
+  // L'insertion doit attendre les écritures en cours et sérialiser les choix de
+  // clients distincts AVANT leur contrôle du registre vide. Le verrou partagé
+  // habituel laisserait deux transactions constater simultanément zéro ligne.
+  if(session.enforceMode) assertIdentifiedMode(await (compensation?lockSyncModeExclusive(db):lockSyncMode(db)));
   const actor=await verifyCommercialSession(db,session.secret,session.token,true);
   if(!actor) throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
   await lockIdentifiedOperation(db,event.operationId);
