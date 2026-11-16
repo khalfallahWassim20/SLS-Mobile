@@ -5,6 +5,7 @@ import {summarizePreInvoice,canonicalJson} from '@sls/domain';
 import {createHash} from 'node:crypto';
 import {readIdentifiedReferenceInTransaction} from './identified-reference.js';
 import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
+import {parseStoredOldDebt} from './settlement-protocol.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 function tunisDay(iso:string):string {
@@ -39,8 +40,10 @@ export async function readDayInvoiceReferenceInTransaction(db:PoolClient,include
  });
  if(settlementDays.length!==base.settlementStates.length)throw Error('Journées de règlement serveur incomplètes.');
  const settlementProofs=settlementRows.rows.map(row=>({operationId:row.operationId as string,hash:createHash('sha256').update(canonicalJson(row.payload.settlement)).digest('hex')}));
- const markers=await db.query(`SELECT m.operation_id AS "operationId",m.invoice_day::text AS "invoiceDay" FROM identified_day_invoice_old_debt m JOIN identified_settlements s ON s.operation_id=m.operation_id JOIN clients c ON c.id=s.client_id WHERE c.deleted_at IS NULL${active} ORDER BY m.operation_id`);
- const oldDebtMarkers=markers.rows.map(row=>{if(!settlements.has(row.operationId)||settlementDays.find(d=>d.operationId===row.operationId)?.day!==row.invoiceDay)throw Error('Marqueur de dette incohérent.');return {operationId:row.operationId as string,invoiceDay:row.invoiceDay as string};});
+ const markers=await db.query(`SELECT s.operation_id,s.client_id,s.journal_date::text AS journal_day,m.invoice_day::text AS invoice_day,s.payload,s.payload_hash
+ FROM identified_day_invoice_old_debt m JOIN identified_settlements s ON s.operation_id=m.operation_id JOIN clients c ON c.id=s.client_id WHERE c.deleted_at IS NULL${active} ORDER BY m.operation_id`);
+ const settlementDayById=new Map(settlementDays.map(d=>[d.operationId,d.day]));
+ const oldDebtMarkers=markers.rows.map(row=>{try{parseStoredOldDebt(row);}catch{throw Error('Marqueur de dette incohérent.');}if(!settlements.has(row.operation_id)||settlementDayById.get(row.operation_id)!==row.invoice_day)throw Error('Marqueur de dette incohérent.');return {operationId:row.operation_id as string,invoiceDay:row.invoice_day as string};});
  const rows=await db.query(`SELECT p.operation_id AS "operationId",p.client_id AS "clientId",p.invoice_day::text AS day,p.event_day::text AS "eventDay",p.payload,p.payload_hash AS hash
  FROM identified_day_invoice_payments p JOIN clients c ON c.id=p.client_id WHERE c.deleted_at IS NULL${active} ORDER BY p.operation_id`);
  const operations=await db.query(`SELECT operation_id FROM demo_sale_events UNION ALL SELECT operation_id FROM identified_sale_events

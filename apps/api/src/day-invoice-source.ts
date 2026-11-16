@@ -2,6 +2,7 @@
 import type {PoolClient} from 'pg';
 import {summarizePreInvoice} from '@sls/domain';
 import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
+import {parseStoredOldDebt} from './settlement-protocol.js';
 import {readIdentifiedReferenceInTransaction} from './identified-reference.js';
 import type {DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
 function tunisDay(iso:string):string {
@@ -25,9 +26,9 @@ export async function readServerDayInvoiceSource(db:PoolClient,event:DayInvoiceP
   return {id:row.saleId as string,version:row.version as number,total:Number(state.total),paid:Number(state.paid)};
  });
  // Les anciens règlements globaux n'ont aucune attribution fiable à la facture du jour.
- const global=await db.query(`SELECT payload,NULL::text AS invoice_day FROM demo_settlements WHERE client_id=$1
- UNION ALL SELECT s.payload,m.invoice_day::text AS invoice_day FROM identified_settlements s LEFT JOIN identified_day_invoice_old_debt m ON m.operation_id=s.operation_id WHERE s.client_id=$1`,[event.clientId]);
- if(global.rows.some(r=>r.invoice_day&&r.invoice_day!==tunisDay(r.payload?.settlement?.createdAt)))throw Error('Marqueur de dette incohérent.');
+ const global=await db.query(`SELECT payload,NULL::text AS invoice_day,NULL::uuid AS operation_id,NULL::uuid AS client_id,NULL::text AS journal_day,NULL::text AS payload_hash FROM demo_settlements WHERE client_id=$1
+ UNION ALL SELECT s.payload,m.invoice_day::text AS invoice_day,s.operation_id,s.client_id,s.journal_date::text AS journal_day,s.payload_hash FROM identified_settlements s LEFT JOIN identified_day_invoice_old_debt m ON m.operation_id=s.operation_id WHERE s.client_id=$1 OR s.payload->'settlement'->>'clientId'=$1::text`,[event.clientId]);
+ for(const r of global.rows)if(r.invoice_day){try{parseStoredOldDebt(r);}catch{throw Error('Marqueur de dette incohérent.');}}
  if(global.rows.some(r=>r.invoice_day?event.day<r.invoice_day:tunisDay(r.payload?.settlement?.createdAt)===event.day))throw Error('Règlement global non attribué sur cette journée : rapprochement nécessaire.');
  // Contrôler tous les paiements du client avant de filtrer le jour : une
  // colonne client/jour altérée ne doit pas faire disparaître un règlement.

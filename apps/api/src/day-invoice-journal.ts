@@ -4,8 +4,7 @@ import type {PoolClient} from 'pg';
 import {parseDayInvoicePayment,dayInvoicePaymentHash} from './day-invoice-protocol.js';
 import {journalDateSchema} from './journal-protocol.js';
 import {z} from 'zod';
-import {createHash} from 'node:crypto';
-import {settlementSchema} from './identified-operations.js';
+import {parseStoredOldDebt} from './settlement-protocol.js';
 import type {DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
 const checked=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Total de paiement trop élevé.');return Number(n);};
 const dayOf=(at:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
@@ -70,8 +69,8 @@ export async function readDayInvoiceJournalOldDebts(db:PoolClient,commercialId:s
  if(records.rows.length>20000)throw Error('Trop de règlements ancienne dette : comparaison incomplète refusée.');
  let total=0n;
  const payments=records.rows.map(row=>{
-  const event=settlementSchema.parse(row.payload),p=event.settlement,hash=createHash('sha256').update(JSON.stringify(event)).digest('hex');
-  if(event.operationId!==row.operation_id||p.syncOperationId!==event.operationId||p.clientId!==row.client_id||row.commercial_id!==commercialId||row.journal_day!==day||row.invoice_day!==day||dayOf(p.createdAt)!==day||hash!==row.payload_hash||typeof row.name!=='string'||typeof row.sector!=='string'||(p.mode==='Chèque'&&(!p.chequeNumber.trim()||!p.chequeBank.trim()||!p.chequeDue.trim()))||(p.mode!=='Chèque'&&(p.chequeNumber||p.chequeBank||p.chequeDue)))throw Error('Règlement ancienne dette du journal incohérent.');
+  let event:ReturnType<typeof parseStoredOldDebt>;try{event=parseStoredOldDebt(row);}catch{throw Error('Règlement ancienne dette du journal incohérent.');}const p=event.settlement;
+  if(row.commercial_id!==commercialId||row.journal_day!==day||typeof row.name!=='string'||typeof row.sector!=='string')throw Error('Règlement ancienne dette du journal incohérent.');
   total+=BigInt(p.amount);return {operationId:event.operationId,clientId:p.clientId,clientName:row.name,sector:row.sector,recordedAt:p.createdAt,amount:p.amount,mode:p.mode,chequeNumber:p.chequeNumber,chequeBank:p.chequeBank,chequeDue:p.chequeDue};
  });
  return {payments,total:checked(total)};

@@ -4,7 +4,7 @@ import type {Pool} from 'pg';
 import {createHash} from 'node:crypto';
 import {z} from 'zod';
 import {calculateDayInvoice,availablePriorDebt} from '../../../packages/domain/src/day-invoice.js';
-import {settlementSchema} from './identified-operations.js';
+import {settlementSchema,parseStoredOldDebt} from './settlement-protocol.js';
 import {verifyCommercialSession} from './commercial-session.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {lockIdentifiedOperation,assertOperationUnambiguous} from './identified-overlap.js';
@@ -28,8 +28,8 @@ export async function storeDayInvoiceOldDebt(pool:Pool,input:unknown,session:{to
   await lockIdentifiedOperation(db,event.operationId);await assertCreditOperationAvailable(db,event.operationId);await assertOperationUnambiguous(db,event.operationId,'settlement');await assertDayInvoiceCloseRegistry(db);
   const closure=await lockTourClosure(db,actor.id,invoiceDay);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['identified-settlement',event.operationId]);
-  const same=await db.query('SELECT s.payload_hash,s.commercial_id,m.invoice_day::text AS invoice_day FROM identified_settlements s LEFT JOIN identified_day_invoice_old_debt m ON m.operation_id=s.operation_id WHERE s.operation_id=$1',[event.operationId]);
-  if(same.rows.length){if(same.rows[0].payload_hash!==hash||same.rows[0].commercial_id!==actor.id||same.rows[0].invoice_day!==invoiceDay)throw new JournalConflict('Identifiant de règlement déjà utilisé.');await db.query('COMMIT');return 'duplicate';}
+  const same=await db.query('SELECT s.operation_id,s.client_id,s.journal_date::text AS journal_day,s.payload,s.payload_hash,s.commercial_id,m.invoice_day::text AS invoice_day FROM identified_settlements s LEFT JOIN identified_day_invoice_old_debt m ON m.operation_id=s.operation_id WHERE s.operation_id=$1',[event.operationId]);
+  if(same.rows.length){if(same.rows[0].payload_hash!==hash||same.rows[0].commercial_id!==actor.id||same.rows[0].invoice_day!==invoiceDay)throw new JournalConflict('Identifiant de règlement déjà utilisé.');try{parseStoredOldDebt(same.rows[0]);}catch{throw new JournalConflict('Règlement ancienne dette enregistré incohérent : rapprochement requis.');}await db.query('COMMIT');return 'duplicate';}
   await assertOldCreditProtocolSafe(db);if(closure.status==='closed')throw new TourDayClosed(invoiceDay,actor.id);assertTourWritable(closure);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['journal-client-day',`${p.clientId}:${invoiceDay}`]);await lockDayInvoiceClient(db,p.clientId);
   const client=await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL FOR SHARE',[p.clientId]);if(!client.rows.length)throw new JournalConflict('Client introuvable.');

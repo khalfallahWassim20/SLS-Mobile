@@ -32,6 +32,26 @@ test('ancienne dette explicite : plafond, concurrence, reprise et facture indép
   await storeJournalSnapshot(pool,{operationId:randomUUID(),version:1,invoice,receipts:[]},'identified',{...session,enforceMode:true});
   const debt=(amount:number)=>{const operationId=randomUUID();return {invoiceDay:day,event:{operationId,settlement:{syncOperationId:operationId,createdAt:at,clientId,clientName:'Client fictif',amount,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}}};};
   const first=debt(60000);assert.equal(await storeDayInvoiceOldDebt(pool,first,session),'received');assert.equal(await storeDayInvoiceOldDebt(pool,first,session),'duplicate');
+  // Une réponse perdue ne peut être acquittée si la ligne serveur ou ses
+  // colonnes ont été altérées : la source et le solde refusent aussi de l'utiliser.
+  await pool.query("UPDATE identified_settlements SET payload=jsonb_set(payload,'{settlement,amount}','1000'::jsonb) WHERE operation_id=$1",[first.event.operationId]);
+  await assert.rejects(storeDayInvoiceOldDebt(pool,first,session),/enregistré incohérent/);
+  await assert.rejects(storeDayInvoiceOldDebt(pool,debt(1),session),/Marqueur de dette incohérent/);
+  await assert.rejects(readDayInvoiceReference(pool,true),/Marqueur de dette incohérent/);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_day_invoice_old_debt')).rows[0].n,1);
+  await pool.query('UPDATE identified_settlements SET payload=$1::jsonb WHERE operation_id=$2',[JSON.stringify(first.event),first.event.operationId]);
+  await pool.query("UPDATE identified_settlements SET journal_date='2026-01-02'::date WHERE operation_id=$1",[first.event.operationId]);
+  await assert.rejects(storeDayInvoiceOldDebt(pool,first,session),/enregistré incohérent/);
+  await assert.rejects(storeDayInvoiceOldDebt(pool,debt(1),session),/Marqueur de dette incohérent/);
+  await assert.rejects(readDayInvoiceReference(pool,true),/Marqueur de dette incohérent/);
+  await pool.query('UPDATE identified_settlements SET journal_date=$1::date WHERE operation_id=$2',[day,first.event.operationId]);
+  assert.equal(await storeDayInvoiceOldDebt(pool,first,session),'duplicate');
+  const strayClient=randomUUID();await pool.query('INSERT INTO clients(id,name) VALUES($1,$2)',[strayClient,'Client fictif auxiliaire']);
+  await pool.query('UPDATE identified_settlements SET client_id=$1 WHERE operation_id=$2',[strayClient,first.event.operationId]);
+  await assert.rejects(storeDayInvoiceOldDebt(pool,first,session),/enregistré incohérent/);
+  await assert.rejects(storeDayInvoiceOldDebt(pool,debt(1),session),/Marqueur de dette incohérent/);
+  await assert.rejects(readDayInvoiceReference(pool,true),/Journée de règlement serveur incohérente|Marqueur de dette incohérent/);
+  await pool.query('UPDATE identified_settlements SET client_id=$1 WHERE operation_id=$2',[clientId,first.event.operationId]);
   const app=express();app.use(express.json());app.use('/normal',identifiedCommercialRoutes(pool,secret));app.use('/test',identifiedCommercialRoutes(pool,secret,{dayInvoiceTestOnly:true}));server=createServer(app);
   await new Promise<void>((resolve,reject)=>server!.listen(0,'127.0.0.1',()=>resolve()).once('error',reject));const address=server.address();assert.ok(address&&typeof address!=='string');const base=`http://127.0.0.1:${address.port}`;
   const post=(path:string,auth:boolean)=>fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json',...(auth?{Authorization:`Bearer ${login.token}`}:{})},body:JSON.stringify(first)});
