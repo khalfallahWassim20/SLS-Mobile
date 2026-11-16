@@ -7,13 +7,13 @@ import {journalHtml,journalCsv} from './journal-export';
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {Alert,ScrollView,StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
 import type {DeviceIdentity} from './identified-device';
-import {readDayInvoiceClientsPrototype,readDayInvoiceFormPrototype,getDayInvoiceDetailPrototype,getDayInvoiceJournalExportPrototype,captureNewDayInvoiceSalePrototype,captureNewDayPreinvoicePrototype,captureOldDebtFormPrototype,daySaleAttemptIOPrototype,dayPaymentAttemptIOPrototype,oldDebtAttemptIOPrototype,preinvoiceAttemptIOPrototype} from './storage';
+import {readDayInvoiceClientsPrototype,captureDayInvoiceWorkspacePrototype,readDayInvoiceFormPrototype,getDayInvoiceDetailPrototype,getDayInvoiceJournalExportPrototype,captureNewDayInvoiceSalePrototype,captureNewDayPreinvoicePrototype,captureOldDebtFormPrototype,daySaleAttemptIOPrototype,dayPaymentAttemptIOPrototype,oldDebtAttemptIOPrototype,preinvoiceAttemptIOPrototype} from './storage';
 import {DayInvoiceSaleCreateScreen} from './day-invoice-sale-create-screen';
 import {DayInvoicePreinvoiceScreen} from './day-invoice-preinvoice-screen';
 import {DayInvoicePaymentScreen} from './day-invoice-payment-screen';
 import {DayInvoiceOldDebtScreen} from './day-invoice-old-debt-screen';
 import type {DayTimelineItem} from './day-invoice-timeline';
-import {pendingDayWork,type PendingDayWork} from './day-invoice-workspace-state';
+import {type PendingDayWork} from './day-invoice-workspace-state';
 type Snapshot=Awaited<ReturnType<typeof readDayInvoiceClientsPrototype>>;
 type Invoice=Awaited<ReturnType<typeof readDayInvoiceFormPrototype>>;
 type Props={identity:DeviceIdentity;day:string;commercial:string;onSynchronize?:()=>Promise<void>;onClose?:()=>Promise<void>};
@@ -27,10 +27,9 @@ export function DayInvoiceWorkspace({identity,day,commercial,onSynchronize,onClo
  const refresh=async(isCurrent:()=>boolean)=>{
   // Une lecture échouée garde les boutons bloqués : ne jamais supposer que le
   // registre est vide après une erreur SQLite ou un changement de liaison.
-  const preinvoice=await io.preinvoice.read(),sale=await io.sale.read(),payment=await io.payment.read(),oldDebt=await io.oldDebt.read();
-  const pending=pendingDayWork({preinvoice,sale,payment,oldDebt});if(!isCurrent())return;
-  if(pending){setWork(pending);setSelected({id:pending.clientId,name:'Client à vérifier'});setSnapshot(null);setInvoice(null);setTimeline([]);setScreen(pending.kind);return;}
-  const clients=await readDayInvoiceClientsPrototype(identity);if(isCurrent()){setWork(null);setSnapshot(clients);setSelected(null);setInvoice(null);setTimeline([]);setScreen('clients');}
+  const state=await captureDayInvoiceWorkspacePrototype(identity);if(!isCurrent())return;
+  if(state.pending){const pending=state.pending;setWork(pending);setSelected({id:pending.clientId,name:'Client à vérifier'});setSnapshot(null);setInvoice(null);setTimeline([]);setScreen(pending.kind);return;}
+  setWork(null);setSnapshot(state.clients);setSelected(null);setInvoice(null);setTimeline([]);setScreen('clients');
  };
  const run=async(action:(current:()=>boolean)=>Promise<void>,force=false)=>{if(running.current&&!force)return;running.current++;setBusy(true);setError('');const g=++generation.current;const current=()=>mounted.current&&generation.current===g;try{await action(current);}catch(e){if(current()){setSnapshot(null);setInvoice(null);setTimeline([]);setError(e instanceof Error?e.message:'Lecture impossible.');}}finally{running.current--;if(mounted.current&&!running.current)setBusy(false);}};
  useEffect(()=>{mounted.current=true;setSnapshot(null);setInvoice(null);setSelected(null);setWork(null);setScreen('clients');setQuery('');setLimit(40);void run(refresh,true);return()=>{mounted.current=false;generation.current++;};},[key,day]);

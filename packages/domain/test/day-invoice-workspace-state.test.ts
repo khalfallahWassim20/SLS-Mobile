@@ -16,3 +16,18 @@ test('espace facture : toute tentative ou reçu impose une reprise avant une nou
  assert.deepEqual(pendingDayWork({...base,payment,oldDebt}),{kind:'payment',clientId:'c',day:'2026-01-03'});
  assert.deepEqual(pendingDayWork({...base,oldDebt}),{kind:'oldDebt',clientId:'d',day:'2026-01-04'});
 });
+
+test('capture espace : ne lit les clients que si tous les registres sont vides',async()=>{
+ const {captureWorkspaceState}=await import('../../../apps/mobile/day-invoice-workspace-state.js');
+ const calls:string[]=[];
+ const read={preinvoice:async()=>{calls.push('preinvoice');return null;},sale:async()=>{calls.push('sale');return null;},payment:async()=>{calls.push('payment');return null;},oldDebt:async()=>{calls.push('oldDebt');return null;},clients:async()=>{calls.push('clients');return ['client'];}};
+ assert.deepEqual(await captureWorkspaceState(read),{pending:null,clients:['client']});
+ assert.deepEqual(calls,['preinvoice','sale','payment','oldDebt','clients']);
+ calls.length=0;
+ const sale={attempt:{clientId:'b',day:'2026-01-02'},result:null} as StoredSaleAttempt;
+ assert.deepEqual(await captureWorkspaceState({...read,sale:async()=>sale}),{pending:{kind:'sale',clientId:'b',day:'2026-01-02'},clients:null});
+ assert.ok(!calls.includes('clients'));
+ calls.length=0;
+ await assert.rejects(captureWorkspaceState({...read,payment:async()=>{throw Error('SQLite indisponible');}}),/SQLite indisponible/);
+ assert.ok(!calls.includes('clients'));
+});

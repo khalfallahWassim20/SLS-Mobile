@@ -1,3 +1,4 @@
+import {captureWorkspaceState} from './day-invoice-workspace-state';
 import {closeDayInvoicePrototype} from './day-invoice-close-flow';
 import {captureDayInvoiceTimeline} from './day-invoice-timeline';
 import {dayInvoicePreinvoiceAttemptSchema,readPreinvoiceAttempt,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt,cancelPreinvoiceAttempt} from './day-invoice-preinvoice-attempt';
@@ -767,6 +768,11 @@ export function preinvoiceAttemptIOPrototype(identity:DeviceIdentity){return {re
 /** Historique v6 local vérifié ; les autres téléphones ne sont pas inclus. */
 export async function getDayInvoiceTimelinePrototype(identity:DeviceIdentity,clientId:string,day?:string){
  const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceTimeline>>;await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceTimeline(tx,identity,clientId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text),day);});return result;
+}
+/** Registres de reprise et clients lus dans le même instant SQLite. */
+export async function captureDayInvoiceWorkspacePrototype(identity:DeviceIdentity){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureWorkspaceState<Awaited<ReturnType<typeof readDayInvoiceClients>>>>>;
+ await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result=await captureWorkspaceState({preinvoice:()=>readPreinvoiceAttempt(tx,identity),sale:()=>readDaySaleAttempt(tx,identity),payment:()=>readDayPaymentAttempt(tx,identity),oldDebt:()=>readOldDebtAttempt(tx,identity),clients:()=>readDayInvoiceClients(tx,identity,digest)});});return result;
 }
 /** Facture et chronologie locales capturées dans le même instant SQLite. */
 export async function getDayInvoiceDetailPrototype(identity:DeviceIdentity,clientId:string,day:string){
