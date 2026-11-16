@@ -1,3 +1,4 @@
+import {readSaleEditAttempt} from './day-invoice-sale-edit-attempt';
 /** Empêche une clôture ou une synchronisation de passer devant une décision
  * de vente ou de règlement durable encore ouverte. Les reçus déjà enregistrés
  * sont vérifiés puis traités normalement par les files et preuves de caisse. */
@@ -13,8 +14,11 @@ type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
 /** Sans day : toute décision inachevée bloque la synchronisation. Avec day :
  * seules la journée de facture ou celle du mouvement bloquent la clôture. */
-export async function assertDayInvoiceAttemptsSettled(tx:Tx,identity:DeviceIdentity,day?:string,ignorePreinvoiceAttempt?:NewDayPreinvoice){
+export async function assertDayInvoiceAttemptsSettled(tx:Tx,identity:DeviceIdentity,day?:string,ignorePreinvoiceAttempt?:NewDayPreinvoice,ignoreSaleEditOperationId?:string){
  const tables=await tx.getFirstAsync<{sale:number;payment:number;debt:number;preinvoice:number}>(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_attempt') AS sale, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payment_attempt') AS payment, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_old_debt_attempt') AS debt, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_preinvoice_attempt') AS preinvoice`);
+ const editTable=await tx.getFirstAsync<{n:number}>("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_edit_attempt') AS n");
+ if(!editTable||![0,1].includes(editTable.n))throw Error('État de modification indisponible.');
+ if(editTable.n){const edit=await readSaleEditAttempt(tx,identity);if(edit&&!edit.result&&edit.attempt.operationId!==ignoreSaleEditOperationId&&(!day||edit.attempt.day===day||tunisDay(new Date(edit.attempt.recordedAt))===day))throw Error('Modification en attente de confirmation : reprenez ou abandonnez la tentative.');}
  if(!tables||![0,1].includes(tables.sale)||![0,1].includes(tables.payment)||![0,1].includes(tables.debt)||![0,1].includes(tables.preinvoice))throw Error('État des tentatives indisponible.');
  const sale=tables.sale?await readDaySaleAttempt(tx,identity):null,payment=tables.payment?await readDayPaymentAttempt(tx,identity):null;
  const preinvoice=tables.preinvoice?await readPreinvoiceAttempt(tx,identity):null;

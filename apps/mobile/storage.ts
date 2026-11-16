@@ -1,3 +1,4 @@
+import {dayInvoiceSaleEditAttemptSchema,readSaleEditAttempt,prepareSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt,type SaleEditAttempt} from './day-invoice-sale-edit-attempt';
 import {captureWorkspaceState} from './day-invoice-workspace-state';
 import {closeDayInvoicePrototype} from './day-invoice-close-flow';
 import {captureDayInvoiceTimeline} from './day-invoice-timeline';
@@ -102,7 +103,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema} ${dayInvoicePreinvoiceAttemptSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoiceSaleEditAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema} ${dayInvoicePreinvoiceAttemptSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -769,10 +770,17 @@ export function preinvoiceAttemptIOPrototype(identity:DeviceIdentity){return {re
 export async function getDayInvoiceTimelinePrototype(identity:DeviceIdentity,clientId:string,day?:string){
  const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceTimeline>>;await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceTimeline(tx,identity,clientId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text),day);});return result;
 }
+/** Registre de révision expérimental : écritures et reçus sous transaction exclusive. */
+export async function readSaleEditAttemptPrototype(identity:DeviceIdentity){const database=await db();let result!:Awaited<ReturnType<typeof readSaleEditAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await readSaleEditAttempt(tx,identity);});return result;}
+export async function prepareSaleEditAttemptPrototype(identity:DeviceIdentity,input:SaleEditAttempt){const database=await db();let result!:Awaited<ReturnType<typeof prepareSaleEditAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await prepareSaleEditAttempt(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function confirmSaleEditAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();let result!:Awaited<ReturnType<typeof confirmSaleEditAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmSaleEditAttempt(tx,identity,id,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function acknowledgeSaleEditAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgeSaleEditAttempt(tx,identity,id));}
+export async function cancelSaleEditAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelSaleEditAttempt(tx,identity,id));}
+
 /** Registres de reprise et clients lus dans le même instant SQLite. */
 export async function captureDayInvoiceWorkspacePrototype(identity:DeviceIdentity){
  const database=await db();let result!:Awaited<ReturnType<typeof captureWorkspaceState<Awaited<ReturnType<typeof readDayInvoiceClients>>>>>;
- await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result=await captureWorkspaceState({preinvoice:()=>readPreinvoiceAttempt(tx,identity),sale:()=>readDaySaleAttempt(tx,identity),payment:()=>readDayPaymentAttempt(tx,identity),oldDebt:()=>readOldDebtAttempt(tx,identity),clients:()=>readDayInvoiceClients(tx,identity,digest)});});return result;
+ await database.withExclusiveTransactionAsync(async tx=>{if(await readSaleEditAttempt(tx,identity))throw Error('Une modification de vente attend vérification : reprise requise.');const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result=await captureWorkspaceState({preinvoice:()=>readPreinvoiceAttempt(tx,identity),sale:()=>readDaySaleAttempt(tx,identity),payment:()=>readDayPaymentAttempt(tx,identity),oldDebt:()=>readOldDebtAttempt(tx,identity),clients:()=>readDayInvoiceClients(tx,identity,digest)});});return result;
 }
 /** Facture et chronologie locales capturées dans le même instant SQLite. */
 export async function getDayInvoiceDetailPrototype(identity:DeviceIdentity,clientId:string,day:string){

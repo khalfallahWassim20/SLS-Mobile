@@ -1,3 +1,6 @@
+import {dayInvoiceSaleEditAttemptSchema,prepareSaleEditAttempt,readSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt} from '../../../apps/mobile/day-invoice-sale-edit-attempt.js';
+import {assertDayInvoiceAttemptsSettled} from '../../../apps/mobile/day-invoice-attempt-guard.js';
+import {assertLegacyMobileDayInvoiceSafe} from '../../../apps/mobile/day-invoice-legacy-guard.js';
 import {test} from 'node:test';import assert from 'node:assert/strict';import {DatabaseSync} from 'node:sqlite';import {createHash} from 'node:crypto';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';
 import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../../apps/mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
@@ -9,7 +12,7 @@ const line={name:'Produit',code:'X',quantity:5,unitPrice:50000,discount:0,vat:0}
 const payment={operationId:paymentOperation,clientId,day,recordedAt:at,amount:800000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoiceId,version:1,total:600000,declare:true},sales:[{id:saleId,version:1}]};
 const reference={version:6,clients:[{id:clientId,name:'Client',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'50000'}],articles:[],saleStates:[{saleId,clientId,version:1,total:'250000',paid:'0'}],saleDays:[{saleId,clientId,day}],settlementStates:[],settlementDays:[],settlementProofs:[],oldDebtMarkers:[],journalStates:[{id:invoiceId,clientId,journalDate:day,total:600000,receipts:[],declaredByDayPayment:true}],journalProofs:[{id:invoiceId,version:1,hash:'a'.repeat(64)}],dayPayments:[payment]};
 const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');
-function setup(){const db=new DatabaseSync(':memory:');db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}
+function setup(){const db=new DatabaseSync(':memory:');db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleEditAttemptSchema}
  CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
  CREATE TABLE sale_revisions(id INTEGER PRIMARY KEY,sale_id INTEGER,created_at TEXT,previous_payload TEXT,new_payload TEXT,refund INTEGER);
  CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,payload TEXT);
@@ -90,5 +93,50 @@ test('révision v6 : une opération prouvée d’un autre client ne bloque pas l
   assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,2);
   assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,100000);
   await assert.rejects(captureDayInvoiceSaleEdit(tx,identity,1,lines,digest),/Opérations en attente pour ce client/);
+ }finally{db.close();}
+});
+
+test('révision durable : reprise après réponse perdue, preuve et garde de clôture',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,reference);
+  const lines=[{...line,quantity:6}],preview=await captureDayInvoiceSaleEdit(tx,identity,1,lines,digest);
+  const attempt={saleId:1,clientId,day,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z'};
+  db.exec('BEGIN');await prepareSaleEditAttempt(tx,identity,attempt,digest);db.exec('COMMIT');
+  assert.equal((await readSaleEditAttempt(tx,identity))?.result,null);
+  await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity),/Modification en attente/);
+  await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity,day),/Modification en attente/);
+  await assertDayInvoiceAttemptsSettled(tx,identity,'2026-01-02');
+  await assert.rejects(assertLegacyMobileDayInvoiceSafe(tx),/facture du jour|Modification/);
+  await assert.rejects(prepareSaleEditAttempt(tx,identity,{...attempt,operationId:paymentOperation},digest),/autre modification/);
+  db.exec('BEGIN');const result=await confirmSaleEditAttempt(tx,identity,editOperation,digest);db.exec('COMMIT');
+  // Le résultat a pu être perdu après COMMIT ; la reprise ne crée pas une deuxième révision.
+  assert.deepEqual(await confirmSaleEditAttempt(tx,identity,editOperation,digest),result);
+  assert.equal(result.updated.total,300000);assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,100000);
+  assert.equal(db.prepare('SELECT count(*) n FROM sale_revisions').get()?.n,1);
+  await assertDayInvoiceAttemptsSettled(tx,identity);
+  await assert.rejects(cancelSaleEditAttempt(tx,identity,editOperation),/non abandonnable/);
+  const original=String(db.prepare('SELECT new_payload FROM sale_revisions').get()?.new_payload);
+  db.prepare('UPDATE sale_revisions SET new_payload=?').run('{}');
+  await assert.rejects(readSaleEditAttempt(tx,identity),/Preuve de modification incohérente/);
+  await assert.rejects(acknowledgeSaleEditAttempt(tx,identity,editOperation),/Preuve de modification incohérente/);
+  db.prepare('UPDATE sale_revisions SET new_payload=?').run(original);
+  await acknowledgeSaleEditAttempt(tx,identity,editOperation);assert.equal(await readSaleEditAttempt(tx,identity),null);
+ }finally{db.close();}
+});
+
+test('révision durable : échec atomique et abandon sans effacer une trace',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,reference);
+  const lines=[{...line,quantity:6}],preview=await captureDayInvoiceSaleEdit(tx,identity,1,lines,digest);
+  const attempt={saleId:1,clientId,day,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z'};
+  await prepareSaleEditAttempt(tx,identity,attempt,digest);
+  const failing={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{if(sql.startsWith('UPDATE day_invoice_sale_edit_attempt'))throw Error('panne simulée');await tx.runAsync(sql,...args);}};
+  db.exec('BEGIN');await assert.rejects(confirmSaleEditAttempt(failing,identity,editOperation,digest),/panne simulée/);db.exec('ROLLBACK');
+  assert.equal(db.prepare('SELECT count(*) n FROM sale_revisions').get()?.n,0);assert.equal((await readSaleEditAttempt(tx,identity))?.result,null);
+  db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(editOperation,clientId,saleId,attempt.recordedAt);
+  await assert.rejects(cancelSaleEditAttempt(tx,identity,editOperation),/Trace/);db.prepare('DELETE FROM identified_local_operations WHERE operation_id=?').run(editOperation);
+  await cancelSaleEditAttempt(tx,identity,editOperation);assert.equal(await readSaleEditAttempt(tx,identity),null);
+  const dangerLines=[{...line,quantity:3}],danger=await captureDayInvoiceSaleEdit(tx,identity,1,dangerLines,digest);
+  await assert.rejects(prepareSaleEditAttempt(tx,identity,{...attempt,lines:dangerLines,fingerprint:danger.fingerprint},digest),/remboursement ou crédit/);
  }finally{db.close();}
 });

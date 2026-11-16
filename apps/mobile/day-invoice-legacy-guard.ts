@@ -12,6 +12,9 @@ export async function assertLegacyMobileDayInvoiceSafe(tx:Tx):Promise<void>{
  const attempts=await tx.getFirstAsync<{sale:number;payment:number}>(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_attempt') AS sale, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payment_attempt') AS payment`);
  if(!attempts||![0,1].includes(attempts.sale)||![0,1].includes(attempts.payment))throw Error('État des tentatives indisponible.');
  for(const name of ['day_invoice_sale_attempt','day_invoice_payment_attempt'] as const){if(attempts[name==='day_invoice_sale_attempt'?'sale':'payment']){const row=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM ${name}) AS n`);if(!row||row.n)throw Error('Tentative de facture du jour présente : anciens écrans indisponibles avant mise à jour.');}}
+ const editAttempt=await tx.getFirstAsync<{n:number}>("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_edit_attempt') AS n");
+ if(!editAttempt||![0,1].includes(editAttempt.n))throw Error('État de modification indisponible.');
+ if(editAttempt.n){const row=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM day_invoice_sale_edit_attempt) AS n');if(!row||row.n)throw Error('Modification de facture du jour présente : anciens écrans indisponibles.');}
  const preinvoiceAttempt=await tx.getFirstAsync<{n:number}>("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_preinvoice_attempt') AS n");
  if(!preinvoiceAttempt||![0,1].includes(preinvoiceAttempt.n))throw Error('État de tentative préétablie indisponible.');
  if(preinvoiceAttempt.n){const row=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM day_invoice_preinvoice_attempt) AS n');if(!row||row.n)throw Error('Tentative de facture du jour présente : anciens écrans indisponibles avant mise à jour.');}
