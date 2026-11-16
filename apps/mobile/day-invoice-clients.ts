@@ -2,6 +2,8 @@
  * exclusive. Ne contourne pas la garde des anciens écrans. */
 import {canonicalJson,isSaleBlocked} from '@sls/domain';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
+import {readLocalDayInvoiceSource} from './day-invoice-local';
+import {verifiedPendingSaleRevisions} from './day-invoice-pending-sale-revision';
 import {reconcileDayInvoiceClient} from './day-invoice-reference';
 import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
 import {assertLocalOldDebtProofs} from './day-invoice-old-debt-proof';
@@ -68,6 +70,13 @@ export async function readDayInvoiceClients(tx:Tx,identity:DeviceIdentity,digest
  }
  if(dayPayments.length>20000)throw Error('Historique de paiements incomplet.');
  assertLocalDayPaymentProofs(dayPayments,dayQueue,ref);
- const clients=ref.clients.map(client=>{try{const result=reconcileDayInvoiceClient({reference:ref,clientId:client.id,localSales:sales,localSettlements:settlements,localInvoices:invoices,localDayPayments:dayPayments});const limit=Number(client.creditLimit);return {...client,balance:result.balance,conflict:false as const,saleBlocked:isSaleBlocked(result.balance,limit,false),pendingDayPayments:result.pendingAmount};}catch{return {...client,balance:null,conflict:true as const,saleBlocked:true,pendingDayPayments:null};}});
+ const clients=[];
+ for(const client of ref.clients){try{
+  const verified=new Set<string>();
+  const days=new Set(dayPayments.filter(p=>p.clientId===client.id&&!ref.dayPayments.some(r=>r.operationId===p.operationId)&&p.sales.some(proof=>sales.some(s=>s.syncSaleId===proof.id&&s.syncVersion!==proof.version))).map(p=>p.day));
+  for(const day of days){const local=await readLocalDayInvoiceSource(tx,identity,client.id,day);for(const id of await verifiedPendingSaleRevisions(tx,identity,ref,local,digest))verified.add(id);}
+  const result=reconcileDayInvoiceClient({reference:ref,clientId:client.id,localSales:sales,localSettlements:settlements,localInvoices:invoices,localDayPayments:dayPayments,verifiedPendingRevisions:verified});const limit=Number(client.creditLimit);
+  clients.push({...client,balance:result.balance,conflict:false as const,saleBlocked:isSaleBlocked(result.balance,limit,false),pendingDayPayments:result.pendingAmount});
+ }catch{clients.push({...client,balance:null,conflict:true as const,saleBlocked:true,pendingDayPayments:null});}}
  return {version:6 as const,clients,articles:ref.articles,pendingOperations:sourceQueue.length+dayQueue.length+debtQueue.length};
 }

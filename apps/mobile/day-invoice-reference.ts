@@ -81,7 +81,7 @@ type ParsedReference=ReturnType<typeof validateDayInvoiceReference>;
 export function reconcileDayInvoiceClient(input:{
  reference:ParsedReference;clientId:string;localSales:readonly SavedSale[];localSettlements:readonly Settlement[];
  localInvoices:readonly (TourPreInvoice & {version:number;receipts:TourJournalReceipt[]})[];
- localDayPayments:readonly DayInvoicePayment[];
+ localDayPayments:readonly DayInvoicePayment[];verifiedPendingRevisions?:ReadonlySet<string>;
 }) {
  const {reference,clientId}=input,client=reference.clients.find(c=>c.id===clientId);
  if(!client?.serverBalance || !reference.saleStates || !reference.settlementStates || !reference.journalStates)throw Error('Solde serveur indisponible.');
@@ -101,7 +101,7 @@ export function reconcileDayInvoiceClient(input:{
    if(!invoice&&!server)throw Error('Facture du paiement indisponible.');
   }
   for(const proof of payment.sales){const mine=input.localSales.find(s=>s.clientId===clientId&&s.syncSaleId===proof.id),server=remoteSales.find(s=>s.saleId===proof.id);
-   if(mine&&mine.syncVersion!==proof.version)throw Error('Vente locale modifiée depuis le paiement.');
+   if(mine&&mine.syncVersion!==proof.version&&!(input.verifiedPendingRevisions?.has(proof.id)&&server?.version===proof.version&&mine.syncVersion===proof.version+1))throw Error('Vente locale modifiée depuis le paiement.');
    if(server&&server.version>proof.version)throw Error('Vente serveur modifiée depuis le paiement.');
    if(!mine&&(!server||server.version!==proof.version))throw Error('Vente du paiement indisponible.');
   }

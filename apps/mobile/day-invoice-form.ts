@@ -22,7 +22,7 @@ export async function captureDayInvoiceForm(tx:Tx,identity:DayInvoiceIdentity,cl
  const local=await readLocalDayInvoiceSource(tx,identity,clientId,day,digest);
  const payments=await readDayInvoicePayments(tx,identity,clientId,day);
  assertLocalDayPaymentProofs(payments,await readDayInvoiceOutbox(tx,identity),reference);
- const verified=await verifiedPendingSaleRevisions(tx,identity,reference,local);
+ const verified=await verifiedPendingSaleRevisions(tx,identity,reference,local,reference.hasSaleProofs?digest:undefined);
  const view=buildMergedDayInvoiceView(reference,local,payments,verified);
  const source={...view.source,sales:[...view.source.sales].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0)};
  const fingerprint=canonicalJson({source,payments:view.payments.map(({pending:_pending,collectionDay:_collectionDay,...p})=>p)});

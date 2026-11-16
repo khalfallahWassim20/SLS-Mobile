@@ -17,8 +17,8 @@ export function parseClosedDaySyncError(status:number,value:unknown):ClosedDaySy
  const date=new Date(`${body.day}T00:00:00.000Z`);
  return Number.isFinite(date.getTime())&&date.toISOString().slice(0,10)===body.day?new ClosedDaySyncError(body.day,body.commercialId):null;
 }
-/** Vérifie toute la file avant le premier envoi et ne supprime qu'après un accusé exact. */
-export async function uploadIdentifiedOperations(entries:IdentifiedEntry[],identity:{commercialId:string;serverOrigin:string},verified:{commercialId:string;serverOrigin:string},send:(path:string,payload:string)=>Promise<Response>,acknowledge:(operationId:string,kind:Kind)=>Promise<void>):Promise<number> {
+/** Validation sans envoi : permet de contrôler toutes les files avant le premier transfert. */
+export function prepareIdentifiedOperations(entries:readonly IdentifiedEntry[],identity:{commercialId:string;serverOrigin:string},verified:{commercialId:string;serverOrigin:string}) {
  if(!uuid(identity.commercialId)||identity.commercialId!==verified.commercialId||identity.serverOrigin!==verified.serverOrigin)throw Error('Session ou serveur différent du téléphone lié.');
  const seen=new Set<string>(),requests:{entry:IdentifiedEntry;path:string;body:string}[]=[];
  for(const entry of entries) {
@@ -44,6 +44,11 @@ export async function uploadIdentifiedOperations(entries:IdentifiedEntry[],ident
   } else throw Error('Type d’opération inconnu.');
   requests.push({entry,path,body:JSON.stringify(data)});
  }
+ return requests;
+}
+/** Vérifie toute la file avant le premier envoi et ne supprime qu'après un accusé exact. */
+export async function uploadIdentifiedOperations(entries:IdentifiedEntry[],identity:{commercialId:string;serverOrigin:string},verified:{commercialId:string;serverOrigin:string},send:(path:string,payload:string)=>Promise<Response>,acknowledge:(operationId:string,kind:Kind)=>Promise<void>):Promise<number> {
+ const requests=prepareIdentifiedOperations(entries,identity,verified);
  let count=0;
  for(const request of requests){
   const response=await send(request.path,request.body);const body=obj(await response.json().catch(()=>null));

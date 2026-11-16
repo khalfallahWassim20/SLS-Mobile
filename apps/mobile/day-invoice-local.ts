@@ -95,7 +95,7 @@ export async function writeReconciledDayInvoicePayment(tx:Tx,identity:DayInvoice
   if(!reference)throw Error('Référence facture du jour indisponible : actualisation nécessaire.');
   const local=await readLocalDayInvoiceSource(locked,owner,entry.clientId,entry.day,digest);
   const localPayments=await readDayInvoicePayments(locked,owner,entry.clientId,entry.day);
-  const verified=await verifiedPendingSaleRevisions(locked,owner,reference,local);
+  const verified=await verifiedPendingSaleRevisions(locked,owner,reference,local,reference.hasSaleProofs?digest:undefined);
   const merged=buildMergedDayInvoiceView(reference,local,localPayments,verified);
   validateDayInvoiceWrite(entry,{...merged.source,dayPayments:merged.payments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))});
  });

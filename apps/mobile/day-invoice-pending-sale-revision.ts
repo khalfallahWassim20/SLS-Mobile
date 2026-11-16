@@ -9,7 +9,7 @@ type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
 type Local=Awaited<ReturnType<typeof readLocalDayInvoiceSource>>;
 type Reference=ReturnType<typeof validateDayInvoiceReference>;
-export async function verifiedPendingSaleRevisions(tx:Tx,identity:DeviceIdentity,reference:Reference,local:Local):Promise<Set<string>>{
+export async function verifiedPendingSaleRevisions(tx:Tx,identity:DeviceIdentity,reference:Reference,local:Local,digest?:(value:string)=>Promise<string>):Promise<Set<string>>{
  const mismatch=local.sales.filter(s=>{const remote=reference.saleStates?.find(r=>r.saleId===s.id);return !!remote&&(remote.version!==s.version||Number(remote.total)!==s.total||Number(remote.paid)!==s.paid);});
  if(!mismatch.length)return new Set();
  const queue=await readIdentifiedOutbox(tx,identity),verified=new Set<string>();
@@ -25,6 +25,9 @@ export async function verifiedPendingSaleRevisions(tx:Tx,identity:DeviceIdentity
   if(!revision||revision.refund!==0||revision.createdAt!==entry.recordedAt)continue;
   let before:any,after:any,current:any;try{before=JSON.parse(revision.previousPayload);after=JSON.parse(revision.newPayload);current=JSON.parse(row.payload);}catch{continue;}
   if(!before||!after||!current||before.id!==row.id||after.id!==row.id||before.syncSaleId!==sale.id||after.syncSaleId!==sale.id||before.syncVersion!==remote.version||before.clientId!==local.clientId||before.total!==Number(remote.total)||before.paid!==Number(remote.paid)||after.syncVersion!==sale.version||after.clientId!==local.clientId||after.total!==sale.total||after.paid!==sale.paid||after.createdAt!==before.createdAt)continue;
+  // Une ancienne preuve de paiement ne peut être rapprochée de la révision
+  // que si l'intégralité de la vente précédente correspond au hash serveur.
+  if(digest){const proof=reference.saleProofs.find(p=>p.saleId===sale.id),{id:_id,...prior}=before;if(!proof||proof.version!==before.syncVersion||proof.hash!==await digest(canonicalJson(prior)))continue;}
   // Une révision v6 sans remboursement ne peut changer ni le paiement initial
   // ni les champs d'identité ; seuls les articles et totaux sont révisables.
   const {id:_beforeId,lines:_beforeLines,total:_beforeTotal,remaining:_beforeRemaining,syncVersion:_beforeVersion,...beforeFixed}=before;

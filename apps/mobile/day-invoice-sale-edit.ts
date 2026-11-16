@@ -27,7 +27,7 @@ const fields=['createdAt','clientId','clientName','syncSaleId','syncVersion','li
 function lineKeys(line:unknown):line is Line{return !!line&&typeof line==='object'&&!Array.isArray(line)&&Object.keys(line).sort().join(',')==='code,discount,name,quantity,unitPrice,vat';}
 /** Les autres clients peuvent avoir des opérations hors ligne. Ne jamais
  * ignorer une file non attribuable : dans le doute, la révision reste bloquée. */
-async function ensureClientIdle(tx:Tx,identity:DeviceIdentity,clientId:string){
+async function ensureClientIdle(tx:Tx,identity:DeviceIdentity,clientId:string,day:string,saleId:string,version:number){
  const sources=await readIdentifiedOutbox(tx,identity),payments=await readDayInvoiceOutbox(tx,identity),debts=await readOldDebtOutbox(tx,identity);
  const ids=new Set<string>();
  const register=(id:string)=>{if(typeof id!=='string'||!uuid.test(id))throw Error('Identifiant d’opération en attente invalide.');const key=id.toLowerCase();if(ids.has(key))throw Error('Identifiant d’opération dupliqué entre files.');ids.add(key);};
@@ -50,7 +50,14 @@ async function ensureClientIdle(tx:Tx,identity:DeviceIdentity,clientId:string){
    if(matches.length!==1||canonicalJson(JSON.parse(matches[0].payload))!==canonicalJson(event.settlement))throw Error('Client de règlement en attente incohérent.');different(event.settlement.clientId);
   }
  }
- for(const entry of payments){register(entry.operationId);different(JSON.parse(entry.payload).clientId);}
+ for(const entry of payments){
+  register(entry.operationId);const payment=JSON.parse(entry.payload);
+  // Une révision sans excédent peut suivre un paiement hors ligne seulement
+  // si sa photographie contient précisément la vente actuelle. Les autres
+  // opérations du client restent bloquées et la compensation a sa garde dédiée.
+  if(payment.clientId===clientId){if(payment.day!==day||!payment.sales.some((s:{id:string;version:number})=>s.id===saleId&&s.version===version))throw Error('Paiement en attente sur une autre version : synchronisez avant modification.');}
+  else different(payment.clientId);
+ }
  for(const entry of debts){register(entry.operationId);different(JSON.parse(entry.payload).event.settlement.clientId);}
 }
 /** L'aperçu est reproductible et fige la source, le solde et les lignes. */
@@ -63,12 +70,18 @@ export async function captureDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,sa
  if(!raw||typeof raw!=='object'||Array.isArray(raw)||Object.keys(raw).length!==fields.length||fields.some(k=>!(k in raw)))throw Error('Vente locale incohérente.');
  const previous={...(raw as Omit<SavedSale,'id'>),id:saleId};
  if(!row||row.clientId!==previous.clientId||!previous.syncSaleId||!uuid.test(previous.syncSaleId)||!Number.isSafeInteger(previous.syncVersion)||previous.syncVersion!<1||previous.syncVersion!>=1000000||!Number.isFinite(Date.parse(previous.createdAt))||!Array.isArray(previous.lines)||previous.lines.some(l=>!lineKeys(l)))throw Error('Vente locale incohérente.');
- await ensureClientIdle(tx,identity,previous.clientId);
- const day=tunisDay(new Date(previous.createdAt));await assertDeviceWritable(tx,identity,[day]);
+ const day=tunisDay(new Date(previous.createdAt));
+ await ensureClientIdle(tx,identity,previous.clientId,day,previous.syncSaleId,previous.syncVersion!);
+ await assertDeviceWritable(tx,identity,[day]);
  await assertNoLocalCreditNote(tx,'sale',previous.syncSaleId);await assertNoRemoteCreditNote(tx,identity,'sale',previous.syncSaleId);
  await assertKnownDeviceEntity(tx,identity,'sale',previous.syncSaleId,{clientId:previous.clientId,version:previous.syncVersion!,total:previous.total,paid:previous.paid,payload:row.payload,digest});
  await readLocalSaleCashLedger(tx,identity,[previous],day);
  const reference=await readDayInvoiceReferenceCache(tx,identity);if(!reference)throw Error('Référence facture du jour indisponible.');
+ const pendingPayments=await readDayInvoiceOutbox(tx,identity);
+ if(pendingPayments.some(p=>JSON.parse(p.payload).clientId===previous.clientId)){
+  const proof=reference.saleProofs.find(p=>p.saleId===previous.syncSaleId);
+  if(!proof||proof.version!==previous.syncVersion||proof.hash!==await digest(canonicalJson(raw)))throw Error('Preuve de vente préalable indisponible : synchronisez avant modification.');
+ }
  if(reference.oldDebtMarkers.some(m=>reference.settlementStates?.some(s=>s.operationId===m.operationId&&s.clientId===previous.clientId)))throw Error('Règlement de dette enregistré : rapprochement requis avant modification.');
  const localDebt=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM day_invoice_old_debt_local WHERE client_id=?) AS n',previous.clientId);
  if(!localDebt||localDebt.n)throw Error('Règlement de dette enregistré : rapprochement requis avant modification.');
@@ -108,6 +121,8 @@ export async function confirmDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,in
  if(input.fingerprint!==current.fingerprint)throw Error('La facture ou le solde a changé : vérifiez à nouveau.');
  if(current.assessment.requiresChoice)throw Error('Total inférieur au montant payé : remboursement ou crédit requis.');
  if(Date.parse(input.recordedAt)<=Date.parse(previous.createdAt))throw Error('Date de révision invalide.');
+ const payments=await readDayInvoiceOutbox(tx,identity);
+ if(payments.some(p=>{const payment=JSON.parse(p.payload);return payment.clientId===previous.clientId&&Date.parse(payment.recordedAt)>Date.parse(input.recordedAt);}))throw Error('Modification antérieure à un paiement en attente.');
  await assertDeviceWritable(tx,identity,[current.day,tunisDay(new Date(input.recordedAt))]);
  const taken=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE operation_id=?) OR EXISTS(SELECT 1 FROM day_invoice_payments WHERE operation_id=?) OR EXISTS(SELECT 1 FROM day_invoice_old_debt_local WHERE operation_id=?) OR EXISTS(SELECT 1 FROM offline_credit_prototype WHERE operation_id=?) AS n`,input.operationId,input.operationId,input.operationId,input.operationId);
  if(!taken||taken.n)throw Error('Identifiant de révision déjà utilisé.');
