@@ -178,3 +178,36 @@ test('synchronisation paiement unifié : accusé seul insuffisant, preuve et ret
   assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,400000);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,400000);
  }finally{db.close();}
 });
+
+test('vente synchronisée : garder la file tant que les marqueurs serveur ne sont pas enregistrés',async()=>{
+ const {db,tx}=setup();try{
+  const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(tx);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
+  await transaction(t=>saveDayInvoiceReference(t,identity,identity,reference));const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);
+  await transaction(t=>confirmNewDayInvoiceSale(t,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest));
+  const server={...reference,clients:[{...reference.clients[0],serverBalance:'250000'}],saleStates:[{saleId,clientId,version:1,total:'250000',paid:'0'}],saleDays:[{saleId,clientId,day}]};
+  let calls=0,sends=0,mode:'cut'|'stale'|'wrong'|'ok'='cut';
+  const io={transaction,digest,check:()=>{},verifyServer:async()=>{},fetchReference:async()=>{calls++;if(mode==='cut'&&calls===2)throw Error('référence interrompue');if(mode==='wrong'&&calls>1)return {...server,saleStates:[{...server.saleStates[0],total:'249000'}]};return mode==='ok'?server:reference;},sendSource:async()=>{sends++;return {ok:true,status:200,json:async()=>({status:sends===1?'received':'duplicate',operationId})};},sendPayment:async()=>{throw Error('inattendu');}};
+  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/référence interrompue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
+  mode='stale';await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Marqueur serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
+  // La référence erronée n'est pas sauvegardée si la preuve échoue.
+  mode='wrong';calls=0;await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Marqueur serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
+  mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:0,remainingSources:0,remainingPayments:0});assert.equal(sends,4);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,250000);
+ }finally{db.close();}
+});
+
+test('source règlement : le retrait exige la preuve exacte dans la référence',async()=>{
+ const {db,tx}=setup();try{
+  const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(tx);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
+  await transaction(t=>saveDayInvoiceReference(t,identity,identity,reference));
+  const settlement={syncOperationId:operationId,createdAt:at,clientId,clientName:'Client',amount:1000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},event={operationId,settlement};
+  db.prepare('INSERT INTO sales_outbox(operation_id,sale_id,payload) VALUES(?,?,?)').run(operationId,operationId,JSON.stringify(event));
+  db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'settlement',?,?)").run(operationId,identity.commercialId,operationId,at);
+  const {canonicalJson}=await import('@sls/domain');const hash=await digest(canonicalJson(settlement));
+  const server={...reference,clients:[{...reference.clients[0],serverBalance:'-1000'}],settlementStates:[{operationId,clientId}],settlementDays:[{operationId,clientId,day}],settlementProofs:[{operationId,hash}]};
+  let mode:'stale'|'wrong'|'ok'='stale',calls=0;
+  const io={transaction,digest,check:()=>{},verifyServer:async()=>{},fetchReference:async()=>{calls++;if(mode==='wrong'&&calls>1)return {...server,settlementProofs:[{operationId,hash:'b'.repeat(64)}]};return mode==='ok'?server:reference;},sendSource:async()=>({ok:true,status:200,json:async()=>({status:'duplicate',operationId})}),sendPayment:async()=>{throw Error('inattendu');}};
+  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Preuve serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
+  mode='wrong';calls=0;await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Preuve serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
+  mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:0,remainingSources:0,remainingPayments:0});
+ }finally{db.close();}
+});
