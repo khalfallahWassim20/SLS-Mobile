@@ -1,3 +1,4 @@
+import {readEditableDaySale} from '../../../apps/mobile/day-invoice-sale-edit-read.js';
 import {dayInvoiceSaleEditAttemptSchema,prepareSaleEditAttempt,readSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt} from '../../../apps/mobile/day-invoice-sale-edit-attempt.js';
 import {assertDayInvoiceAttemptsSettled} from '../../../apps/mobile/day-invoice-attempt-guard.js';
 import {assertLegacyMobileDayInvoiceSafe} from '../../../apps/mobile/day-invoice-legacy-guard.js';
@@ -138,5 +139,34 @@ test('révision durable : échec atomique et abandon sans effacer une trace',asy
   await cancelSaleEditAttempt(tx,identity,editOperation);assert.equal(await readSaleEditAttempt(tx,identity),null);
   const dangerLines=[{...line,quantity:3}],danger=await captureDayInvoiceSaleEdit(tx,identity,1,dangerLines,digest);
   await assert.rejects(prepareSaleEditAttempt(tx,identity,{...attempt,lines:dangerLines,fingerprint:danger.fingerprint},digest),/remboursement ou crédit/);
+ }finally{db.close();}
+});
+
+
+test('sélection de vente : vérifie client, journée, référence et opérations en attente',async()=>{
+ const {db,tx}=setup();try{await saveDayInvoiceReference(tx,identity,identity,reference);
+  assert.equal((await readEditableDaySale(tx,identity,clientId,day,1,digest)).syncSaleId,saleId);
+  await assert.rejects(readEditableDaySale(tx,identity,'dddddddd-dddd-4ddd-8ddd-dddddddddddd',day,1,digest),/autre client/);
+  await assert.rejects(readEditableDaySale(tx,identity,clientId,'2026-01-02',1,digest),/autre journée/);
+  db.prepare('UPDATE sales SET payload=? WHERE id=1').run(JSON.stringify({...sale,total:1}));
+  await assert.rejects(readEditableDaySale(tx,identity,clientId,day,1,digest),/incohérentes/);
+ }finally{db.close();}
+});
+
+test('parcours expérimental : édition, reprise depuis le registre et facture mise à jour',async()=>{
+ const {captureWorkspaceState}=await import('../../../apps/mobile/day-invoice-workspace-state.js');
+ const {resumeSaleEditAttempt,finishSaleEditAttempt}=await import('../../../apps/mobile/day-invoice-sale-edit-attempt-flow.js');
+ const {db,tx}=setup();try{await saveDayInvoiceReference(tx,identity,identity,reference);
+  const selected=await readEditableDaySale(tx,identity,clientId,day,1,digest),lines=selected.lines.map(l=>({...l,quantity:6}));
+  const preview=await captureDayInvoiceSaleEdit(tx,identity,selected.id,lines,digest);
+  const attempt={saleId:selected.id,clientId,day,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z'};
+  db.exec('BEGIN');await prepareSaleEditAttempt(tx,identity,attempt,digest);db.exec('COMMIT');
+  const state=()=>captureWorkspaceState({preinvoice:async()=>null,sale:async()=>null,saleEdit:()=>readSaleEditAttempt(tx,identity),payment:async()=>null,oldDebt:async()=>null,clients:async()=>['client']});
+  assert.deepEqual(await state(),{pending:{kind:'saleEdit',clientId,day,saleId:1},clients:null});
+  const transaction=async<T>(f:()=>Promise<T>)=>{db.exec('BEGIN');try{const value=await f();db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
+  const io={read:()=>transaction(()=>readSaleEditAttempt(tx,identity)),prepare:(a:typeof attempt)=>transaction(()=>prepareSaleEditAttempt(tx,identity,a,digest)),confirm:(id:string)=>transaction(()=>confirmSaleEditAttempt(tx,identity,id,digest)),acknowledge:(id:string)=>transaction(()=>acknowledgeSaleEditAttempt(tx,identity,id)),cancel:(id:string)=>transaction(()=>cancelSaleEditAttempt(tx,identity,id))};
+  const stored=await resumeSaleEditAttempt(io,attempt);assert.equal(stored.result?.assessment.total,900000);assert.equal(stored.result?.assessment.remaining,100000);
+  assert.equal((await state()).pending?.kind,'saleEdit');await finishSaleEditAttempt(io,attempt);assert.deepEqual(await state(),{pending:null,clients:['client']});
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,100000);
  }finally{db.close();}
 });

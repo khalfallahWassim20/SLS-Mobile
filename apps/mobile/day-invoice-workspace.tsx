@@ -1,13 +1,18 @@
 /** Composition préparatoire des écrans v6. Non montée dans App : la transition
  * de protocole, la session et la lignée doivent être validées avant activation. */
 import * as Print from 'expo-print';
+import {randomUUID} from 'expo-crypto';
+import {operationDay} from './client-timeline';
+import type {SavedSale} from './storage';
+import {DayInvoiceSaleEditScreen} from './day-invoice-sale-edit-screen';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import {journalHtml,journalCsv} from './journal-export';
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {Alert,ScrollView,StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
 import type {DeviceIdentity} from './identified-device';
-import {readDayInvoiceClientsPrototype,captureDayInvoiceWorkspacePrototype,readDayInvoiceFormPrototype,getDayInvoiceDetailPrototype,getDayInvoiceJournalExportPrototype,captureNewDayInvoiceSalePrototype,captureNewDayPreinvoicePrototype,captureOldDebtFormPrototype,daySaleAttemptIOPrototype,dayPaymentAttemptIOPrototype,oldDebtAttemptIOPrototype,preinvoiceAttemptIOPrototype} from './storage';
+import {readDayInvoiceClientsPrototype,captureDayInvoiceWorkspacePrototype,readEditableDaySalePrototype,captureDayInvoiceSaleEditPrototype,readDayInvoiceFormPrototype,getDayInvoiceDetailPrototype,getDayInvoiceJournalExportPrototype,captureNewDayInvoiceSalePrototype,captureNewDayPreinvoicePrototype,captureOldDebtFormPrototype,daySaleAttemptIOPrototype,saleEditAttemptIOPrototype,dayPaymentAttemptIOPrototype,oldDebtAttemptIOPrototype,preinvoiceAttemptIOPrototype} from './storage';
+import {DayInvoiceSaleEditRecoveryScreen} from './day-invoice-sale-edit-recovery-screen';
 import {DayInvoiceSaleCreateScreen} from './day-invoice-sale-create-screen';
 import {DayInvoicePreinvoiceScreen} from './day-invoice-preinvoice-screen';
 import {DayInvoicePaymentScreen} from './day-invoice-payment-screen';
@@ -18,12 +23,13 @@ type Snapshot=Awaited<ReturnType<typeof readDayInvoiceClientsPrototype>>;
 type Invoice=Awaited<ReturnType<typeof readDayInvoiceFormPrototype>>;
 type Props={identity:DeviceIdentity;day:string;commercial:string;onSynchronize?:()=>Promise<void>;onClose?:()=>Promise<void>};
 type Client={id:string;name:string};
-type Screen='clients'|'detail'|PendingDayWork['kind'];
+type Screen='clients'|'detail'|'saleEditDraft'|PendingDayWork['kind'];
 const money=(value:number)=>`${(value/1000).toFixed(3)} DT`;
 export function DayInvoiceWorkspace({identity,day,commercial,onSynchronize,onClose}:Props){
+ const [editing,setEditing]=useState<SavedSale|null>(null);
  const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[invoice,setInvoice]=useState<Invoice|null>(null),[timeline,setTimeline]=useState<DayTimelineItem[]>([]),[selected,setSelected]=useState<Client|null>(null),[work,setWork]=useState<PendingDayWork|null>(null),[screen,setScreen]=useState<Screen>('clients'),[query,setQuery]=useState(''),[limit,setLimit]=useState(40),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const mounted=useRef(false),running=useRef(0),generation=useRef(0),key=`${identity.commercialId}\n${identity.serverOrigin}`;
- const io=useMemo(()=>({sale:daySaleAttemptIOPrototype(identity),preinvoice:preinvoiceAttemptIOPrototype(identity),payment:dayPaymentAttemptIOPrototype(identity),oldDebt:oldDebtAttemptIOPrototype(identity)}),[identity.commercialId,identity.serverOrigin]);
+ const io=useMemo(()=>({sale:daySaleAttemptIOPrototype(identity),saleEdit:saleEditAttemptIOPrototype(identity),preinvoice:preinvoiceAttemptIOPrototype(identity),payment:dayPaymentAttemptIOPrototype(identity),oldDebt:oldDebtAttemptIOPrototype(identity)}),[identity.commercialId,identity.serverOrigin]);
  const refresh=async(isCurrent:()=>boolean)=>{
   // Une lecture échouée garde les boutons bloqués : ne jamais supposer que le
   // registre est vide après une erreur SQLite ou un changement de liaison.
@@ -31,10 +37,11 @@ export function DayInvoiceWorkspace({identity,day,commercial,onSynchronize,onClo
   if(state.pending){const pending=state.pending;setWork(pending);setSelected({id:pending.clientId,name:'Client à vérifier'});setSnapshot(null);setInvoice(null);setTimeline([]);setScreen(pending.kind);return;}
   setWork(null);setSnapshot(state.clients);setSelected(null);setInvoice(null);setTimeline([]);setScreen('clients');
  };
- const run=async(action:(current:()=>boolean)=>Promise<void>,force=false)=>{if(running.current&&!force)return;running.current++;setBusy(true);setError('');const g=++generation.current;const current=()=>mounted.current&&generation.current===g;try{await action(current);}catch(e){if(current()){setSnapshot(null);setInvoice(null);setTimeline([]);setError(e instanceof Error?e.message:'Lecture impossible.');}}finally{running.current--;if(mounted.current&&!running.current)setBusy(false);}};
+ const run=async(action:(current:()=>boolean)=>Promise<void>,force=false)=>{if(running.current&&!force)return;running.current++;setBusy(true);setError('');const g=++generation.current;const current=()=>mounted.current&&generation.current===g;try{await action(current);}catch(e){if(current()){setSnapshot(null);setInvoice(null);setTimeline([]);setEditing(null);setSelected(null);setWork(null);setScreen('clients');setError(e instanceof Error?e.message:'Lecture impossible.');}}finally{running.current--;if(mounted.current&&!running.current)setBusy(false);}};
  useEffect(()=>{mounted.current=true;setSnapshot(null);setInvoice(null);setSelected(null);setWork(null);setScreen('clients');setQuery('');setLimit(40);void run(refresh,true);return()=>{mounted.current=false;generation.current++;};},[key,day]);
  const choose=(client:Client)=>void run(async current=>{const value=await getDayInvoiceDetailPrototype(identity,client.id,day);if(current()){setSelected(client);setInvoice(value.invoice);setTimeline(value.timeline);setScreen('detail');}});
  const retry=()=>void run(refresh);
+ const editSale=(saleId:number)=>{if(!selected)return;const client=selected;void run(async current=>{const value=await readEditableDaySalePrototype(identity,client.id,day,saleId);if(current()){setEditing(value);setScreen('saleEditDraft');}});};
  const sync=()=>void run(async current=>{if(!onSynchronize)throw Error('Synchronisation non configurée.');await onSynchronize();if(current())await refresh(current);});
  const closeDay=()=>{if(!onClose||busy)return;Alert.alert('Clôturer la journée',`Clôturer la journée du ${day} ? La réouverture nécessitera un administrateur.`,[{text:'Annuler',style:'cancel'},{text:'Clôturer',style:'destructive',onPress:()=>void run(async current=>{await onClose();if(current()){await refresh(current);if(current())Alert.alert('Journée clôturée','La clôture a été confirmée par le serveur.');}})}]);};
  const exportJournal=(format:'pdf'|'csv')=>void run(async current=>{
@@ -61,8 +68,10 @@ export function DayInvoiceWorkspace({identity,day,commercial,onSynchronize,onClo
    else if(item.type==='payment'){label=`Règlement facture du jour · ${item.mode}`;detail=`${money(item.amount)} · facture du ${item.invoiceDay}${item.pending?' · en attente de synchronisation':''}`;}
    else if(item.type==='settlement'){label=item.oldDebt?'Règlement ancienne dette':'Règlement global historique';detail=`${money(item.amount)} · ${item.mode}`;}
    else{label='Reçu du journal historique';detail=`Facture ${money(item.prePaid)} · dette ${money(item.oldDebtPaid)} · ${item.mode}${item.creditFull?' · crédit total':''}`;}
-   return <View key={item.key} style={styles.card}><Text style={styles.name}>{label}</Text><Text style={styles.muted}>{date} · heure de Tunisie</Text><Text style={styles.value}>{detail}</Text></View>;})}
+   return <View key={item.key} style={styles.card}><Text style={styles.name}>{label}</Text><Text style={styles.muted}>{date} · heure de Tunisie</Text><Text style={styles.value}>{detail}</Text>{item.type==='sale'&&operationDay(item.date)===day&&button('Modifier cette vente',()=>editSale(Number(item.key.slice(5))))}</View>;})}
   {button('Nouvelle préétablie',()=>setScreen('preinvoice'))}{button('Nouvelle vente sur place',()=>setScreen('sale'))}{button('Régler la facture du jour',()=>setScreen('payment'))}{button('Régler l’ancienne dette',()=>setScreen('oldDebt'))}{button('Retour aux clients',retry)}</>}
+  {screen==='saleEditDraft'&&editing&&detailsClient&&<DayInvoiceSaleEditScreen sale={editing} articles={snapshot?.articles??[]} capture={(id,lines)=>captureDayInvoiceSaleEditPrototype(identity,id,lines)} confirm={input=>io.saleEdit.prepare({...input,clientId:detailsClient.id,day,operationId:randomUUID()})} onBack={backToDetail} onSaved={retry}/>}
+  {screen==='saleEdit'&&work?.kind==='saleEdit'&&work.saleId!==undefined&&<DayInvoiceSaleEditRecoveryScreen bindingKey={key} clientId={work.clientId} day={work.day} saleId={work.saleId} attempts={io.saleEdit} onDone={retry}/>}
   {screen==='preinvoice'&&detailsClient&&<DayInvoicePreinvoiceScreen bindingKey={key} clientId={detailsClient.id} clientName={detailsClient.name} day={detailsDay} capture={(id,d,amount)=>captureNewDayPreinvoicePrototype(identity,id,d,amount)} attempts={io.preinvoice} onBack={work?retry:backToDetail} onSaved={retry} onAbandoned={retry}/>}
   {screen==='sale'&&detailsClient&&<DayInvoiceSaleCreateScreen bindingKey={key} clientId={detailsClient.id} clientName={detailsClient.name} day={detailsDay} articles={snapshot?.articles??[]} capture={(id,d,lines)=>captureNewDayInvoiceSalePrototype(identity,id,d,lines)} attempts={io.sale} onBack={work?retry:backToDetail} onSaved={retry} onAbandoned={retry}/>}
   {screen==='payment'&&detailsClient&&<DayInvoicePaymentScreen bindingKey={key} clientId={detailsClient.id} clientName={detailsClient.name} day={detailsDay} read={()=>readDayInvoiceFormPrototype(identity,detailsClient.id,detailsDay)} attempts={io.payment} onBack={work?retry:backToDetail} onSaved={retry} onAbandoned={retry}/>}

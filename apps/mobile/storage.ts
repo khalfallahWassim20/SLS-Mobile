@@ -1,3 +1,4 @@
+import {readEditableDaySale} from './day-invoice-sale-edit-read';
 import {dayInvoiceSaleEditAttemptSchema,readSaleEditAttempt,prepareSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt,type SaleEditAttempt} from './day-invoice-sale-edit-attempt';
 import {captureWorkspaceState} from './day-invoice-workspace-state';
 import {closeDayInvoicePrototype} from './day-invoice-close-flow';
@@ -697,6 +698,8 @@ export async function confirmOldDebtFormPrototype(identity:DeviceIdentity,input:
  await database.withExclusiveTransactionAsync(async tx=>{result=await confirmOldDebtForm(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }
 
+export async function readEditableDaySalePrototype(identity:DeviceIdentity,clientId:string,day:string,saleId:number){const database=await db();let result!:SavedSale;await database.withExclusiveTransactionAsync(async tx=>{result=await readEditableDaySale(tx,identity,clientId,day,saleId,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+
 /** Révision locale v6 sans trop-perçu ; non raccordée aux écrans actifs. */
 export async function captureDayInvoiceSaleEditPrototype(identity:DeviceIdentity,saleId:number,lines:SavedSale['lines']){
  const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceSaleEdit>>;
@@ -777,10 +780,12 @@ export async function confirmSaleEditAttemptPrototype(identity:DeviceIdentity,id
 export async function acknowledgeSaleEditAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgeSaleEditAttempt(tx,identity,id));}
 export async function cancelSaleEditAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelSaleEditAttempt(tx,identity,id));}
 
+export function saleEditAttemptIOPrototype(identity:DeviceIdentity){return {read:()=>readSaleEditAttemptPrototype(identity),prepare:(input:SaleEditAttempt)=>prepareSaleEditAttemptPrototype(identity,input),confirm:(id:string)=>confirmSaleEditAttemptPrototype(identity,id),acknowledge:(id:string)=>acknowledgeSaleEditAttemptPrototype(identity,id),cancel:(id:string)=>cancelSaleEditAttemptPrototype(identity,id)};}
+
 /** Registres de reprise et clients lus dans le même instant SQLite. */
 export async function captureDayInvoiceWorkspacePrototype(identity:DeviceIdentity){
  const database=await db();let result!:Awaited<ReturnType<typeof captureWorkspaceState<Awaited<ReturnType<typeof readDayInvoiceClients>>>>>;
- await database.withExclusiveTransactionAsync(async tx=>{if(await readSaleEditAttempt(tx,identity))throw Error('Une modification de vente attend vérification : reprise requise.');const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result=await captureWorkspaceState({preinvoice:()=>readPreinvoiceAttempt(tx,identity),sale:()=>readDaySaleAttempt(tx,identity),payment:()=>readDayPaymentAttempt(tx,identity),oldDebt:()=>readOldDebtAttempt(tx,identity),clients:()=>readDayInvoiceClients(tx,identity,digest)});});return result;
+ await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result=await captureWorkspaceState({preinvoice:()=>readPreinvoiceAttempt(tx,identity),sale:()=>readDaySaleAttempt(tx,identity),saleEdit:()=>readSaleEditAttempt(tx,identity),payment:()=>readDayPaymentAttempt(tx,identity),oldDebt:()=>readOldDebtAttempt(tx,identity),clients:()=>readDayInvoiceClients(tx,identity,digest)});});return result;
 }
 /** Facture et chronologie locales capturées dans le même instant SQLite. */
 export async function getDayInvoiceDetailPrototype(identity:DeviceIdentity,clientId:string,day:string){
