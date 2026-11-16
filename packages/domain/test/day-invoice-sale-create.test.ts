@@ -2,6 +2,7 @@ import {test} from 'node:test';import {mkdtempSync,rmSync} from 'node:fs';import
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../../apps/mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
 import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt} from '../../../apps/mobile/day-invoice-payment-attempt.js';
 import {dayInvoiceSaleAttemptSchema,readDaySaleAttempt,prepareDaySaleAttempt,confirmDaySaleAttempt,acknowledgeDaySaleAttempt,cancelDaySaleAttempt} from '../../../apps/mobile/day-invoice-sale-attempt.js';
+import {assertDayInvoiceAttemptsSettled} from '../../../apps/mobile/day-invoice-attempt-guard.js';import {synchronizeDayInvoicePrototype} from '../../../apps/mobile/day-invoice-sync.js';import {captureDayInvoiceClose} from '../../../apps/mobile/day-invoice-close-capture.js';import {assertLegacyMobileDayInvoiceSafe} from '../../../apps/mobile/day-invoice-legacy-guard.js';
 import {captureNewDayInvoiceSale,confirmNewDayInvoiceSale} from '../../../apps/mobile/day-invoice-sale-create.js';import {captureDayInvoiceForm,confirmDayInvoiceForm} from '../../../apps/mobile/day-invoice-form.js';import {readDayInvoiceClients} from '../../../apps/mobile/day-invoice-clients.js';
 const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invoiceId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',saleId='cccccccc-cccc-4ccc-8ccc-cccccccccccc',operationId='11111111-1111-4111-8111-111111111111',paymentId='22222222-2222-4222-8222-222222222222';
 const identity={commercialId:clientId,serverOrigin:'https://example.test'},day='2026-01-01',at='2026-01-01T09:00:00.000Z',digest=async(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -119,5 +120,46 @@ test('tentative durable : déclaration crédit seulement sur facture entièremen
   assert.equal((await readDayPaymentAttempt(tx,identity))?.result?.payment.amount,0);assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,600000);
   await acknowledgeDayPaymentAttempt(tx,identity,paymentId);const after=await captureDayInvoiceForm(tx,identity,clientId,day,digest);
   await assert.rejects(prepareDayPaymentAttempt(tx,identity,{...input,operationId:'99999999-9999-4999-8999-999999999999',fingerprint:after.fingerprint},digest),/crédit|déclaration/i);
+ }finally{db.close();}
+});
+
+test('tentatives v6 : synchronisation et clôture ne précèdent pas une décision inachevée',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,reference);
+  const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),saleInput={clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at};
+  await prepareDaySaleAttempt(tx,identity,saleInput,digest);
+  await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity),/Vente en attente/);
+  await assert.rejects(captureDayInvoiceClose(tx,identity,day,digest),/Vente en attente/);
+  await assertDayInvoiceAttemptsSettled(tx,identity,'2026-01-02');
+  let sends=0;const io={transaction:async<T>(work:(t:typeof tx)=>Promise<T>)=>work(tx),verifyServer:async()=>{},check:()=>{},fetchReference:async()=>{sends++;return reference;},sendSource:async()=>{sends++;throw Error('ne doit pas envoyer');},sendPayment:async()=>{sends++;throw Error('ne doit pas envoyer');}};
+  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Vente en attente/);assert.equal(sends,0);
+  db.exec('BEGIN');await confirmDaySaleAttempt(tx,identity,operationId,digest);db.exec('COMMIT');await assertDayInvoiceAttemptsSettled(tx,identity);
+  const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest),payment={clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-02T10:00:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+  db.prepare("INSERT INTO tour_known_server_states(commercial_id,journal_date,status,version) VALUES(?,?,'closed',1)").run(identity.commercialId,'2026-01-02');
+  await assert.rejects(prepareDayPaymentAttempt(tx,identity,payment,digest),/clôturée/);db.prepare('DELETE FROM tour_known_server_states').run();
+  await prepareDayPaymentAttempt(tx,identity,payment,digest);
+  await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity),/Règlement en attente/);
+  await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity,day),/Règlement en attente/);
+  await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity,'2026-01-02'),/Règlement en attente/);
+  await assertDayInvoiceAttemptsSettled(tx,identity,'2026-01-03');
+  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Règlement en attente/);assert.equal(sends,0);
+  db.exec('BEGIN');await confirmDayPaymentAttempt(tx,identity,paymentId,digest);db.exec('COMMIT');await assertDayInvoiceAttemptsSettled(tx,identity);
+  // Une preuve corrompue bloque même si le reçu est marqué confirmé.
+  const original=db.prepare('SELECT payload FROM day_invoice_payment_attempt').get()?.payload as string,p=JSON.parse(original);p.result.payment.amount++;db.prepare('UPDATE day_invoice_payment_attempt SET payload=?').run(JSON.stringify(p));
+  await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity),/incohérente/);db.prepare('UPDATE day_invoice_payment_attempt SET payload=?').run(original);
+  db.prepare('DELETE FROM day_invoice_reference_cache').run();db.prepare('DELETE FROM day_invoice_payment_outbox').run();db.prepare('DELETE FROM day_invoice_payments').run();
+  await assert.rejects(assertLegacyMobileDayInvoiceSafe(tx),/Tentative de facture du jour/);
+ }finally{db.close();}
+});
+test('synchronisation en cours : aucune nouvelle intention v6 ne peut être préparée',async()=>{
+ const {db,tx}=setup();try{await saveDayInvoiceReference(tx,identity,identity,reference);
+  const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),saleInput={clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at};
+  const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest),payment={clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:at,amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+  let release!:()=>void;const wait=new Promise<void>(resolve=>{release=resolve;});let entered!:()=>void;const ready=new Promise<void>(resolve=>{entered=resolve;});
+  const io={transaction:async<T>(work:(t:typeof tx)=>Promise<T>)=>work(tx),verifyServer:async()=>{entered();await wait;},check:()=>{},fetchReference:async()=>reference,sendSource:async()=>{throw Error('aucune source');},sendPayment:async()=>{throw Error('aucun paiement');}};
+  const sync=synchronizeDayInvoicePrototype(identity,identity,io);await ready;
+  try{await assert.rejects(prepareDaySaleAttempt(tx,identity,saleInput,digest),/Synchronisation en cours/);await assert.rejects(prepareDayPaymentAttempt(tx,identity,payment,digest),/Synchronisation en cours/);assert.equal(await readDaySaleAttempt(tx,identity),null);assert.equal(await readDayPaymentAttempt(tx,identity),null);}finally{release();}
+  assert.deepEqual(await sync,{sources:0,payments:0,remainingSources:0,remainingPayments:0});
+  await prepareDaySaleAttempt(tx,identity,saleInput,digest);assert.ok(await readDaySaleAttempt(tx,identity));
  }finally{db.close();}
 });

@@ -6,6 +6,7 @@
 import {canonicalJson} from '@sls/domain';
 import {dayInvoiceCashClosureCanonical} from '../../packages/domain/src/day-invoice-cash';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
+import {assertDayInvoiceAttemptsSettled} from './day-invoice-attempt-guard';
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readLocalDayInvoiceCash} from './day-invoice-cash';
@@ -17,7 +18,7 @@ type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync
 function parse(raw:string):any{try{const v=JSON.parse(raw);if(!v||typeof v!=='object'||Array.isArray(v))throw Error();return v;}catch{throw Error('Donnée locale illisible : clôture refusée.');}}
 export async function captureDayInvoiceClose(tx:Tx,identity:DeviceIdentity,day:string,digest:(text:string)=>Promise<string>){
  const bound=await getDeviceIdentity(tx);if(!bound||bound.commercialId!==identity.commercialId||bound.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur du téléphone incohérent.');
- await assertLegacyMobileCreditSafe(tx,identity);
+ await assertLegacyMobileCreditSafe(tx,identity);await assertDayInvoiceAttemptsSettled(tx,identity,day);
  const reference=await readDayInvoiceReferenceCache(tx,identity);if(!reference)throw Error('Référence facture du jour indisponible : synchronisez.');
  const pending=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM sales_outbox) OR EXISTS(SELECT 1 FROM journal_sync_outbox)
  OR EXISTS(SELECT 1 FROM day_invoice_payment_outbox) OR EXISTS(SELECT 1 FROM day_invoice_old_debt_outbox) OR EXISTS(SELECT 1 FROM tour_expenses WHERE pending=1)

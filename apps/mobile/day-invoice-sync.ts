@@ -3,6 +3,8 @@
  * Chaque transaction doit être exclusive et l'appelant doit vérifier la
  * session, l'origine et sa preuve de serveur avant tout transfert. */
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
+import {assertDayInvoiceAttemptsSettled} from './day-invoice-attempt-guard';
+import {acquireDayInvoiceSync,releaseDayInvoiceSync} from './day-invoice-sync-lock';
 import {readIdentifiedOutbox,acknowledgeIdentifiedOutbox} from './identified-outbox';
 import {uploadIdentifiedOperations,type IdentifiedEntry} from './identified-upload';
 import {readDayInvoiceOutbox,acknowledgeDayInvoicePayment} from './day-invoice-queue';
@@ -25,14 +27,13 @@ type IO={
  /** Doit lever si session expirée, révoquée ou changée. */
  check:()=>void;
 };
-let busy=false;
 export async function synchronizeDayInvoicePrototype(identity:DeviceIdentity,verified:DeviceIdentity,io:IO){
- if(busy)throw Error('Synchronisation de facture du jour déjà en cours.');busy=true;
+ acquireDayInvoiceSync();
  try{
   const check=io.check;check();
   if(identity.commercialId!==verified.commercialId||identity.serverOrigin!==verified.serverOrigin)throw Error('Session ou serveur différent du téléphone lié.');
   const capture=()=>io.transaction(async tx=>{check();const bound=await getDeviceIdentity(tx);if(!bound||bound.commercialId!==identity.commercialId||bound.serverOrigin!==identity.serverOrigin)throw Error('Identité du téléphone modifiée.');
-   await assertLegacyMobileCreditSafe(tx,identity);
+   await assertLegacyMobileCreditSafe(tx,identity);await assertDayInvoiceAttemptsSettled(tx,identity);
    const sources=await readIdentifiedOutbox(tx,identity),payments=await readDayInvoiceOutbox(tx,identity),debts=await readOldDebtOutbox(tx,identity);validateDayInvoiceQueue(payments,identity,verified);
    const ids=new Set(sources.map(s=>s.operationId));if(ids.size!==sources.length||payments.some(p=>ids.has(p.operationId))||debts.some(p=>ids.has(p.operationId)||payments.some(x=>x.operationId===p.operationId)))throw Error('Identifiant d’opération dupliqué entre files.');check();return {sources,payments,debts};});
   const refresh=async()=>{check();const reference=await io.fetchReference();check();await io.transaction(async tx=>{check();await saveDayInvoiceReference(tx,identity,verified,reference);check();});};
@@ -54,5 +55,5 @@ export async function synchronizeDayInvoicePrototype(identity:DeviceIdentity,ver
    async(entry)=>io.transaction(async tx=>{check();const bound=await getDeviceIdentity(tx);if(!bound||bound.commercialId!==identity.commercialId||bound.serverOrigin!==identity.serverOrigin)throw Error('Identité du téléphone modifiée.');await acknowledgeDayInvoicePayment(tx,entry);check();}));
   await refresh();const remaining=await capture();check();
   return {sources:sourceCount+debtCount,payments:paymentCount,remainingSources:remaining.sources.length+remaining.debts.length,remainingPayments:remaining.payments.length};
- }finally{busy=false;}
+ }finally{releaseDayInvoiceSync();}
 }

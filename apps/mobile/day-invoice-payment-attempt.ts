@@ -3,7 +3,9 @@
  * écrits ensemble et ne sont pas effacés automatiquement. */
 import {canonicalJson} from '@sls/domain';
 import {validateDayPayment,validateDayInvoiceWrite,type DayInvoicePayment} from '../../packages/domain/src/day-invoice';
-import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
+import {getDeviceIdentity,assertDeviceWritable,type DeviceIdentity} from './identified-device';
+import {tunisDay} from './journal';
+import {assertDayInvoiceSyncIdle} from './day-invoice-sync-lock';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {captureDayInvoiceForm,confirmDayInvoiceForm} from './day-invoice-form';
 type Bind=string|number|null;
@@ -39,6 +41,7 @@ export async function readDayPaymentAttempt(tx:Tx,identity:DeviceIdentity):Promi
 export async function prepareDayPaymentAttempt(tx:Tx,identity:DeviceIdentity,input:PaymentAttempt,digest:(text:string)=>Promise<string>){
  validateAttempt(input);const existing=await readDayPaymentAttempt(tx,identity);
  if(existing){if(canonicalJson(existing.attempt)!==canonicalJson(input))throw Error('Un autre règlement attend confirmation ou vérification.');return existing;}
+ assertDayInvoiceSyncIdle();await assertDeviceWritable(tx,identity,[input.day,tunisDay(new Date(input.recordedAt))]);
  const form=await captureDayInvoiceForm(tx,identity,input.clientId,input.day,digest);if(input.fingerprint!==form.fingerprint)throw Error('Facture modifiée : vérifiez avant de confirmer.');
  const pre=form.source.preInvoice;
  const payment:DayInvoicePayment={operationId:input.operationId,clientId:input.clientId,day:input.day,recordedAt:input.recordedAt,amount:input.amount,mode:input.mode,chequeNumber:input.chequeNumber,chequeBank:input.chequeBank,chequeDue:input.chequeDue,preInvoice:pre?{id:pre.id,version:pre.version,total:pre.total,declare:!pre.declared}:null,sales:form.source.sales.map(s=>({id:s.id,version:s.version}))};

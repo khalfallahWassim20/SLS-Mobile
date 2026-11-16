@@ -4,6 +4,7 @@
  * automatiquement après une confirmation ou une erreur. */
 import {canonicalJson,calculateInvoice} from '@sls/domain';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
+import {assertDayInvoiceSyncIdle} from './day-invoice-sync-lock';
 import {tunisDay} from './journal';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {captureNewDayInvoiceSale,confirmNewDayInvoiceSale} from './day-invoice-sale-create';
@@ -43,6 +44,7 @@ export async function readDaySaleAttempt(tx:Tx,identity:DeviceIdentity):Promise<
 export async function prepareDaySaleAttempt(tx:Tx,identity:DeviceIdentity,input:NewSaleAttempt,digest:(text:string)=>Promise<string>){
  validAttempt(input);const existing=await readDaySaleAttempt(tx,identity);
  if(existing){if(canonicalJson(existing.attempt)!==canonicalJson(input))throw Error('Une autre vente attend confirmation ou vérification.');return existing;}
+ assertDayInvoiceSyncIdle();
  const draft=await captureNewDayInvoiceSale(tx,identity,input.clientId,input.day,input.lines,digest);
  if(input.fingerprint!==draft.fingerprint)throw Error('Facture ou solde modifié : vérifiez avant de confirmer.');
  const value:Stored={attempt:input,result:null};await tx.runAsync('INSERT INTO day_invoice_sale_attempt(id,commercial_id,server_origin,payload) VALUES(1,?,?,?)',identity.commercialId,identity.serverOrigin,JSON.stringify(value));return value;
