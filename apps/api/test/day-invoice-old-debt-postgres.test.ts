@@ -11,7 +11,8 @@ import {setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 import {storeDayInvoiceOldDebt} from '../src/day-invoice-old-debt.js';
 import {storeJournalSnapshot} from '../src/journal-store.js';
-import {storeIdentifiedSettlement} from '../src/identified-operations.js';
+import {storeIdentifiedSettlement,storeIdentifiedSale} from '../src/identified-operations.js';
+import {readIdentifiedJournalDay} from '../src/identified-journal-day.js';
 import {readDayInvoiceReference} from '../src/day-invoice-reference.js';
 import {storeDayInvoicePayment} from '../src/day-invoice-store.js';
 import {readServerDayInvoiceSource} from '../src/day-invoice-source.js';
@@ -24,6 +25,8 @@ test('ancienne dette explicite : plafond, concurrence, reprise et facture indép
   const clientId=randomUUID(),commercialId=randomUUID(),day='2026-01-01',at='2026-01-01T09:00:00.000Z';
   await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,$3)',[clientId,'Client fictif',100000]);await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[commercialId,'Commercial fictif']);await pool.query("UPDATE tour_sync_mode SET mode='identified' WHERE id=1");
   const secret='secret fictif suffisamment long pour les tests';await setCommercialCredentials(pool,'admin',commercialId,{login:'debt.test',password:'mot de passe fictif'});const login=await loginCommercial(pool,secret,{login:'debt.test',password:'mot de passe fictif'});assert.ok(login);const session={secret,token:login.token};
+  const saleId=randomUUID(),sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:250000,discount:0,vat:0}],total:250000,paid:0,remaining:250000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''};
+  await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId,version:1,recordedAt:at,sale,refund:0},{...session,enforceMode:true});
   const invoice={id:randomUUID(),journalDate:day,clientId,clientName:'Client fictif',sector:'',amount:600000,createdAt:at};
   await storeJournalSnapshot(pool,{operationId:randomUUID(),version:1,invoice,receipts:[]},'identified',{...session,enforceMode:true});
   const debt=(amount:number)=>{const operationId=randomUUID();return {invoiceDay:day,event:{operationId,settlement:{syncOperationId:operationId,createdAt:at,clientId,clientName:'Client fictif',amount,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''}}};};
@@ -36,13 +39,27 @@ test('ancienne dette explicite : plafond, concurrence, reprise et facture indép
 
   await assert.rejects(storeDayInvoiceOldDebt(pool,debt(40001),session),/supérieur/);
   const competing=await Promise.allSettled([storeDayInvoiceOldDebt(pool,debt(30000),session),storeDayInvoiceOldDebt(pool,debt(30000),session)]);assert.equal(competing.filter(x=>x.status==='fulfilled').length,1);
-  const payment={operationId:randomUUID(),clientId,day,recordedAt:at,amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoice.id,version:1,total:600000,declare:true},sales:[]};
+  const payment={operationId:randomUUID(),clientId,day,recordedAt:at,amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoice.id,version:1,total:600000,declare:true},sales:[{id:saleId,version:1}]};
   assert.equal(await storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource),'received');
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_day_invoice_old_debt')).rows[0].n,2);
-  const reference=await readDayInvoiceReference(pool,true);assert.equal(reference.oldDebtMarkers.length,2);assert.equal(reference.clients.find(c=>c.id===clientId)?.serverBalance,'410000');
+  const reference=await readDayInvoiceReference(pool,true);assert.equal(reference.oldDebtMarkers.length,2);assert.equal(reference.clients.find(c=>c.id===clientId)?.serverBalance,'660000');
+  const report=await readIdentifiedJournalDay(pool,commercialId,day,true),row=report.rows.find(r=>r.clientId===clientId);assert.ok(row);
+  assert.equal(row.preInvoiceTotal,600000);assert.equal(row.tourTotal,250000);assert.equal(row.totalClient,850000);
+  assert.equal(row.dayInvoicePaid,200000);assert.equal(row.oldDebtPaid,90000);assert.equal(row.dayInvoiceOldDebtPaid,90000);assert.equal(row.totalCollected,290000);
+  assert.equal(report.dayInvoiceOldDebtTotal,90000);assert.equal(report.dayInvoiceOldDebtPayments.length,2);
+  assert.equal(report.journalCollected,200000);assert.equal(report.globalSettlementTotal,90000);assert.equal(report.totalCollected,290000);
+  const oldHash=(await pool.query('SELECT payload_hash FROM identified_settlements WHERE operation_id=$1',[first.event.operationId])).rows[0].payload_hash;
+  await pool.query('UPDATE identified_settlements SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),first.event.operationId]);
+  await assert.rejects(readIdentifiedJournalDay(pool,commercialId,day,true),/ancienne dette du journal incohérent/);
+  await pool.query('UPDATE identified_settlements SET payload_hash=$1 WHERE operation_id=$2',[oldHash,first.event.operationId]);
+  const loneId=randomUUID(),otherId=randomUUID();await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,$3)',[loneId,'Client sans facture',100000]);await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[otherId,'Autre commercial']);
+  const lone=debt(25000);lone.event.settlement.clientId=loneId;lone.event.settlement.clientName='Client sans facture';lone.event.settlement.mode='Chèque';lone.event.settlement.chequeNumber='123';lone.event.settlement.chequeBank='Banque';lone.event.settlement.chequeDue='2026-02-01';await storeDayInvoiceOldDebt(pool,lone,session);
+  const withLone=await readIdentifiedJournalDay(pool,commercialId,day,true),loneRow=withLone.rows.find(r=>r.clientId===loneId);assert.ok(loneRow);assert.equal(loneRow.totalClient,0);assert.equal(loneRow.oldDebtPaid,25000);assert.equal(loneRow.totalCollected,25000);assert.equal(withLone.totalCollected,315000);assert.equal(withLone.dayInvoiceOldDebtPayments.find(p=>p.clientId===loneId)?.chequeNumber,'123');
+  const other=await readIdentifiedJournalDay(pool,otherId,day,true),next=await readIdentifiedJournalDay(pool,commercialId,'2026-01-02',true);assert.equal(other.dayInvoiceOldDebtTotal,0);assert.equal(next.dayInvoiceOldDebtTotal,0);
   await assert.rejects(storeIdentifiedSettlement(pool,debt(1000).event,{...session,enforceMode:true}),/ancien traitement/);
   await pool.query('UPDATE identified_day_invoice_old_debt SET invoice_day=$1::date WHERE operation_id=$2',['2026-01-02',first.event.operationId]);
   await assert.rejects(readDayInvoiceReference(pool,true),/Marqueur de dette incohérent/);
+  await assert.rejects(readIdentifiedJournalDay(pool,commercialId,day,true),/ancienne dette du journal incohérent/);
 
  }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await pool?.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}
 });

@@ -65,3 +65,12 @@ test('règlement unifié du jour distinct dans les exports',()=>{
   assert.match(output,/Règlement facture du jour DT/);assert.match(output,/125,000/);assert.match(output,/805,000/);assert.match(output,/jour de leur encaissement/);
  }
 });
+
+test('ancienne dette identifiée : modes, absence de double comptage et contrôles',async()=>{
+ const {randomUUID}=await import('node:crypto'),clientId=randomUUID(),operationId=randomUUID();
+ const report={...day,dayInvoiceOldDebtTotal:25000,globalSettlementTotal:25000,dayInvoiceOldDebtPayments:[{operationId,clientId,clientName:'<Client>',recordedAt:'2026-11-08T10:00:00.000Z',amount:25000,mode:'Chèque',chequeNumber:'123',chequeBank:'Banque',chequeDue:'2026-12-01'}],rows:[{...day.rows[0],clientId,oldDebtPaid:425000,dayInvoiceOldDebtPaid:25000,totalCollected:675000}]};
+ for(const output of [journalServerCsv(report,'maintenant'),journalServerHtml(report,'maintenant')]){assert.match(output,/Chèque/);assert.match(output,/25,000/);assert.match(output,/déjà inclus/);assert.match(output,/Ancien règlement : mode non détaillé/);}
+ assert.throws(()=>journalServerCsv({...report,dayInvoiceOldDebtTotal:1},'maintenant'),/incohérent/);
+ assert.throws(()=>journalServerHtml({...report,dayInvoiceOldDebtPayments:[...report.dayInvoiceOldDebtPayments,...report.dayInvoiceOldDebtPayments]},'maintenant'),/incohérent/);
+ assert.throws(()=>journalServerCsv({...report,rows:[]},'maintenant'),/absent/);
+});

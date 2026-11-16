@@ -4,6 +4,8 @@ import type {PoolClient} from 'pg';
 import {parseDayInvoicePayment,dayInvoicePaymentHash} from './day-invoice-protocol.js';
 import {journalDateSchema} from './journal-protocol.js';
 import {z} from 'zod';
+import {createHash} from 'node:crypto';
+import {settlementSchema} from './identified-operations.js';
 import type {DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
 const checked=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Total de paiement trop élevé.');return Number(n);};
 const dayOf=(at:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(at));
@@ -53,4 +55,24 @@ export async function readDayInvoiceOwnerDeclarations(db:PoolClient,commercialId
  const owned=new Map(invoices.rows.map(r=>[r.id,r.client_id]));
  for(const [id,p] of declarations)if(owned.get(id)!==p.clientId)throw Error('Déclaration de facture attribuée à un autre propriétaire.');
  return [...declarations.values()].map(p=>p.payment);
+}
+
+/** Encaissements explicitement affectés à l'ancienne dette, par commercial et
+ * jour de saisie. Ils restent inclus une seule fois dans les règlements globaux. */
+export async function readDayInvoiceJournalOldDebts(db:PoolClient,commercialId:string,day:string){
+ z.string().uuid().parse(commercialId);journalDateSchema.parse(day);
+ const exists=await db.query("SELECT to_regclass('identified_day_invoice_old_debt') IS NOT NULL AS present");
+ if(typeof exists.rows[0]?.present!=='boolean')throw Error('État du registre ancienne dette indisponible.');
+ if(!exists.rows[0].present)return {payments:[],total:0};
+ const records=await db.query(`SELECT s.operation_id,s.client_id,s.commercial_id,s.journal_date::text AS journal_day,m.invoice_day::text AS invoice_day,s.payload,s.payload_hash,c.name,c.sector
+ FROM identified_day_invoice_old_debt m JOIN identified_settlements s ON s.operation_id=m.operation_id JOIN clients c ON c.id=s.client_id
+ WHERE s.commercial_id=$1 AND s.journal_date=$2::date ORDER BY s.operation_id LIMIT 20001`,[commercialId,day]);
+ if(records.rows.length>20000)throw Error('Trop de règlements ancienne dette : comparaison incomplète refusée.');
+ let total=0n;
+ const payments=records.rows.map(row=>{
+  const event=settlementSchema.parse(row.payload),p=event.settlement,hash=createHash('sha256').update(JSON.stringify(event)).digest('hex');
+  if(event.operationId!==row.operation_id||p.syncOperationId!==event.operationId||p.clientId!==row.client_id||row.commercial_id!==commercialId||row.journal_day!==day||row.invoice_day!==day||dayOf(p.createdAt)!==day||hash!==row.payload_hash||typeof row.name!=='string'||typeof row.sector!=='string'||(p.mode==='Chèque'&&(!p.chequeNumber.trim()||!p.chequeBank.trim()||!p.chequeDue.trim()))||(p.mode!=='Chèque'&&(p.chequeNumber||p.chequeBank||p.chequeDue)))throw Error('Règlement ancienne dette du journal incohérent.');
+  total+=BigInt(p.amount);return {operationId:event.operationId,clientId:p.clientId,clientName:row.name,sector:row.sector,recordedAt:p.createdAt,amount:p.amount,mode:p.mode,chequeNumber:p.chequeNumber,chequeBank:p.chequeBank,chequeDue:p.chequeDue};
+ });
+ return {payments,total:checked(total)};
 }
