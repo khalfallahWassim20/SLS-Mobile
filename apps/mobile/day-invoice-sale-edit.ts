@@ -1,6 +1,7 @@
 /** Révision locale v6 expérimentale, uniquement sans trop-perçu. Les fonctions
  * s'exécutent sous transaction SQLite exclusive et ne sont pas montées dans l'UI. */
 import {canonicalJson,calculateInvoice} from '@sls/domain';
+import {planDayInvoiceSaleExcess} from '../../packages/domain/src/day-invoice-excess-plan';
 import {assessDayInvoiceSaleRevision} from '../../packages/domain/src/day-invoice';
 import {getDeviceIdentity,assertDeviceWritable,assertKnownDeviceEntity,recordDeviceOperation,type DeviceIdentity} from './identified-device';
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
@@ -86,10 +87,13 @@ export async function captureDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,sa
  const oldTotal=calculateInvoice(previous.lines.map(l=>({quantity:l.quantity,unitPrice:l.unitPrice,discountRate:l.discount,vatRate:l.vat}))).total;
  if(oldTotal!==previous.total||previous.remaining!==Math.max(0,previous.total-previous.paid))throw Error('Totaux de vente locale incohérents.');
  const total=calculateInvoice(clean.map(l=>({quantity:l.quantity,unitPrice:l.unitPrice,discountRate:l.discount,vatRate:l.vat}))).total;
- const assessment=assessDayInvoiceSaleRevision({...invoice.source,dayPayments:invoice.view.payments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))},previous.syncSaleId,total);
+ const source={...invoice.source,dayPayments:invoice.view.payments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))};
+ const assessment=assessDayInvoiceSaleRevision(source,previous.syncSaleId,total);
  const balanceAfter=BigInt(client.balance)+BigInt(assessment.balanceDelta);if(balanceAfter>BigInt(Number.MAX_SAFE_INTEGER)||balanceAfter<BigInt(Number.MIN_SAFE_INTEGER))throw Error('Solde trop élevé.');
+ // Simulation uniquement : aucune option ne valide ni ne comptabilise le choix.
+ const excessPlan=assessment.requiresChoice?planDayInvoiceSaleExcess(source,previous.syncSaleId,total,client.balance):null;
  const fingerprint=canonicalJson({previous,invoice:invoice.fingerprint,balance:client.balance,lines:clean});
- return {previous,lines:clean,day,assessment,balanceAfter:Number(balanceAfter),fingerprint};
+ return {previous,lines:clean,day,assessment,balanceAfter:Number(balanceAfter),excessPlan,fingerprint};
 }
 export async function confirmDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,input:{saleId:number;lines:Line[];fingerprint:string;operationId:string;recordedAt:string},digest:(text:string)=>Promise<string>){
  if(!uuid.test(input.operationId)||typeof input.recordedAt!=='string'||!Number.isFinite(Date.parse(input.recordedAt))||new Date(input.recordedAt).toISOString()!==input.recordedAt)throw Error('Identifiant ou date de révision invalide.');
