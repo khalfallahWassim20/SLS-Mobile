@@ -1,6 +1,7 @@
 /** Référence préparatoire, jamais exposée par l'API normale. Tous les marqueurs
  * et les soldes sont lus dans le même instantané PostgreSQL. */
 import type {Pool,PoolClient} from 'pg';
+import {assertNoUnprojectedCompensation} from './day-invoice-compensation.js';
 import {summarizePreInvoice,canonicalJson} from '@sls/domain';
 import {createHash} from 'node:crypto';
 import {readIdentifiedReferenceInTransaction} from './identified-reference.js';
@@ -15,6 +16,7 @@ function tunisDay(iso:string):string {
 }
 
 export async function readDayInvoiceReferenceInTransaction(db:PoolClient,includeInactive=false) {
+ await assertNoUnprojectedCompensation(db);
  const base=await readIdentifiedReferenceInTransaction(db,includeInactive);
  const active=includeInactive?'':' AND c.active';
  const dayRows=await db.query(`WITH combined AS (

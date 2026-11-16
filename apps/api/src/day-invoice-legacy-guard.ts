@@ -2,6 +2,7 @@
  * calculer un paiement unifié. La table n'existe pas sur le serveur normal. */
 import type {PoolClient} from 'pg';
 import {JournalConflict} from './journal-store.js';
+import {assertNoUnprojectedCompensation} from './day-invoice-compensation.js';
 async function hasDayInvoiceTable(db:PoolClient):Promise<boolean> {
  const result=await db.query("SELECT to_regclass('identified_day_invoice_payments') IS NOT NULL AS present");
  if(typeof result.rows[0]?.present!=='boolean')throw Error('État du registre facture du jour indisponible.');
@@ -44,6 +45,7 @@ export async function assertDayInvoiceAwareJournalSafe(db:PoolClient,clientId:st
 }
 /** Après verrou de clôture : ne pas valider une caisse qui ignore les paiements. */
 export async function assertLegacyDayCloseSafe(db:PoolClient,commercialId:string,day:string):Promise<void> {
+ await assertNoUnprojectedCompensation(db);
  if(!await hasDayInvoiceTable(db))return;
  const result=await db.query(`SELECT EXISTS(SELECT 1 FROM identified_day_invoice_payments WHERE commercial_id=$1 AND (invoice_day=$2::date OR event_day=$2::date))
  OR EXISTS(SELECT 1 FROM identified_day_invoice_payments p JOIN identified_journal_invoices i ON i.id::text=p.payload->'preInvoice'->>'id'
@@ -59,6 +61,7 @@ export async function assertNoDayInvoiceOperation(db:PoolClient,id:string):Promi
 /** Une clôture expérimentale ne doit pas interpréter une migration absente
  * comme un registre de paiements vide. */
 export async function assertDayInvoiceCloseRegistry(db:PoolClient):Promise<void>{
+ await assertNoUnprojectedCompensation(db);
  if(!await hasDayInvoiceTable(db))throw new JournalConflict('Registre de facture du jour indisponible.');
  const marker=await db.query("SELECT to_regclass('identified_day_invoice_old_debt') IS NOT NULL AS present");
  if(marker.rows[0]?.present!==true)throw new JournalConflict('Registre d’ancienne dette indisponible.');

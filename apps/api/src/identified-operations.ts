@@ -11,6 +11,7 @@ import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertLegacyClientDaySafe,lockDayInvoiceClient,assertDayInvoiceAwareSaleSafe} from './day-invoice-legacy-guard.js';
 import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import {readServerDayInvoiceSource} from './day-invoice-source.js';
+import {compensationSchema,compensationHash,compensationRegistryExists} from './day-invoice-compensation.js';
 import {assessDayInvoiceSaleRevision,type DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
 
 const uuid=z.string().uuid(), money=z.number().int().safe().nonnegative();
@@ -35,8 +36,9 @@ async function clientExists(db:PoolClient,id:string) {
  if (!(await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL FOR SHARE',[id])).rows.length) throw new JournalConflict('Client introuvable.');
 }
 /** L'identité provient exclusivement de la session. Les anciennes opérations ne sont jamais réattribuées. */
-export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Session,testGuard?:(db:PoolClient,event:{operationId:string;saleId:string;version:number})=>Promise<void>):Promise<'received'|'duplicate'> {
- const event=saleEventSchema.parse(input),sale=event.sale;
+export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Session,testGuard?:(db:PoolClient,event:{operationId:string;saleId:string;version:number})=>Promise<void>,compensationInput?:unknown):Promise<'received'|'duplicate'> {
+ const event=saleEventSchema.parse(input),sale=event.sale,compensation=compensationInput===undefined?null:compensationSchema.parse(compensationInput);
+ if(compensation&&(!session.enforceMode||!session.dayInvoiceAware||testGuard))throw new JournalConflict('Compensation réservée au protocole de facture du jour.');
  if(event.saleId!==sale.syncSaleId || event.version!==sale.syncVersion) throw new RangeError('Identifiants de vente incohérents.');
  const recordedMs=Date.parse(event.recordedAt),createdMs=Date.parse(sale.createdAt);
  if(recordedMs<createdMs || (event.version===1 && recordedMs!==createdMs)) throw new RangeError('Date de l’opération incohérente.');
@@ -55,9 +57,14 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   // Un verrou sur l'opération et un sur la vente assurent l'idempotence et l'ordre des versions.
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['identified-sale-operation',event.operationId]);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['identified-sale',event.saleId]);
-  const same=await db.query('SELECT payload_hash,commercial_id FROM identified_sale_events WHERE operation_id=$1',[event.operationId]);
+  const same=await db.query('SELECT payload_hash,commercial_id,payload FROM identified_sale_events WHERE operation_id=$1',[event.operationId]);
+  const hasCompensationRegistry=await compensationRegistryExists(db);
+  if(compensation&&!hasCompensationRegistry)throw new JournalConflict('Registre de compensation indisponible.');
   if(same.rows.length) {
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
+   const existing=hasCompensationRegistry?await db.query('SELECT client_id,commercial_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash FROM identified_day_invoice_compensations WHERE operation_id=$1',[event.operationId]):{rows:[]};
+   if((existing.rows.length===1)!==!!compensation)throw new JournalConflict('Reprise de compensation incohérente.');
+   if(compensation){const row=existing.rows[0];let valid=false;try{valid=digest(JSON.stringify(saleEventSchema.parse(same.rows[0].payload)))===hash&&row.client_id===sale.clientId&&row.commercial_id===actor.id&&row.invoice_day===day&&row.event_day===operationDay&&compensationHash(compensationSchema.parse(row.payload))===row.payload_hash&&row.payload_hash===compensationHash(compensation);}catch{}if(!valid)throw new JournalConflict('Preuve de compensation incohérente.');}
    await db.query('COMMIT');return 'duplicate';
   }
   if(session.enforceMode&&!session.creditAware)await assertOldCreditProtocolSafe(db);
@@ -88,21 +95,33 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if((last.rows.length && previous.journal_date!==day) || old.clientId!==sale.clientId || old.createdAt!==sale.createdAt || sale.paid!==old.paid-event.refund || event.refund>Math.max(0,old.paid-sale.total)) throw new JournalConflict('Modification ou attribution incohérente.');
   }
   if(settledDay){
-   // Un remboursement issu d'un paiement unifié exige un protocole dédié :
-   // cette route n'autorise que les révisions sans trop-perçu ni remboursement.
+   // Le champ historique refund ne peut pas exprimer un paiement unifié.
+   // Un choix dédié est admis uniquement par l'appel interne préparatoire.
    if(event.refund!==0)throw new JournalConflict('Remboursement d’une facture du jour réglée : rapprochement requis.');
    const source=await readServerDayInvoiceSource(db,{clientId:sale.clientId,day} as DayInvoicePayment);
+   if(compensation){
+    const paymentTimes=await db.query('SELECT payload FROM identified_day_invoice_payments WHERE client_id=$1 AND invoice_day=$2::date',[sale.clientId,day]);
+    if(paymentTimes.rows.some(r=>typeof r.payload?.recordedAt!=='string'||!Number.isFinite(Date.parse(r.payload.recordedAt))||Date.parse(r.payload.recordedAt)>recordedMs))throw new JournalConflict('Modification antérieure à un paiement : rapprochement requis.');
+   }
    const before=source.sales.find(s=>s.id===event.saleId);
    if(!before||before.version!==event.version-1||before.total!==previous?.payload?.sale?.total||before.paid!==previous?.payload?.sale?.paid)throw new JournalConflict('Vente ou facture du jour modifiée : actualisation nécessaire.');
    try{
     const computed=assessDayInvoiceSaleRevision(source,event.saleId,sale.total);
-    if(computed.requiresChoice)throw Error('Paiement supérieur au total modifié.');
-   }catch{throw new JournalConflict('Total modifié inférieur aux paiements : choix remboursement ou crédit requis.');}
-  }
+    if(compensation){if(!computed.requiresChoice||computed.excess!==compensation.amount||computed.previousTotal!==compensation.previousTotal||computed.paid!==compensation.paid)throw Error('Choix ou facture modifiés.');}
+    else if(computed.requiresChoice)throw Error('Paiement supérieur au total modifié.');
+   }catch{throw new JournalConflict('Total modifié ou compensation incohérente : choix remboursement ou crédit requis.');}
+  } else if(compensation)throw new JournalConflict('Aucun règlement unifié ne justifie cette compensation.');
   await clientExists(db,sale.clientId);
   await db.query('INSERT INTO identified_sale_events(operation_id,sale_id,version,client_id,commercial_id,journal_date,event_date,payload,payload_hash) VALUES($1,$2,$3,$4,$5,$6::date,$7::date,$8::jsonb,$9)',[event.operationId,event.saleId,event.version,sale.clientId,actor.id,day,operationDay,payload,hash]);
+  if(compensation)await db.query('INSERT INTO identified_day_invoice_compensations(operation_id,client_id,commercial_id,invoice_day,event_day,payload,payload_hash) VALUES($1,$2,$3,$4::date,$5::date,$6::jsonb,$7)',[event.operationId,sale.clientId,actor.id,day,operationDay,JSON.stringify(compensation),compensationHash(compensation)]);
   await db.query('COMMIT');return 'received';
  } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
+}
+/** Interne uniquement : la révision et son choix sont écrits atomiquement.
+ * Pas de route ni d'activation : les projections de solde et caisse ne savent
+ * pas encore comptabiliser ces enregistrements et doivent rester bloquées. */
+export async function storeDayInvoiceCompensatedSale(pool:Pool,input:unknown,choice:unknown,session:{token:string;secret:string}){
+ return storeIdentifiedSale(pool,input,{...session,enforceMode:true,dayInvoiceAware:true},undefined,choice);
 }
 export async function storeIdentifiedSettlement(pool:Pool,input:unknown,session:Session):Promise<'received'|'duplicate'> {
  const event=settlementSchema.parse(input),p=event.settlement;

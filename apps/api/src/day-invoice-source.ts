@@ -1,5 +1,6 @@
 /** Projection PostgreSQL du client/jour pour le nouveau protocole, non exposée. */
 import type {PoolClient} from 'pg';
+import {assertNoUnprojectedCompensation} from './day-invoice-compensation.js';
 import {summarizePreInvoice} from '@sls/domain';
 import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 import {parseStoredOldDebt} from './settlement-protocol.js';
@@ -13,6 +14,7 @@ function tunisDay(iso:string):string {
 /** Exige le verrou client/jour ainsi qu'une transaction du même client PG.
  * La route reste désactivée tant que les écritures de vente ne partagent pas ce verrou. */
 export async function readServerDayInvoiceSource(db:PoolClient,event:DayInvoicePayment) {
+ await assertNoUnprojectedCompensation(db);
  const reference=await readIdentifiedReferenceInTransaction(db,true);
  if(!reference.clients.some(c=>c.id===event.clientId))throw Error('Client introuvable.');
  const salesRows=await db.query(`WITH combined AS (

@@ -1,5 +1,6 @@
 /** Vue interne par commercial, limitée aux données identifiées et non exposée. */
 import type {Pool,PoolClient} from 'pg';
+import {assertNoUnprojectedCompensation} from './day-invoice-compensation.js';
 import {z} from 'zod';
 import {buildServerJournalDay} from './journal-day.js';
 import {journalDateSchema,parseJournalSnapshot} from './journal-protocol.js';
@@ -10,6 +11,7 @@ import {readDayInvoiceJournalPayments,readDayInvoiceDeclarations,readDayInvoiceJ
 /** L'appelant doit fournir un instantané REPEATABLE READ ; cette fonction ne
  * vérifie pas le protocole et ne doit pas être utilisée seule par une route. */
 export async function readIdentifiedJournalDayInTransaction(db:PoolClient,commercialId:string,day:string) {
+ await assertNoUnprojectedCompensation(db);
  z.string().uuid().parse(commercialId);journalDateSchema.parse(day);
   const commercial=await db.query('SELECT id,name FROM commercials WHERE id=$1 AND deleted_at IS NULL',[commercialId]);
   if(!commercial.rows.length)throw new RangeError('Commercial introuvable.');
