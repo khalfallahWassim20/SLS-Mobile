@@ -11,7 +11,7 @@ import {storeIdentifiedSale,storeDayInvoiceCompensatedSale} from '../src/identif
 import {storeJournalSnapshot} from '../src/journal-store.js';
 import {readServerDayInvoiceSource} from '../src/day-invoice-source.js';
 import {readDayInvoiceReference,readDayInvoiceCompensationProjection} from '../src/day-invoice-reference.js';
-import {readIdentifiedJournalDay} from '../src/identified-journal-day.js';
+import {readIdentifiedJournalDay,readCompensatedJournalDay} from '../src/identified-journal-day.js';
 
 for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : révision atomique, concurrence et reprise`,async()=>{
  const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL de test manquante');
@@ -25,25 +25,39 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const creationId=randomUUID();await storeIdentifiedSale(pool,{operationId:creationId,saleId,version:1,recordedAt:at,sale,refund:0},{...session,enforceMode:true});
   const invoice={id:invoiceId,journalDate:day,clientId,clientName:'Client fictif',sector:'',amount:600000,createdAt:at};await storeJournalSnapshot(pool,{operationId:randomUUID(),version:1,invoice,receipts:[]},'identified',{...session,enforceMode:true});
   const payment={operationId:randomUUID(),clientId,day,recordedAt:'2026-01-01T09:30:00.000Z',amount:800000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoiceId,version:1,total:600000,declare:true},sales:[{id:saleId,version:1}]};await storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource);
-  const edit={operationId:randomUUID(),saleId,version:2,recordedAt:'2026-01-01T10:00:00.000Z',sale:{...sale,syncVersion:2,lines:[{...sale.lines[0],unitPrice:150000}],total:150000,remaining:150000},refund:0};
+  // Le remboursement peut être saisi par un autre commercial que celui de la vente.
+  const actorId=choice==='refund'?randomUUID():commercialId;
+  let editSession=session;
+  if(actorId!==commercialId){await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[actorId,'Autre commercial fictif']);await setCommercialCredentials(pool,'admin',actorId,{login:'comp.other',password:'mot de passe fictif'});const actorLogin=await loginCommercial(pool,secret,{login:'comp.other',password:'mot de passe fictif'});assert.ok(actorLogin);editSession={token:actorLogin.token,secret};}
+  const eventDay=choice==='refund'?'2026-01-02':day;
+  const edit={operationId:randomUUID(),saleId,version:2,recordedAt:`${eventDay}T10:00:00.000Z`,sale:{...sale,syncVersion:2,lines:[{...sale.lines[0],unitPrice:150000}],total:150000,remaining:150000},refund:0};
   const compensation={choice,amount:50000,previousTotal:850000,paid:800000};
-  await assert.rejects(storeDayInvoiceCompensatedSale(pool,{...edit,operationId:randomUUID(),recordedAt:'2026-01-01T09:15:00.000Z'},compensation,session),/antérieure à un paiement/);
-  for(const invalid of [{...compensation,amount:49999},{...compensation,previousTotal:849999},{...compensation,paid:799999}])await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,invalid,session),/compensation incohérente/);
+  await assert.rejects(storeDayInvoiceCompensatedSale(pool,{...edit,operationId:randomUUID(),recordedAt:'2026-01-01T09:15:00.000Z'},compensation,editSession),/antérieure à un paiement/);
+  for(const invalid of [{...compensation,amount:49999},{...compensation,previousTotal:849999},{...compensation,paid:799999}])await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,invalid,editSession),/compensation incohérente/);
   const nonExcess={...edit,operationId:randomUUID(),sale:{...edit.sale,lines:[{...sale.lines[0],unitPrice:300000}],total:300000,remaining:300000}};
-  await assert.rejects(storeDayInvoiceCompensatedSale(pool,nonExcess,compensation,session),/compensation incohérente/);
+  await assert.rejects(storeDayInvoiceCompensatedSale(pool,nonExcess,compensation,editSession),/compensation incohérente/);
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);
   // Une erreur d'insertion de compensation doit annuler la révision associée.
   await pool.query('ALTER TABLE identified_day_invoice_compensations ADD CONSTRAINT reject_test CHECK (false)');
-  await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,compensation,session));
+  await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession));
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);
   await pool.query('ALTER TABLE identified_day_invoice_compensations DROP CONSTRAINT reject_test');
-  const received=await Promise.all([storeDayInvoiceCompensatedSale(pool,edit,compensation,session),storeDayInvoiceCompensatedSale(pool,edit,compensation,session)]);
+  const received=await Promise.all([storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession),storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession)]);
   assert.deepEqual(received.sort(),['duplicate','received']);
-  const stored=await pool.query('SELECT payload,client_id,commercial_id FROM identified_day_invoice_compensations WHERE operation_id=$1',[edit.operationId]);assert.equal(stored.rows.length,1);assert.deepEqual(stored.rows[0].payload,compensation);assert.equal(stored.rows[0].client_id,clientId);assert.equal(stored.rows[0].commercial_id,commercialId);
+  const stored=await pool.query('SELECT payload,client_id,commercial_id FROM identified_day_invoice_compensations WHERE operation_id=$1',[edit.operationId]);assert.equal(stored.rows.length,1);assert.deepEqual(stored.rows[0].payload,compensation);assert.equal(stored.rows[0].client_id,clientId);assert.equal(stored.rows[0].commercial_id,actorId);
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,2);
   const projection=await readDayInvoiceCompensationProjection(pool,edit.operationId);
-  assert.deepEqual(projection,{operationId:edit.operationId,clientId,commercialId,invoiceDay:day,eventDay:day,recordedAt:edit.recordedAt,choice,compensation:50000,total:750000,paidBeforeCompensation:800000,applied:750000,remaining:0,balance:choice==='refund'?100000:50000,refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0});
+  assert.deepEqual(projection,{operationId:edit.operationId,clientId,commercialId:actorId,invoiceDay:day,eventDay,recordedAt:edit.recordedAt,choice,compensation:50000,total:750000,paidBeforeCompensation:800000,applied:750000,remaining:0,balance:choice==='refund'?100000:50000,refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0});
   assert.equal((await pool.query("SELECT payload->'sale'->>'total' AS total FROM identified_sale_events WHERE operation_id=$1",[edit.operationId])).rows[0].total,'150000');
+  const originalDay=await readCompensatedJournalDay(pool,commercialId,day,edit.operationId),originalRow=originalDay.rows.find(r=>r.clientId===clientId);assert.ok(originalRow);
+  assert.equal(originalRow.preInvoiceTotal,600000);assert.equal(originalRow.tourTotal,150000);assert.equal(originalRow.totalClient,750000);assert.equal(originalRow.dayInvoicePaid,800000);
+  assert.equal(originalDay.totalCollected,800000);assert.equal(originalDay.collectedAfterCompensationRefund,800000);assert.equal(originalDay.compensationRefundTotal,0);assert.equal(originalDay.compensationCreditTotal,choice==='credit'?50000:0);
+  const nextDay=await readCompensatedJournalDay(pool,actorId,'2026-01-02',edit.operationId);
+  assert.equal(nextDay.totalCollected,0);assert.equal(nextDay.collectedAfterCompensationRefund,choice==='refund'?-50000:0);assert.equal(nextDay.compensationRefundTotal,choice==='refund'?50000:0);assert.equal(nextDay.compensationCreditTotal,0);
+  if(choice==='refund'){const nextRow=nextDay.rows.find(r=>r.clientId===clientId);assert.ok(nextRow);assert.equal(nextRow.totalClient,0);assert.equal(nextRow.afterCompensationRefund,-50000);assert.equal(nextRow.compensationRefund,50000);}
+  const otherCommercial=randomUUID();await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[otherCommercial,'Autre commercial']);
+  const otherJournal=await readCompensatedJournalDay(pool,otherCommercial,eventDay,edit.operationId);assert.equal(otherJournal.compensationEvents.length,0);assert.equal(otherJournal.compensationRefundTotal,0);assert.equal(otherJournal.compensationCreditTotal,0);
+
   // L'excédent peut compenser une dette ancienne ou créer un crédit net.
   await pool.query('UPDATE clients SET opening_balance=0 WHERE id=$1',[clientId]);
   assert.equal((await readDayInvoiceCompensationProjection(pool,edit.operationId)).balance,choice==='refund'?0:-50000);
@@ -51,6 +65,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const originalHash=(await pool.query('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[edit.operationId])).rows[0].payload_hash;
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),edit.operationId]);
   await assert.rejects(readDayInvoiceCompensationProjection(pool,edit.operationId),/Preuve de compensation incohérente/);
+  await assert.rejects(readCompensatedJournalDay(pool,actorId,eventDay,edit.operationId),/Preuve de compensation incohérente/);
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',[originalHash,edit.operationId]);
   const previousHash=(await pool.query('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[creationId])).rows[0].payload_hash;
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),creationId]);
@@ -62,13 +77,13 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
 
 
 
-  await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,{...compensation,choice:choice==='refund'?'credit':'refund'},session),/Preuve de compensation incohérente/);
-  await assert.rejects(storeIdentifiedSale(pool,edit,{...session,enforceMode:true,dayInvoiceAware:true}),/Reprise de compensation incohérente/);
+  await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,{...compensation,choice:choice==='refund'?'credit':'refund'},editSession),/Preuve de compensation incohérente/);
+  await assert.rejects(storeIdentifiedSale(pool,edit,{...editSession,enforceMode:true,dayInvoiceAware:true}),/Reprise de compensation incohérente/);
   await pool.query("UPDATE identified_day_invoice_compensations SET payload=jsonb_set(payload,'{amount}','1'::jsonb) WHERE operation_id=$1",[edit.operationId]);
-  await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,compensation,session),/Preuve de compensation incohérente/);
+  await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession),/Preuve de compensation incohérente/);
   await assert.rejects(readDayInvoiceCompensationProjection(pool,edit.operationId),/Preuve de compensation incohérente/);
   await pool.query('UPDATE identified_day_invoice_compensations SET payload=$1::jsonb WHERE operation_id=$2',[JSON.stringify(compensation),edit.operationId]);
-  assert.equal(await storeDayInvoiceCompensatedSale(pool,edit,compensation,session),'duplicate');
+  assert.equal(await storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession),'duplicate');
   // Les écrans/projections non adaptés doivent refuser, pas afficher un faux solde.
   await assert.rejects(readDayInvoiceReference(pool,true),/non projetée/);
   await assert.rejects(readIdentifiedJournalDay(pool,commercialId,day,true),/non projetée/);

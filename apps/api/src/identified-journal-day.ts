@@ -1,6 +1,7 @@
 /** Vue interne par commercial, limitée aux données identifiées et non exposée. */
 import type {Pool,PoolClient} from 'pg';
 import {assertNoUnprojectedCompensation} from './day-invoice-compensation.js';
+import {readDayInvoiceCompensationProjectionInTransaction} from './day-invoice-reference.js';
 import {z} from 'zod';
 import {buildServerJournalDay} from './journal-day.js';
 import {journalDateSchema,parseJournalSnapshot} from './journal-protocol.js';
@@ -12,6 +13,10 @@ import {readDayInvoiceJournalPayments,readDayInvoiceDeclarations,readDayInvoiceJ
  * vérifie pas le protocole et ne doit pas être utilisée seule par une route. */
 export async function readIdentifiedJournalDayInTransaction(db:PoolClient,commercialId:string,day:string) {
  await assertNoUnprojectedCompensation(db);
+ return readUnprojectedJournalDay(db,commercialId,day);
+}
+/** Lecture brute uniquement utilisable après vérification de la compensation. */
+async function readUnprojectedJournalDay(db:PoolClient,commercialId:string,day:string) {
  z.string().uuid().parse(commercialId);journalDateSchema.parse(day);
   const commercial=await db.query('SELECT id,name FROM commercials WHERE id=$1 AND deleted_at IS NULL',[commercialId]);
   if(!commercial.rows.length)throw new RangeError('Commercial introuvable.');
@@ -72,6 +77,28 @@ export async function readIdentifiedJournalDayInTransaction(db:PoolClient,commer
   const state=closure.rows[0];
   return {...dayResult,rows,clientCount:rows.length,dayInvoicePayments:unified.payments,dayInvoiceTotal:unified.total,dayInvoiceOldDebtPayments:oldDebt.payments,dayInvoiceOldDebtTotal:oldDebt.total,commercial:commercial.rows[0],closure:{status:state?.status??'open',version:state?.version??0,closedAt:state?.closed_at?new Date(state.closed_at).toISOString():null},
    journalCollected,inheritedJournalPayments:inheritedPayments,inheritedJournalTotal:Number(inheritedTotal),globalSettlementCount:settlements.rows[0].count,globalSettlementTotal:Number(settlements.rows[0].amount),totalCollected:Number(total),expenseTotal:Number(expenseTotal),expenses:expenses.rows.map(e=>({operationId:e.operationId,createdAt:new Date(e.createdAt).toISOString(),description:e.description,amount:Number(e.amount),version:e.version})),expenseHistory:expenseHistory.rows.map(r=>({...r,recordedAt:new Date(r.recordedAt).toISOString(),previousAmount:Number(r.previousAmount),amount:Number(r.amount)})),expenseCancellations:expenseCancellations.rows.map(c=>({...c,recordedAt:new Date(c.recordedAt).toISOString(),amount:Number(c.amount)})),closureEvents:events.rows};
+}
+/** Projection interne pour une seule compensation prouvée. Elle n'active ni
+ * clôture, ni export, ni route et ne prouve pas le versement au client. Les
+ * remboursements appartiennent au jour et commercial de leur enregistrement. */
+export async function readCompensatedJournalDay(pool:Pool,commercialId:string,day:string,operationId:string){
+ z.string().uuid().parse(commercialId);z.string().uuid().parse(operationId);journalDateSchema.parse(day);
+ const db=await pool.connect();try{
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);
+  const projection=await readDayInvoiceCompensationProjectionInTransaction(db,operationId),journal=await readUnprojectedJournalDay(db,commercialId,day);
+  const own=projection.commercialId===commercialId&&projection.eventDay===day;
+  const safe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Total encaissé trop élevé.');return Number(n);};
+  const refund=own?projection.refund:0,credit=own?projection.credit:0;
+  const net=safe(BigInt(journal.totalCollected)-BigInt(refund));
+  const rows=journal.rows.map(row=>({...row,compensationRefund:own&&row.clientId===projection.clientId?refund:0,compensationCredit:own&&row.clientId===projection.clientId?credit:0,afterCompensationRefund:safe(BigInt(row.totalCollected)-(own&&row.clientId===projection.clientId?BigInt(refund):0n))}));
+  if(own&&!rows.some(row=>row.clientId===projection.clientId)){
+   const result=await db.query('SELECT name,sector FROM clients WHERE id=$1 AND deleted_at IS NULL',[projection.clientId]);const client=result.rows[0];if(!client||typeof client.name!=='string'||typeof client.sector!=='string')throw Error('Client de compensation indisponible.');
+   rows.push({clientId:projection.clientId,clientName:client.name,sector:client.sector,preInvoiceId:null,preInvoiceTotal:0,preInvoicePaid:0,oldDebtPaid:0,preInvoiceRemaining:0,declared:false,tourTotal:0,tourPaid:0,saleCount:0,totalClient:0,totalCollected:0,dayInvoicePaid:0,dayInvoiceOldDebtPaid:0,compensationRefund:refund,compensationCredit:credit,afterCompensationRefund:safe(-BigInt(refund))});
+  }
+  rows.sort((a,b)=>a.clientName.localeCompare(b.clientName));
+  const result={...journal,rows,clientCount:rows.length,compensationEvents:own?[projection]:[],compensationRefundTotal:refund,compensationCreditTotal:credit,collectedAfterCompensationRefund:net};
+  await db.query('COMMIT');return result;
+ }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
 export async function readIdentifiedJournalDay(pool:Pool,commercialId:string,day:string,enforceMode=false) {
  const db=await pool.connect();
