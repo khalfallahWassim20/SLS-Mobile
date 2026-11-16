@@ -25,8 +25,9 @@ export async function assertLegacyClientDaySafe(db:PoolClient,clientId:string,da
 /** Protocoles v6 uniquement : identifie une vente déjà réglée. L'appelant
  * doit recalculer la facture entière sous les verrous et refuser tout
  * trop-perçu ou remboursement sans protocole explicite. */
-export async function assertDayInvoiceAwareSaleSafe(db:PoolClient,clientId:string,day:string,version:number):Promise<boolean>{
- await assertDayInvoiceCloseRegistry(db);
+export async function assertDayInvoiceAwareSaleSafe(db:PoolClient,clientId:string,day:string,version:number,independentCompensation=false):Promise<boolean>{
+ if(independentCompensation)await assertDayInvoiceRegistriesPresent(db);
+ else await assertDayInvoiceCloseRegistry(db);
  const debt=await db.query('SELECT EXISTS(SELECT 1 FROM identified_day_invoice_old_debt m JOIN identified_settlements s ON s.operation_id=m.operation_id WHERE s.client_id=$1 AND ($2::int>1 OR m.invoice_day>$3::date)) AS present',[clientId,version,day]);
  if(debt.rows[0]?.present!==false)throw new JournalConflict('Modification antérieure à un règlement de dette : rapprochement requis.');
  if(version===1)return false;
@@ -60,11 +61,14 @@ export async function assertNoDayInvoiceOperation(db:PoolClient,id:string):Promi
 }
 /** Une clôture expérimentale ne doit pas interpréter une migration absente
  * comme un registre de paiements vide. */
-export async function assertDayInvoiceCloseRegistry(db:PoolClient):Promise<void>{
- await assertNoUnprojectedCompensation(db);
+async function assertDayInvoiceRegistriesPresent(db:PoolClient):Promise<void>{
  if(!await hasDayInvoiceTable(db))throw new JournalConflict('Registre de facture du jour indisponible.');
  const marker=await db.query("SELECT to_regclass('identified_day_invoice_old_debt') IS NOT NULL AS present");
  if(marker.rows[0]?.present!==true)throw new JournalConflict('Registre d’ancienne dette indisponible.');
+}
+export async function assertDayInvoiceCloseRegistry(db:PoolClient):Promise<void>{
+ await assertNoUnprojectedCompensation(db);
+ await assertDayInvoiceRegistriesPresent(db);
 }
 /** Les anciennes références de solde ne tiennent pas compte de ces paiements.
  * À appeler dans le même instantané que la lecture, sous verrou de mode si la

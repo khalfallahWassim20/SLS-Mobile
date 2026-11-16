@@ -1,8 +1,9 @@
 /** SQLite et PostgreSQL fictifs : choix hors ligne puis reprise HTTP prouvée. */
 import {test} from 'node:test';import assert from 'node:assert/strict';import {randomUUID,createHash} from 'node:crypto';import {DatabaseSync} from 'node:sqlite';import {createServer,type Server} from 'node:http';import express from 'express';import pg from 'pg';
-import {schemaSql} from '../src/schema.js';import {dayInvoiceServerSchema} from '../src/day-invoice-store.js';import {identifiedCommercialRoutes} from '../src/identified-tour-routes.js';
+import {schemaSql} from '../src/schema.js';import {dayInvoiceServerSchema,storeDayInvoicePayment} from '../src/day-invoice-store.js';import {identifiedCommercialRoutes} from '../src/identified-tour-routes.js';
+import {readServerDayInvoiceSource} from '../src/day-invoice-source.js';
 import {readCompensatedDayInvoiceSnapshot} from '../src/day-invoice-reference.js';
-import {setCommercialCredentials} from '../src/commercials.js';import {loginCommercial} from '../src/commercial-session.js';import {storeJournalSnapshot} from '../src/journal-store.js';import {storeIdentifiedSale} from '../src/identified-operations.js';
+import {setCommercialCredentials} from '../src/commercials.js';import {loginCommercial} from '../src/commercial-session.js';import {storeJournalSnapshot} from '../src/journal-store.js';import {storeIdentifiedSale,storeDayInvoiceCompensatedSale} from '../src/identified-operations.js';
 import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt} from '../../mobile/day-invoice-payment-attempt.js';
 import {startPaymentAttempt,resumePaymentAttempt,finishPaymentAttempt} from '../../mobile/day-invoice-payment-attempt-flow.js';
 import {captureDayInvoiceForm} from '../../mobile/day-invoice-form.js';import {makeDayPaymentAttempt} from '../../mobile/day-invoice-payment-input.js';import {synchronizeDayInvoicePrototype} from '../../mobile/day-invoice-sync.js';
@@ -20,6 +21,16 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   const sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:5,unitPrice:50000,discount:0,vat:0}],total:250000,paid:0,remaining:250000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''};
   await storeIdentifiedSale(pool,{operationId:saleOperation,saleId,version:1,recordedAt:at,sale,refund:0},{...session,enforceMode:true});
   const invoice={id:randomUUID(),journalDate:day,clientId,clientName:'Client fictif',sector:'',amount:600000,createdAt:at},invoiceOperation=randomUUID(),snapshot={operationId:invoiceOperation,version:1,invoice,receipts:[]};await storeJournalSnapshot(pool,snapshot,'identified',{...session,enforceMode:true});
+  // Un second client indépendant est déjà présent sur le serveur : son choix
+  // sera envoyé après le premier et ne doit pas invalider ce téléphone.
+  const otherClient=randomUUID(),otherSaleId=randomUUID(),otherInvoiceId=randomUUID(),otherSale={...sale,clientId:otherClient,clientName:'Autre client',syncSaleId:otherSaleId};
+  await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,0)',[otherClient,'Autre client']);
+  await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId:otherSaleId,version:1,recordedAt:at,sale:otherSale,refund:0},{...session,enforceMode:true});
+  const otherInvoice={...invoice,id:otherInvoiceId,clientId:otherClient,clientName:'Autre client'};
+  await storeJournalSnapshot(pool,{operationId:randomUUID(),version:1,invoice:otherInvoice,receipts:[]},'identified',{...session,enforceMode:true});
+  await storeDayInvoicePayment(pool,{operationId:randomUUID(),clientId:otherClient,day,recordedAt:'2026-01-01T09:30:00.000Z',amount:800000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:otherInvoiceId,version:1,total:600000,declare:true},sales:[{id:otherSaleId,version:1}]},session,readServerDayInvoiceSource);
+  const otherEdit={operationId:randomUUID(),saleId:otherSaleId,version:2,recordedAt:'2026-01-01T10:01:00.000Z',sale:{...otherSale,syncVersion:2,lines:[{...otherSale.lines[0],quantity:3}],total:150000,remaining:150000},refund:0};
+  const otherChoice={choice:choice==='refund'?'credit':'refund',amount:50000,previousTotal:850000,paid:800000};
   const app=express();app.use(express.json());app.use('/test',identifiedCommercialRoutes(pool,secret,{dayInvoiceTestOnly:true}));server=createServer(app);await new Promise<void>((resolve,reject)=>server!.listen(0,'127.0.0.1',()=>resolve()).once('error',reject));const address=server.address();assert.ok(address&&typeof address!=='string');const base=`http://127.0.0.1:${address.port}`,identity={commercialId,serverOrigin:'https://sls-test.invalid'};
   phone=new DatabaseSync(':memory:');const db=phone;db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceCompensationLocalSchema}${dayInvoicePaymentAttemptSchema}
    CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
@@ -71,13 +82,15 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   assert.equal(Number(consolidated.reference.clients.find(c=>c.id===clientId)?.serverBalance),view.localBalanceAfter);
   assert.deepEqual(consolidated.invoice.payments.map(p=>({operationId:p.operationId,amount:p.amount,mode:p.mode})),view.payments.map(p=>({operationId:p.operationId,amount:p.amount,mode:p.mode})));
   const matched=await reconcileCompensatedInvoice(identity,identity,reconciliation);
-  assert.deepEqual(matched,{operationId:input.operationId,clientId,day,total:750000,paid:800000,applied:750000,remaining:0,balance:view.localBalanceAfter,balanceNeedsReview:false,journal:{day,gross:800000,refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0,theoreticalNet:choice==='refund'?750000:800000,clientGross:800000,clientTheoreticalNet:choice==='refund'?750000:800000}});
+  assert.deepEqual(matched,{operationId:input.operationId,clientId,day,total:750000,paid:800000,applied:750000,remaining:0,balance:view.localBalanceAfter,balanceNeedsReview:false,journal:{day,gross:1600000,refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0,ownRefund:choice==='refund'?50000:0,ownCredit:choice==='credit'?50000:0,theoreticalNet:choice==='refund'?1550000:1600000,clientGross:800000,clientTheoreticalNet:choice==='refund'?750000:800000}});
   const fakeResponse=(data:unknown)=>({ok:true,status:200,json:async()=>data});
-  const remote={version:2,compensation:consolidated.compensation,invoice:consolidated.invoice,journal:{commercialId,clientId,...matched.journal}};
+  const remote={version:3,compensation:consolidated.compensation,invoice:consolidated.invoice,journal:{commercialId,clientId,...matched.journal}};
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,invoice:{...remote.invoice,paid:1}})}),/divergentes/);
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,invoice:{...remote.invoice,payments:[]}})}),/divergentes/);
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,compensation:{...remote.compensation,choice:choice==='refund'?'credit':'refund'}})}),/divergentes/);
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,journal:{...remote.journal,theoreticalNet:remote.journal.theoreticalNet+1}})}),/divergentes/);
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,journal:{...remote.journal,clientTheoreticalNet:remote.journal.clientTheoreticalNet+1}})}),/divergentes/);
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,journal:{...remote.journal,ownRefund:remote.journal.ownRefund+1}})}),/divergentes/);
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,journal:{...remote.journal,day:'2026-01-02'}})}),/divergentes/);
   let expired=false;await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,check:()=>{if(expired)throw Error('Session expirée');},read:async()=>{expired=true;return fakeResponse(remote);}}),/Session expirée/);
   const localInput=String(db.prepare('SELECT input FROM day_invoice_compensation_local').get()?.input),altered=JSON.parse(localInput),captured=JSON.parse(altered.fingerprint);captured.balance=123456;altered.fingerprint=JSON.stringify(captured);
@@ -85,6 +98,11 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(localInput);
   const changedBalance=await reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,compensation:{...remote.compensation,balance:remote.compensation.balance+1}})});
   assert.equal(changedBalance.balanceNeedsReview,true);assert.equal(changedBalance.balance,view.localBalanceAfter+1);
+  assert.equal(await storeDayInvoiceCompensatedSale(pool,otherEdit,otherChoice,session),'received');
+  const both=await reconcileCompensatedInvoice(identity,identity,reconciliation);
+  assert.equal(both.total,750000);assert.equal(both.balance,view.localBalanceAfter);assert.equal(both.journal.gross,1600000);
+  assert.equal(both.journal.refund,50000);assert.equal(both.journal.credit,50000);assert.equal(both.journal.theoreticalNet,1550000);
+  assert.equal(both.journal.ownRefund,choice==='refund'?50000:0);assert.equal(both.journal.ownCredit,choice==='credit'?50000:0);
   assert.equal((await transaction(t=>readLocalCompensation(t,identity)))?.receipt!==null,true);
   const impact=await transaction(t=>readLocalCompensationCollectionImpact(t,identity,commercialId,day));assert.equal(impact.refund,choice==='refund'?50000:0);assert.equal(impact.credit,choice==='credit'?50000:0);
   assert.deepEqual(await synchronizeLocalCompensation(identity,identity,io),{status:'already-proven',operationId:input.operationId});assert.equal(sends,2);

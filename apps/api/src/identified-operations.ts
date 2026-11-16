@@ -10,7 +10,8 @@ import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} fr
 import {lockSyncMode,lockSyncModeExclusive,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertLegacyClientDaySafe,lockDayInvoiceClient,assertDayInvoiceAwareSaleSafe} from './day-invoice-legacy-guard.js';
 import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
-import {readServerDayInvoiceSource} from './day-invoice-source.js';
+import {readServerDayInvoiceSource,readSourceForNewIndependentCompensation} from './day-invoice-source.js';
+import {readIndependentCompensationProjectionsInTransaction} from './day-invoice-reference.js';
 import {compensationSchema,compensationHash,compensationRegistryExists} from './day-invoice-compensation.js';
 import {assessDayInvoiceSaleRevision,type DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
 
@@ -47,10 +48,9 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
  const day=tunisDay(sale.createdAt),operationDay=tunisDay(event.recordedAt),payload=JSON.stringify(event),hash=digest(payload),db=await pool.connect();
  try {
   await db.query('BEGIN');
-  // La projection actuelle accepte une seule compensation pour toute la base.
-  // L'insertion doit attendre les écritures en cours et sérialiser les choix de
-  // clients distincts AVANT leur contrôle du registre vide. Le verrou partagé
-  // habituel laisserait deux transactions constater simultanément zéro ligne.
+  // Toute compensation attend les écritures en cours. Les choix sont
+  // sérialisés globalement jusqu'à la validation de toutes leurs preuves ;
+  // plusieurs clients indépendants sont acceptés uniquement en test isolé.
   if(session.enforceMode) assertIdentifiedMode(await (compensation?lockSyncModeExclusive(db):lockSyncMode(db)));
   const actor=await verifyCommercialSession(db,session.secret,session.token,true);
   if(!actor) throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
@@ -88,8 +88,13 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   // Sérialise la création/modification avec les futures écritures client/jour du journal.
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['journal-client-day',`${sale.clientId}:${day}`]);
   await lockDayInvoiceClient(db,sale.clientId);
+  if(compensation){
+   let existing;try{existing=await readIndependentCompensationProjectionsInTransaction(db);}catch{throw new JournalConflict('Compensations précédentes incohérentes : rapprochement requis.');}
+   if(existing.some(p=>p.clientId===sale.clientId))throw new JournalConflict('Client déjà compensé : historique complet requis.');
+   if(existing.length>=1000)throw new JournalConflict('Trop de compensations : rapprochement requis.');
+  }
   let settledDay=false;
-  if(session.dayInvoiceAware)settledDay=await assertDayInvoiceAwareSaleSafe(db,sale.clientId,day,event.version);
+  if(session.dayInvoiceAware)settledDay=await assertDayInvoiceAwareSaleSafe(db,sale.clientId,day,event.version,!!compensation);
   else await assertLegacyClientDaySafe(db,sale.clientId,day);
   const previous=last.rows[0] ?? legacy.rows[0];
   if((previous?.version??0)+1!==event.version) throw new JournalConflict('Version de vente manquante ou déjà utilisée.');
@@ -102,7 +107,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    // Le champ historique refund ne peut pas exprimer un paiement unifié.
    // Un choix dédié est admis uniquement par l'appel interne préparatoire.
    if(event.refund!==0)throw new JournalConflict('Remboursement d’une facture du jour réglée : rapprochement requis.');
-   const source=await readServerDayInvoiceSource(db,{clientId:sale.clientId,day} as DayInvoicePayment);
+   const source=await (compensation?readSourceForNewIndependentCompensation:readServerDayInvoiceSource)(db,{clientId:sale.clientId,day} as DayInvoicePayment);
    if(compensation){
     const paymentTimes=await db.query('SELECT payload FROM identified_day_invoice_payments WHERE client_id=$1 AND invoice_day=$2::date',[sale.clientId,day]);
     if(paymentTimes.rows.some(r=>typeof r.payload?.recordedAt!=='string'||!Number.isFinite(Date.parse(r.payload.recordedAt))||Date.parse(r.payload.recordedAt)>recordedMs))throw new JournalConflict('Modification antérieure à un paiement : rapprochement requis.');

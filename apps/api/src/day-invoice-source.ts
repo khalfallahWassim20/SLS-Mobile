@@ -19,13 +19,24 @@ export async function readServerDayInvoiceSource(db:PoolClient,event:DayInvoiceP
 }
 /** Interne, uniquement pour vérifier la compensation identifiée. N'autorise
  * aucune écriture ; la projection doit d'abord prouver l'événement lié. */
-export async function readSourceForCompensationCheck(db:PoolClient,event:DayInvoicePayment,operationId:string) {
- const rows=await db.query('SELECT operation_id,client_id,invoice_day::text AS day FROM identified_day_invoice_compensations ORDER BY operation_id LIMIT 2');
+export async function readSourceForCompensationCheck(db:PoolClient,event:DayInvoicePayment,operationId:string,reference?:Omit<Awaited<ReturnType<typeof readIdentifiedReferenceInTransaction>>,'version'>) {
+ // Cette projection reste limitée à une compensation par client, mais des
+ // clients indépendants ne doivent plus rendre leurs reçus mutuellement illisibles.
+ const rows=await db.query('SELECT operation_id,client_id,invoice_day::text AS day FROM identified_day_invoice_compensations WHERE operation_id=$1 OR client_id=$2 ORDER BY operation_id LIMIT 2',[operationId,event.clientId]);
  if(rows.rows.length!==1||rows.rows[0].operation_id!==operationId||rows.rows[0].client_id!==event.clientId||rows.rows[0].day!==event.day)throw Error('Compensation ambiguë ou indisponible.');
+ return readUnprojectedSource(db,event,reference);
+}
+/** Réservé à la création expérimentale, sous verrou global exclusif. Une
+ * deuxième compensation du même client exige un historique plus complet. */
+export async function readSourceForNewIndependentCompensation(db:PoolClient,event:DayInvoicePayment){
+ const rows=await db.query(`SELECT c.operation_id FROM identified_day_invoice_compensations c
+  JOIN identified_sale_events s ON s.operation_id=c.operation_id
+  WHERE c.client_id=$1 OR s.client_id=$1 OR s.payload->'sale'->>'clientId'=$1::text LIMIT 1`,[event.clientId]);
+ if(rows.rows.length)throw Error('Client déjà compensé : historique complet requis.');
  return readUnprojectedSource(db,event);
 }
-async function readUnprojectedSource(db:PoolClient,event:DayInvoicePayment) {
- const reference=await readIdentifiedReferenceInTransaction(db,true);
+async function readUnprojectedSource(db:PoolClient,event:DayInvoicePayment,provided?:Omit<Awaited<ReturnType<typeof readIdentifiedReferenceInTransaction>>,'version'>) {
+ const reference=provided??await readIdentifiedReferenceInTransaction(db,true);
  if(!reference.clients.some(c=>c.id===event.clientId))throw Error('Client introuvable.');
  const salesRows=await db.query(`WITH combined AS (
   SELECT sale_id,client_id,version,payload FROM demo_sale_events

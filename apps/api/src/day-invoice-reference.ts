@@ -86,7 +86,7 @@ async function readUnprojectedDayInvoiceReference(db:PoolClient,includeInactive=
 /** Vérification isolée du premier choix de compensation déjà enregistré.
  * Elle ne débloque aucun ancien écran et ne prouve pas le paiement physique.
  * L'appelant doit fournir un instantané PostgreSQL REPEATABLE READ. */
-export async function readDayInvoiceCompensationProjectionInTransaction(db:PoolClient,operationId:string){
+async function readDayInvoiceCompensationProjectionInTransaction(db:PoolClient,operationId:string,reference:Awaited<ReturnType<typeof readUnprojectedDayInvoiceReference>>){
  const rows=await db.query(`SELECT c.operation_id,c.client_id,c.commercial_id,c.invoice_day::text AS invoice_day,c.event_day::text AS event_day,c.payload AS compensation,c.payload_hash AS compensation_hash,
   s.sale_id,s.version,s.client_id AS sale_client,s.commercial_id AS sale_commercial,s.journal_date::text AS sale_day,s.event_date::text AS sale_event_day,s.payload AS sale_event,s.payload_hash AS sale_hash
   FROM identified_day_invoice_compensations c JOIN identified_sale_events s ON s.operation_id=c.operation_id WHERE c.operation_id=$1`,[operationId]);
@@ -98,25 +98,44 @@ export async function readDayInvoiceCompensationProjectionInTransaction(db:PoolC
  if(previousRows.rows.length!==1)throw Error('Version précédente indisponible : rapprochement requis.');
  const previousRow=previousRows.rows[0],previous=saleEventSchema.parse(previousRow.payload);
  if(hash(previous)!==previousRow.payload_hash||previous.saleId!==event.saleId||previous.version!==event.version-1||previous.sale.clientId!==row.client_id||previousRow.client_id!==row.client_id||previousRow.day!==row.invoice_day||previous.sale.createdAt!==event.sale.createdAt||previous.sale.paid!==event.sale.paid)throw Error('Version précédente incohérente.');
- const source=await readSourceForCompensationCheck(db,{clientId:row.client_id,day:row.invoice_day} as DayInvoicePayment,operationId);
+ const source=await readSourceForCompensationCheck(db,{clientId:row.client_id,day:row.invoice_day} as DayInvoicePayment,operationId,reference);
  const current=source.sales.find(s=>s.id===event.saleId);
  if(!current||current.version!==event.version||current.total!==event.sale.total||current.paid!==event.sale.paid)throw Error('Vente compensée modifiée.');
  const before={...source,sales:source.sales.map(s=>s.id===event.saleId?{...s,version:previous.version,total:previous.sale.total,paid:previous.sale.paid}:s)};
  const assessment=assessDayInvoiceSaleRevision(before,event.saleId,event.sale.total);
  if(!assessment.requiresChoice||assessment.excess!==choice.amount||assessment.previousTotal!==choice.previousTotal||assessment.paid!==choice.paid)throw Error('Montant de compensation incohérent.');
- const reference=await readUnprojectedDayInvoiceReference(db,true),client=reference.clients.find(c=>c.id===row.client_id);
+ const client=reference.clients.find(c=>c.id===row.client_id);
  if(!client||reference.dayPayments.some(p=>p.clientId===row.client_id&&p.day===row.invoice_day&&Date.parse(p.recordedAt)>Date.parse(event.recordedAt)))throw Error('Historique ou solde de compensation incohérent.');
  const balance=BigInt(client.serverBalance)+(choice.choice==='refund'?BigInt(choice.amount):0n),applied=BigInt(assessment.paid)-BigInt(choice.amount),remaining=BigInt(assessment.total)-applied;
  const safe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Montant trop élevé.');return Number(n);};
  if(applied<0n||remaining<0n)throw Error('Règlement après compensation incohérent.');
  return {operationId,clientId:row.client_id as string,commercialId:row.commercial_id as string,invoiceDay:row.invoice_day as string,eventDay:row.event_day as string,recordedAt:event.recordedAt,choice:choice.choice,compensation:choice.amount,total:assessment.total,paidBeforeCompensation:assessment.paid,applied:safe(applied),remaining:safe(remaining),balance:safe(balance),refund:choice.choice==='refund'?choice.amount:0,credit:choice.choice==='credit'?choice.amount:0};
 }
-/** Photographie consolidée expérimentale après une seule compensation. Aucun
+/** Contrôle exhaustif des compensations indépendantes : un client ne peut
+ * apparaître qu'une fois tant que le rejeu de plusieurs révisions n'existe pas. */
+export async function readIndependentCompensationProjectionsInTransaction(db:PoolClient){
+ const rows=await db.query('SELECT operation_id,client_id FROM identified_day_invoice_compensations ORDER BY operation_id LIMIT 1001');
+ if(rows.rows.length>1000)throw Error('Trop de compensations pour un rapprochement complet.');
+ const clients=new Set<string>(),result:Awaited<ReturnType<typeof readDayInvoiceCompensationProjectionInTransaction>>[]=[];
+ for(const row of rows.rows){if(clients.has(row.client_id))throw Error('Compensations ambiguës pour ce client : historique complet requis.');clients.add(row.client_id);}
+ // Même instantané de base pour tous les clients ; ne pas recharger les
+ // articles et toute la référence une fois par compensation.
+ if(!rows.rows.length)return result;
+ const reference=await readUnprojectedDayInvoiceReference(db,true);
+ for(const row of rows.rows){
+  const projection=await readDayInvoiceCompensationProjectionInTransaction(db,row.operation_id,reference);
+  if(projection.clientId!==row.client_id)throw Error('Client de compensation incohérent.');
+  result.push(projection);
+ }
+ return result;
+}
+/** Photographie consolidée expérimentale après compensations indépendantes. Aucun
  * ancien lecteur ne doit consommer `reference` séparément : le paiement brut
  * dépasse désormais le total et la compensation est indispensable au calcul.
  * Ne l'exposer ni aux routes normales ni à la clôture avant migration complète. */
 export async function readCompensatedDayInvoiceSnapshotInTransaction(db:PoolClient,operationId:string){
-  const compensation=await readDayInvoiceCompensationProjectionInTransaction(db,operationId);
+  const projections=await readIndependentCompensationProjectionsInTransaction(db),compensation=projections.find(p=>p.operationId===operationId);
+  if(!compensation)throw Error('Compensation introuvable.');
   const reference=await readUnprojectedDayInvoiceReference(db,true);
   const client=reference.clients.find(c=>c.id===compensation.clientId);
   if(!client)throw Error('Client de compensation indisponible.');
@@ -131,7 +150,13 @@ export async function readCompensatedDayInvoiceSnapshotInTransaction(db:PoolClie
   const salesTotal=sales.reduce((n,s)=>n+BigInt(s.total),0n),preInvoiceTotal=BigInt(invoice?.total??0);
   const paid=BigInt(summary?.prePaid??0)+sales.reduce((n,s)=>n+BigInt(s.paid),0n)+payments.reduce((n,p)=>n+BigInt(p.amount),0n);
   if(preInvoiceTotal+salesTotal!==BigInt(compensation.total)||paid!==BigInt(compensation.paidBeforeCompensation)||paid-BigInt(compensation.compensation)!==BigInt(compensation.applied))throw Error('Facture ou paiements de compensation incohérents.');
-  const clients=reference.clients.map(c=>c.id===client.id?{...c,serverBalance:String(balance)}:c);
+  const clients=reference.clients.map(c=>{
+   const p=projections.find(item=>item.clientId===c.id);if(!p)return c;
+   const corrected=BigInt(c.serverBalance)+BigInt(p.refund);
+   if(corrected!==BigInt(p.balance))throw Error('Solde de compensation incohérent.');
+   return {...c,serverBalance:String(corrected)};
+  });
+  if(projections.some(p=>!clients.some(c=>c.id===p.clientId)))throw Error('Client de compensation indisponible.');
   return {reference:{...reference,clients},compensation,invoice:{clientId:compensation.clientId,day:compensation.invoiceDay,preInvoiceTotal:safe(preInvoiceTotal),salesTotal:safe(salesTotal),total:compensation.total,paid:safe(paid),applied:compensation.applied,remaining:compensation.remaining,payments}};
 }
 export async function readCompensatedDayInvoiceSnapshot(pool:Pool,operationId:string){
@@ -144,7 +169,7 @@ export async function readCompensatedDayInvoiceSnapshot(pool:Pool,operationId:st
 }
 /** Entrée interne de vérification, jamais reliée à une route ni à l'app active. */
 export async function readDayInvoiceCompensationProjection(pool:Pool,operationId:string){
- const db=await pool.connect();try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);const projection=await readDayInvoiceCompensationProjectionInTransaction(db,operationId);await db.query('COMMIT');return projection;}catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+ const db=await pool.connect();try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);const projections=await readIndependentCompensationProjectionsInTransaction(db),projection=projections.find(p=>p.operationId===operationId);if(!projection)throw Error('Compensation introuvable.');await db.query('COMMIT');return projection;}catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
 export async function readDayInvoiceReference(pool:Pool,includeInactive=false) {
  const db=await pool.connect();try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);const result=await readDayInvoiceReferenceInTransaction(db,includeInactive);await db.query('COMMIT');return result;}catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}

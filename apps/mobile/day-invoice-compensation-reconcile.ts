@@ -21,17 +21,17 @@ export async function reconcileCompensatedInvoice(identity:DeviceIdentity,verifi
   if(!response.ok)throw Error(`Facture serveur indisponible (${response.status}).`);
   const body=await response.json();check();
   try{
-   if(!obj(body)||Object.keys(body).sort().join(',')!=='compensation,invoice,journal,version'||body.version!==2||!obj(body.invoice)||!obj(body.compensation)||!obj(body.journal))throw Error();
+   if(!obj(body)||Object.keys(body).sort().join(',')!=='compensation,invoice,journal,version'||body.version!==3||!obj(body.invoice)||!obj(body.compensation)||!obj(body.journal))throw Error();
    const invoice=body.invoice,p=body.compensation,journal=body.journal,expected=JSON.parse(before.saved.payload),captured=JSON.parse(before.saved.input.fingerprint),localInvoice=JSON.parse(captured.invoice);
    if(Object.keys(invoice).sort().join(',')!=='applied,clientId,day,paid,payments,preInvoiceTotal,remaining,salesTotal,total'||!Array.isArray(invoice.payments))throw Error();
    verifyCompensationReceipt(expected,{event:expected.event,compensation:expected.compensation,projection:p},identity.commercialId);
    const v=before.view;
    if(invoice.clientId!==v.clientId||invoice.day!==v.invoiceDay||invoice.preInvoiceTotal!==v.preInvoiceTotal||invoice.salesTotal!==v.salesTotalAfter||invoice.total!==v.total||invoice.paid!==v.paid||invoice.applied!==v.paidApplied||invoice.remaining!==v.remaining||canonicalJson(invoice.payments)!==canonicalJson(localInvoice.payments))throw Error();
-   const keys='clientGross,clientId,clientTheoreticalNet,commercialId,credit,day,gross,refund,theoreticalNet';
-   if(Object.keys(journal).sort().join(',')!==keys||journal.commercialId!==identity.commercialId||journal.clientId!==v.clientId||journal.day!==v.eventDay||journal.refund!==v.refund||journal.credit!==v.credit||![journal.gross,journal.theoreticalNet,journal.clientGross,journal.clientTheoreticalNet].every(Number.isSafeInteger)||BigInt(journal.gross)-BigInt(journal.refund)!==BigInt(journal.theoreticalNet)||BigInt(journal.clientGross)-BigInt(journal.refund)!==BigInt(journal.clientTheoreticalNet))throw Error();
+   const keys='clientGross,clientId,clientTheoreticalNet,commercialId,credit,day,gross,ownCredit,ownRefund,refund,theoreticalNet';
+   if(Object.keys(journal).sort().join(',')!==keys||journal.commercialId!==identity.commercialId||journal.clientId!==v.clientId||journal.day!==v.eventDay||journal.ownRefund!==v.refund||journal.ownCredit!==v.credit||![journal.gross,journal.theoreticalNet,journal.clientGross,journal.clientTheoreticalNet,journal.refund,journal.credit].every(Number.isSafeInteger)||journal.refund<journal.ownRefund||journal.credit<journal.ownCredit||BigInt(journal.gross)-BigInt(journal.refund)!==BigInt(journal.theoreticalNet)||BigInt(journal.clientGross)-BigInt(journal.ownRefund)!==BigInt(journal.clientTheoreticalNet))throw Error();
    const after=await readLocal();check();
    if(canonicalJson(after.saved)!==canonicalJson(before.saved)||canonicalJson(after.view)!==canonicalJson(before.view))throw Error();
-   return {operationId:v.operationId,clientId:v.clientId,day:v.invoiceDay,total:v.total,paid:v.paid,applied:v.paidApplied,remaining:v.remaining,balance:p.balance as number,balanceNeedsReview:p.balance!==v.localBalanceAfter,journal:{day:journal.day as string,gross:journal.gross as number,refund:journal.refund as number,credit:journal.credit as number,theoreticalNet:journal.theoreticalNet as number,clientGross:journal.clientGross as number,clientTheoreticalNet:journal.clientTheoreticalNet as number}};
+   return {operationId:v.operationId,clientId:v.clientId,day:v.invoiceDay,total:v.total,paid:v.paid,applied:v.paidApplied,remaining:v.remaining,balance:p.balance as number,balanceNeedsReview:p.balance!==v.localBalanceAfter,journal:{day:journal.day as string,gross:journal.gross as number,refund:journal.refund as number,credit:journal.credit as number,ownRefund:journal.ownRefund as number,ownCredit:journal.ownCredit as number,theoreticalNet:journal.theoreticalNet as number,clientGross:journal.clientGross as number,clientTheoreticalNet:journal.clientTheoreticalNet as number}};
   }catch{throw Error('Facture serveur et photographie locale divergentes : rapprochement nécessaire.');}
  }finally{releaseDayInvoiceSync();}
 }
