@@ -111,6 +111,34 @@ export async function readDayInvoiceCompensationProjectionInTransaction(db:PoolC
  if(applied<0n||remaining<0n)throw Error('Règlement après compensation incohérent.');
  return {operationId,clientId:row.client_id as string,commercialId:row.commercial_id as string,invoiceDay:row.invoice_day as string,eventDay:row.event_day as string,recordedAt:event.recordedAt,choice:choice.choice,compensation:choice.amount,total:assessment.total,paidBeforeCompensation:assessment.paid,applied:safe(applied),remaining:safe(remaining),balance:safe(balance),refund:choice.choice==='refund'?choice.amount:0,credit:choice.choice==='credit'?choice.amount:0};
 }
+/** Photographie consolidée expérimentale après une seule compensation. Aucun
+ * ancien lecteur ne doit consommer `reference` séparément : le paiement brut
+ * dépasse désormais le total et la compensation est indispensable au calcul.
+ * Ne l'exposer ni aux routes normales ni à la clôture avant migration complète. */
+export async function readCompensatedDayInvoiceSnapshot(pool:Pool,operationId:string){
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);
+  const compensation=await readDayInvoiceCompensationProjectionInTransaction(db,operationId);
+  const reference=await readUnprojectedDayInvoiceReference(db,true);
+  const client=reference.clients.find(c=>c.id===compensation.clientId);
+  if(!client)throw Error('Client de compensation indisponible.');
+  const balance=BigInt(client.serverBalance)+BigInt(compensation.refund);
+  if(balance!==BigInt(compensation.balance))throw Error('Solde de compensation incohérent.');
+  const invoices=reference.journalStates.filter(i=>i.clientId===compensation.clientId&&i.journalDate===compensation.invoiceDay);
+  if(invoices.length>1)throw Error('Factures préétablies ambiguës.');
+  const invoice=invoices[0],summary=invoice?summarizePreInvoice(invoice.total,invoice.receipts):null;
+  const sales=reference.saleStates.filter(s=>s.clientId===compensation.clientId&&reference.saleDays.some(d=>d.saleId===s.saleId&&d.day===compensation.invoiceDay));
+  const payments=reference.dayPayments.filter(p=>p.clientId===compensation.clientId&&p.day===compensation.invoiceDay).sort((a,b)=>a.recordedAt<b.recordedAt?-1:a.recordedAt>b.recordedAt?1:a.operationId<b.operationId?-1:a.operationId>b.operationId?1:0);
+  const safe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Montant trop élevé.');return Number(n);};
+  const salesTotal=sales.reduce((n,s)=>n+BigInt(s.total),0n),preInvoiceTotal=BigInt(invoice?.total??0);
+  const paid=BigInt(summary?.prePaid??0)+sales.reduce((n,s)=>n+BigInt(s.paid),0n)+payments.reduce((n,p)=>n+BigInt(p.amount),0n);
+  if(preInvoiceTotal+salesTotal!==BigInt(compensation.total)||paid!==BigInt(compensation.paidBeforeCompensation)||paid-BigInt(compensation.compensation)!==BigInt(compensation.applied))throw Error('Facture ou paiements de compensation incohérents.');
+  const clients=reference.clients.map(c=>c.id===client.id?{...c,serverBalance:String(balance)}:c);
+  const result={reference:{...reference,clients},compensation,invoice:{clientId:compensation.clientId,day:compensation.invoiceDay,preInvoiceTotal:safe(preInvoiceTotal),salesTotal:safe(salesTotal),total:compensation.total,paid:safe(paid),applied:compensation.applied,remaining:compensation.remaining,payments}};
+  await db.query('COMMIT');return result;
+ }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+}
 /** Entrée interne de vérification, jamais reliée à une route ni à l'app active. */
 export async function readDayInvoiceCompensationProjection(pool:Pool,operationId:string){
  const db=await pool.connect();try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);const projection=await readDayInvoiceCompensationProjectionInTransaction(db,operationId);await db.query('COMMIT');return projection;}catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}

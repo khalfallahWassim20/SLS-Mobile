@@ -1,6 +1,7 @@
 /** SQLite et PostgreSQL fictifs : choix hors ligne puis reprise HTTP prouvée. */
 import {test} from 'node:test';import assert from 'node:assert/strict';import {randomUUID,createHash} from 'node:crypto';import {DatabaseSync} from 'node:sqlite';import {createServer,type Server} from 'node:http';import express from 'express';import pg from 'pg';
 import {schemaSql} from '../src/schema.js';import {dayInvoiceServerSchema} from '../src/day-invoice-store.js';import {identifiedCommercialRoutes} from '../src/identified-tour-routes.js';
+import {readCompensatedDayInvoiceSnapshot} from '../src/day-invoice-reference.js';
 import {setCommercialCredentials} from '../src/commercials.js';import {loginCommercial} from '../src/commercial-session.js';import {storeJournalSnapshot} from '../src/journal-store.js';import {storeIdentifiedSale} from '../src/identified-operations.js';
 import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt} from '../../mobile/day-invoice-payment-attempt.js';
 import {startPaymentAttempt,resumePaymentAttempt,finishPaymentAttempt} from '../../mobile/day-invoice-payment-attempt-flow.js';
@@ -62,6 +63,11 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   await assert.rejects(synchronizeLocalCompensation(identity,identity,io),/Réponse perdue/);assert.equal((await transaction(t=>readLocalCompensation(t,identity)))?.receipt,null);
   assert.deepEqual(await synchronizeLocalCompensation(identity,identity,io),{status:'proven',operationId:input.operationId});assert.ok((await transaction(t=>readLocalCompensation(t,identity)))?.receipt);
   const view=await transaction(t=>readLocalCompensationView(t,identity));assert.ok(view);assert.equal(view.syncStatus,'proven');assert.equal(view.localBalanceAfter,choice==='refund'?0:-50000);assert.equal(view.serverBalanceAtReceipt,view.localBalanceAfter);assert.equal(view.balanceNeedsReview,false);
+  const consolidated=await readCompensatedDayInvoiceSnapshot(pool,input.operationId);
+  assert.equal(consolidated.invoice.total,view.total);assert.equal(consolidated.invoice.preInvoiceTotal,view.preInvoiceTotal);assert.equal(consolidated.invoice.salesTotal,view.salesTotalAfter);
+  assert.equal(consolidated.invoice.paid,view.paid);assert.equal(consolidated.invoice.applied,view.paidApplied);assert.equal(consolidated.invoice.remaining,view.remaining);
+  assert.equal(Number(consolidated.reference.clients.find(c=>c.id===clientId)?.serverBalance),view.localBalanceAfter);
+  assert.deepEqual(consolidated.invoice.payments.map(p=>({operationId:p.operationId,amount:p.amount,mode:p.mode})),view.payments.map(p=>({operationId:p.operationId,amount:p.amount,mode:p.mode})));
   const impact=await transaction(t=>readLocalCompensationCollectionImpact(t,identity,commercialId,day));assert.equal(impact.refund,choice==='refund'?50000:0);assert.equal(impact.credit,choice==='credit'?50000:0);
   assert.deepEqual(await synchronizeLocalCompensation(identity,identity,io),{status:'already-proven',operationId:input.operationId});assert.equal(sends,2);
   assert.equal((await transaction(t=>confirmLocalCompensation(t,identity,input,digest))).status,'duplicate');

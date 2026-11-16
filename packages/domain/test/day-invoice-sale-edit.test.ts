@@ -230,6 +230,12 @@ test('compensation : une photographie non vérifiable ne modifie aucune donnée'
   const counting={...tx,getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>{if(sql.includes('payload FROM day_invoice_reference_cache WHERE id=1'))reads++;return tx.getFirstAsync<T>(sql,...args);}};
   const preview=await captureDayInvoiceSaleEdit(counting,identity,1,lines,digest),captureReads=reads;
   const input={saleId:1,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z',choice:'refund' as const};
+  reads=0;const badPreview={...tx,getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>{
+   const row=await tx.getFirstAsync<T>(sql,...args);
+   if(sql.includes('payload FROM day_invoice_reference_cache WHERE id=1')&&++reads===captureReads&&row){const r=row as unknown as {payload:string};const payload=JSON.parse(r.payload);payload.clients[0].serverBalance='999999';return {...r,payload:JSON.stringify(payload)} as T;}
+   return row;
+  }};
+  await assert.rejects(captureDayInvoiceSaleEdit(badPreview,identity,1,lines,digest),/Photographie de compensation non vérifiable/);
   reads=0;const inconsistent={...tx,getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>{
    const row=await tx.getFirstAsync<T>(sql,...args);
    if(sql.includes('payload FROM day_invoice_reference_cache WHERE id=1')&&++reads>captureReads&&row){const r=row as unknown as {payload:string};const payload=JSON.parse(r.payload);payload.clients[0].serverBalance='999999';return {...r,payload:JSON.stringify(payload)} as T;}

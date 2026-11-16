@@ -15,7 +15,7 @@ import {loginCommercial} from '../src/commercial-session.js';
 import {storeIdentifiedSale,storeDayInvoiceCompensatedSale} from '../src/identified-operations.js';
 import {storeJournalSnapshot} from '../src/journal-store.js';
 import {readServerDayInvoiceSource} from '../src/day-invoice-source.js';
-import {readDayInvoiceReference,readDayInvoiceCompensationProjection} from '../src/day-invoice-reference.js';
+import {readDayInvoiceReference,readDayInvoiceCompensationProjection,readCompensatedDayInvoiceSnapshot} from '../src/day-invoice-reference.js';
 import {readIdentifiedJournalDay,readCompensatedJournalDay} from '../src/identified-journal-day.js';
 
 for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : révision atomique, concurrence et reprise`,async()=>{
@@ -29,7 +29,9 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Article',code:'X',quantity:1,unitPrice:250000,discount:0,vat:0}],total:250000,paid:0,remaining:250000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''};
   const creationId=randomUUID();await storeIdentifiedSale(pool,{operationId:creationId,saleId,version:1,recordedAt:at,sale,refund:0},{...session,enforceMode:true});
   const invoice={id:invoiceId,journalDate:day,clientId,clientName:'Client fictif',sector:'',amount:600000,createdAt:at};await storeJournalSnapshot(pool,{operationId:randomUUID(),version:1,invoice,receipts:[]},'identified',{...session,enforceMode:true});
-  const payment={operationId:randomUUID(),clientId,day,recordedAt:'2026-01-01T09:30:00.000Z',amount:800000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoiceId,version:1,total:600000,declare:true},sales:[{id:saleId,version:1}]};await storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource);
+  const payment={operationId:randomUUID(),clientId,day,recordedAt:'2026-01-01T09:30:00.000Z',amount:500000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoiceId,version:1,total:600000,declare:true},sales:[{id:saleId,version:1}]};await storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource);
+  const cheque={...payment,operationId:randomUUID(),recordedAt:'2026-01-01T09:45:00.000Z',amount:300000,mode:'Chèque',chequeNumber:'123',chequeBank:'Banque',chequeDue:'2026-02-01',preInvoice:{...payment.preInvoice,declare:false}};
+  await storeDayInvoicePayment(pool,cheque,session,readServerDayInvoiceSource);
   // Le remboursement peut être saisi par un autre commercial que celui de la vente.
   const actorId=choice==='refund'?randomUUID():commercialId;
   let editSession=session;
@@ -76,6 +78,13 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const projection=await readDayInvoiceCompensationProjection(pool,edit.operationId);
   assert.deepEqual(projection,{operationId:edit.operationId,clientId,commercialId:actorId,invoiceDay:day,eventDay,recordedAt:edit.recordedAt,choice,compensation:50000,total:750000,paidBeforeCompensation:800000,applied:750000,remaining:0,balance:choice==='refund'?100000:50000,refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0});
   assert.equal((await pool.query("SELECT payload->'sale'->>'total' AS total FROM identified_sale_events WHERE operation_id=$1",[edit.operationId])).rows[0].total,'150000');
+  const snapshot=await readCompensatedDayInvoiceSnapshot(pool,edit.operationId);
+  assert.deepEqual(snapshot.compensation,projection);
+  assert.equal(snapshot.reference.clients.find(c=>c.id===clientId)?.serverBalance,String(projection.balance));
+  assert.equal(snapshot.reference.saleStates.find(s=>s.saleId===saleId)?.total,'150000');
+  assert.equal(snapshot.invoice.preInvoiceTotal,600000);assert.equal(snapshot.invoice.salesTotal,150000);assert.equal(snapshot.invoice.total,750000);
+  assert.equal(snapshot.invoice.paid,800000);assert.equal(snapshot.invoice.applied,750000);assert.equal(snapshot.invoice.remaining,0);
+  assert.deepEqual(snapshot.invoice.payments,[payment,cheque]);
   const originalDay=await readCompensatedJournalDay(pool,commercialId,day,edit.operationId),originalRow=originalDay.rows.find(r=>r.clientId===clientId);assert.ok(originalRow);
   assert.equal(originalRow.preInvoiceTotal,600000);assert.equal(originalRow.tourTotal,150000);assert.equal(originalRow.totalClient,750000);assert.equal(originalRow.dayInvoicePaid,800000);
   assert.equal(originalDay.totalCollected,800000);assert.equal(originalDay.collectedAfterCompensationRefund,800000);assert.equal(originalDay.compensationRefundTotal,0);assert.equal(originalDay.compensationCreditTotal,choice==='credit'?50000:0);
@@ -92,6 +101,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const originalHash=(await pool.query('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[edit.operationId])).rows[0].payload_hash;
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),edit.operationId]);
   await assert.rejects(readDayInvoiceCompensationProjection(pool,edit.operationId),/Preuve de compensation incohérente/);
+  await assert.rejects(readCompensatedDayInvoiceSnapshot(pool,edit.operationId),/Preuve de compensation incohérente/);
   await assert.rejects(readCompensatedJournalDay(pool,actorId,eventDay,edit.operationId),/Preuve de compensation incohérente/);
   await assert.rejects(readCompensationReceipt(pool,edit.operationId,editSession),/Preuve de compensation incohérente/);
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',[originalHash,edit.operationId]);
@@ -101,7 +111,13 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',[previousHash,creationId]);
   await pool.query('INSERT INTO identified_day_invoice_compensations(operation_id,client_id,commercial_id,invoice_day,event_day,payload,payload_hash) VALUES($1,$2,$3,$4::date,$4::date,$5::jsonb,$6)',[creationId,clientId,commercialId,day,JSON.stringify(compensation),'0'.repeat(64)]);
   await assert.rejects(readDayInvoiceCompensationProjection(pool,edit.operationId),/ambiguë/);
+  await assert.rejects(readCompensatedDayInvoiceSnapshot(pool,edit.operationId),/ambiguë/);
   await pool.query('DELETE FROM identified_day_invoice_compensations WHERE operation_id=$1',[creationId]);
+  const paymentHash=(await pool.query('SELECT payload_hash FROM identified_day_invoice_payments WHERE operation_id=$1',[cheque.operationId])).rows[0].payload_hash;
+  await pool.query('UPDATE identified_day_invoice_payments SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),cheque.operationId]);
+  await assert.rejects(readCompensatedDayInvoiceSnapshot(pool,edit.operationId));
+  await pool.query('UPDATE identified_day_invoice_payments SET payload_hash=$1 WHERE operation_id=$2',[paymentHash,cheque.operationId]);
+  assert.equal((await readCompensatedDayInvoiceSnapshot(pool,edit.operationId)).invoice.applied,750000);
 
 
 

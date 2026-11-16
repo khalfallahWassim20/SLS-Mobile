@@ -2,6 +2,7 @@
  * s'exécutent sous transaction SQLite exclusive et ne sont pas montées dans l'UI. */
 import {canonicalJson,calculateInvoice} from '@sls/domain';
 import {planDayInvoiceSaleExcess} from '../../packages/domain/src/day-invoice-excess-plan';
+import {provePreCompensationSnapshot} from './day-invoice-compensation-snapshot';
 import {assessDayInvoiceSaleRevision} from '../../packages/domain/src/day-invoice';
 import {getDeviceIdentity,assertDeviceWritable,assertKnownDeviceEntity,recordDeviceOperation,type DeviceIdentity} from './identified-device';
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
@@ -93,6 +94,12 @@ export async function captureDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,sa
  // Simulation uniquement : aucune option ne valide ni ne comptabilise le choix.
  const excessPlan=assessment.requiresChoice?planDayInvoiceSaleExcess(source,previous.syncSaleId,total,client.balance):null;
  const fingerprint=canonicalJson({previous,invoice:invoice.fingerprint,balance:client.balance,lines:clean});
+ // Ne pas proposer un choix impossible à reprendre : vérifier dès l'aperçu
+ // que la photographie pourra être prouvée avec la référence conservée.
+ if(assessment.requiresChoice){try{
+  const before=await provePreCompensationSnapshot(tx,identity,JSON.parse(fingerprint),previous.clientId,day);
+  if(before.total!==assessment.previousTotal||before.paid!==assessment.paid)throw Error();
+ }catch{throw Error('Photographie de compensation non vérifiable : synchronisation et rapprochement nécessaires.');}}
  return {previous,lines:clean,day,assessment,balanceAfter:Number(balanceAfter),excessPlan,fingerprint};
 }
 export async function confirmDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,input:{saleId:number;lines:Line[];fingerprint:string;operationId:string;recordedAt:string},digest:(text:string)=>Promise<string>){
