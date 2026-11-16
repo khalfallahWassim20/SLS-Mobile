@@ -14,8 +14,8 @@ export async function readLocalDayInvoiceCash(tx:Tx,identity:DayInvoiceIdentity,
  for(const row of rows){
   let p:DayInvoicePayment;try{p=JSON.parse(row.payload);validateDayPayment(p);}catch{throw Error('Paiement unifié local illisible.');}
   if(p.operationId!==row.operationId||p.clientId!==row.clientId||p.day!==row.invoiceDay)throw Error('Paiement unifié local incohérent.');
-  if(tunisDay(new Date(p.recordedAt))!==day)continue;
   if(row.commercialId!==identity.commercialId||row.serverOrigin!==identity.serverOrigin)throw Error('Paiement unifié lié à un autre commercial ou serveur.');
+  if(tunisDay(new Date(p.recordedAt))!==day)continue;
   result.push(p);
  }
  return result;

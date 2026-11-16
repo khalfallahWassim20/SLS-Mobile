@@ -1,3 +1,6 @@
+import {tourExpenseSchema,addTourExpense} from '../../../apps/mobile/tour-expenses.js';
+import {captureDayInvoiceJournalExport} from '../../../apps/mobile/day-invoice-journal-export.js';
+import {journalCsv,journalHtml} from '../../../apps/mobile/journal-export.js';
 import {captureDayInvoiceExportPayments} from '../../../apps/mobile/day-invoice-journal-export.js';
 import {queueJournalSnapshot} from '../../../apps/mobile/journal-queue.js';
 import {recordDeviceOperation} from '../../../apps/mobile/identified-device.js';
@@ -16,7 +19,7 @@ const identity={commercialId:clientId,serverOrigin:'https://example.test'},day='
 const line={name:'Produit',code:'X',quantity:1,unitPrice:210084,discount:0,vat:1900};
 const reference={version:6,clients:[{id:clientId,name:'Client',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[{id:'33333333-3333-4333-8333-333333333333',code:'X',name:'Produit',barcode:'',saleTtc:'250000',vatRate:1900,unitsPerCarton:1}],saleStates:[],saleDays:[],settlementStates:[],settlementDays:[],settlementProofs:[],oldDebtMarkers:[],journalStates:[{id:invoiceId,clientId,journalDate:day,total:600000,receipts:[],declaredByDayPayment:false}],journalProofs:[{id:invoiceId,version:1,hash:'a'.repeat(64)}],dayPayments:[]};
 function wrap(db:DatabaseSync){return {getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};}
-function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}${dayInvoicePreinvoiceAttemptSchema}
+function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}${dayInvoicePreinvoiceAttemptSchema}${tourExpenseSchema}
  CREATE TABLE sale_revisions(id INTEGER PRIMARY KEY,sale_id INTEGER,created_at TEXT,previous_payload TEXT,new_payload TEXT,refund INTEGER);
  CREATE TABLE sales(id INTEGER PRIMARY KEY,created_at TEXT,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
  CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
@@ -329,6 +332,34 @@ test('chronologie : reçu historique, filtre jour et preuve du journal',async()=
   db.prepare('INSERT INTO tour_journal_receipts VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,clientId,day,JSON.stringify(receipt));await queueJournalSnapshot(tx,invoiceId,()=>paymentId);await recordDeviceOperation(tx,identity,paymentId,'journal',invoiceId,receipt.createdAt);
   const timeline=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.deepEqual(timeline.map(x=>x.type),['receipt','invoice']);assert.equal(timeline[0].type==='receipt'&&timeline[0].prePaid,100000);
   assert.deepEqual((await captureDayInvoiceTimeline(tx,identity,clientId,digest,'2026-01-02')).map(x=>x.type),['receipt']);
+  await assert.rejects(captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest),/Reçu historique sur plusieurs journées/);
+  await assert.rejects(captureDayInvoiceJournalExport(tx,identity,'2026-01-02','Commercial',digest),/Reçu historique sur plusieurs journées/);
   db.prepare('UPDATE tour_journal_receipts SET payload=?').run(JSON.stringify({...receipt,prePaid:1}));await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/journal locale incohérente/);
+ }finally{db.close();}
+});
+
+
+test('journal v6 local : capture unique 600 + 250, règlement 200, dépense et exports',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,journalStates:[],journalProofs:[]});
+  const sale=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);await confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:sale.fingerprint,saleId,operationId,createdAt:at},digest);
+  const pre=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest);await confirmNewDayPreinvoice(tx,identity,{clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId:'44444444-4444-4444-8444-444444444444',createdAt:'2026-01-01T10:00:00.000Z'},digest);
+  const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest);await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-01T11:00:00.000Z',amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);
+  await addTourExpense(tx,identity,{operationId:'55555555-5555-4555-8555-555555555555',createdAt:'2026-01-01T12:00:00.000Z',description:'Carburant',amount:10000});
+  const data=await captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest);assert.equal(data.rows.length,1);assert.equal(data.rows[0].total,850000);assert.equal(data.dayInvoicePayments?.[0].payment.amount,200000);assert.equal(data.initialSalePayments?.[0].paid,0);assert.equal(data.expenses?.[0].amount,10000);
+  const html=journalHtml(data),csv=journalCsv(data);for(const rendered of [html,csv]){assert.match(rendered,/850,000/);assert.match(rendered,/200,000/);assert.match(rendered,/10,000/);}
+  db.prepare('DELETE FROM day_invoice_payment_outbox').run();await assert.rejects(captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest),/Preuve de paiement/);
+ }finally{db.close();}
+});
+
+
+test('journal v6 : refuse de classer un règlement global historique comme ancienne dette',async()=>{
+ const {db,tx}=setup();try{
+  const settlement={syncOperationId:paymentId,createdAt:at,clientId,clientName:'Client',amount:1000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
+  const {canonicalJson}=await import('@sls/domain');const hash=await digest(canonicalJson(settlement));
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,journalStates:[],journalProofs:[],clients:[{...reference.clients[0],serverBalance:'-1000'}],settlementStates:[{operationId:paymentId,clientId}],settlementDays:[{operationId:paymentId,clientId,day}],settlementProofs:[{operationId:paymentId,hash}],oldDebtMarkers:[]});
+  db.prepare('INSERT INTO settlements(client_id,payload) VALUES(?,?)').run(clientId,JSON.stringify(settlement));
+  await assert.rejects(captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest),/Règlement historique non attribué/);
+  assert.equal(db.prepare('SELECT count(*) n FROM settlements').get()?.n,1);
  }finally{db.close();}
 });

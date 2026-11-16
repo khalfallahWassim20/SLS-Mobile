@@ -42,6 +42,7 @@ test('capture SQLite : identité, conservation après accusé et données corrom
   const tx={getAllAsync:async <T>(sql:string,...args:(string|number|null)[])=>db.prepare(sql).all(...args) as T[]};
   assert.deepEqual(await readLocalDayInvoiceCash(tx,identity,day),[event]);assert.deepEqual(await readLocalDayInvoiceCash(tx,identity,'2026-01-01'),[]);
   await assert.rejects(readLocalDayInvoiceCash(tx,{...identity,serverOrigin:'http://other.test'},day),/autre commercial ou serveur/);
+  await assert.rejects(readLocalDayInvoiceCash(tx,{...identity,serverOrigin:'http://other.test'},'2026-01-01'),/autre commercial ou serveur/);
   db.prepare('UPDATE day_invoice_payments SET client_id=?').run(randomUUID());await assert.rejects(readLocalDayInvoiceCash(tx,identity,day),/incohérent/);
  }finally{db.close();}
 });

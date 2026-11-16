@@ -11,7 +11,7 @@ import {captureOldDebtForm,confirmOldDebtForm} from './day-invoice-old-debt-form
 import type {OldDebtEvent} from './day-invoice-old-debt-queue';
 import {readDayInvoiceClients} from './day-invoice-clients';
 import {captureDayInvoiceForm,confirmDayInvoiceForm} from './day-invoice-form';
-import {captureDayInvoiceExportPayments} from './day-invoice-journal-export';
+import {captureDayInvoiceExportPayments,captureDayInvoiceJournalExport} from './day-invoice-journal-export';
 import {synchronizeDayInvoicePrototype} from './day-invoice-sync';
 import {createDayInvoiceTransportPrototype} from './day-invoice-transport';
 import {prepareDayInvoiceCloseAttempt,abandonDayInvoiceCloseAttempt,applyDayInvoiceReopenedState} from './day-invoice-close-attempt';
@@ -771,4 +771,10 @@ export async function getDayInvoiceTimelinePrototype(identity:DeviceIdentity,cli
 export async function getDayInvoiceDetailPrototype(identity:DeviceIdentity,clientId:string,day:string){
  const database=await db();let result!:{invoice:Awaited<ReturnType<typeof captureDayInvoiceForm>>;timeline:Awaited<ReturnType<typeof captureDayInvoiceTimeline>>};
  await database.withExclusiveTransactionAsync(async tx=>{const digest=(text:string)=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text);result={invoice:await captureDayInvoiceForm(tx,identity,clientId,day,digest),timeline:await captureDayInvoiceTimeline(tx,identity,clientId,digest)};});return result;
+}
+
+/** Instantané local v6 de journal, expérimental et non monté. */
+export async function getDayInvoiceJournalExportPrototype(identity:DeviceIdentity,day:string,commercial:string){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceJournalExport>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceJournalExport(tx,identity,day,commercial,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }

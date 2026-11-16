@@ -1,3 +1,6 @@
+import {tourExpenseSchema} from '../../../apps/mobile/tour-expenses.js';
+import {captureDayInvoiceJournalExport} from '../../../apps/mobile/day-invoice-journal-export.js';
+import {journalHtml} from '../../../apps/mobile/journal-export.js';
 import {readDayInvoiceClients} from '../../../apps/mobile/day-invoice-clients.js';
 import {captureDayInvoiceTimeline} from '../../../apps/mobile/day-invoice-timeline.js';
 import {test} from 'node:test';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
@@ -22,7 +25,7 @@ const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',saleId='bbbbbbbb-bbbb-4bbb
 const identity={commercialId:clientId,serverOrigin:'https://example.test'},day='2026-01-01',at='2026-01-01T09:00:00.000Z';
 const digest=async(text:string)=>createHash('sha256').update(text).digest('hex');
 function wrap(db:DatabaseSync){return {getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};}
-function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${dayInvoiceOldDebtAttemptSchema}
+function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${dayInvoiceOldDebtAttemptSchema}${tourExpenseSchema}
  CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,created_at TEXT,client_id TEXT,payload TEXT);
  CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,payload TEXT);
  CREATE TABLE tour_pre_invoices(id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT,version INTEGER,payload TEXT);`);
@@ -115,5 +118,16 @@ test('chronologie : ancienne dette distincte, preuve avant et après acquittemen
   db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(JSON.stringify({...server,oldDebtMarkers:[]}));await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/Preuve ancienne dette/);await assert.rejects(readDayInvoiceClients(tx,identity,digest),/Preuve ancienne dette/);db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(JSON.stringify(server));
   const original=db.prepare('SELECT payload FROM day_invoice_old_debt_local').get()?.payload as string;db.prepare('UPDATE day_invoice_old_debt_local SET payload=?').run(JSON.stringify({...event,event:{...event.event,settlement:{...event.event.settlement,amount:1}}}));
   await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/Preuve ancienne dette/);db.prepare('UPDATE day_invoice_old_debt_local SET payload=?').run(original);
+ }finally{db.close();}
+});
+
+
+test('export v6 : ancienne dette prouvée distincte de la facture du jour',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,reference);const form=await captureOldDebtForm(tx,identity,clientId,day,digest);
+  await confirmOldDebtForm(tx,identity,{fingerprint:form.fingerprint,event:debt(id,60000)},digest);
+  const data=await captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest);assert.equal(data.settlements?.length,1);assert.equal(data.dayInvoicePayments?.length,0);
+  assert.match(journalHtml(data),/60,000/);assert.match(journalHtml(data),/ancienne dette/i);
+  db.prepare('UPDATE settlements SET payload=?').run(JSON.stringify({...debt(id,60000).event.settlement,amount:61000}));await assert.rejects(captureDayInvoiceJournalExport(tx,identity,day,'Commercial',digest),/incohérent/);
  }finally{db.close();}
 });

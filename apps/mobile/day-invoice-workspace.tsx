@@ -1,9 +1,13 @@
 /** Composition préparatoire des écrans v6. Non montée dans App : la transition
  * de protocole, la session et la lignée doivent être validées avant activation. */
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
+import {journalHtml,journalCsv} from './journal-export';
 import React,{useEffect,useMemo,useRef,useState} from 'react';
 import {ScrollView,StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
 import type {DeviceIdentity} from './identified-device';
-import {readDayInvoiceClientsPrototype,readDayInvoiceFormPrototype,getDayInvoiceDetailPrototype,captureNewDayInvoiceSalePrototype,captureNewDayPreinvoicePrototype,captureOldDebtFormPrototype,daySaleAttemptIOPrototype,dayPaymentAttemptIOPrototype,oldDebtAttemptIOPrototype,preinvoiceAttemptIOPrototype} from './storage';
+import {readDayInvoiceClientsPrototype,readDayInvoiceFormPrototype,getDayInvoiceDetailPrototype,getDayInvoiceJournalExportPrototype,captureNewDayInvoiceSalePrototype,captureNewDayPreinvoicePrototype,captureOldDebtFormPrototype,daySaleAttemptIOPrototype,dayPaymentAttemptIOPrototype,oldDebtAttemptIOPrototype,preinvoiceAttemptIOPrototype} from './storage';
 import {DayInvoiceSaleCreateScreen} from './day-invoice-sale-create-screen';
 import {DayInvoicePreinvoiceScreen} from './day-invoice-preinvoice-screen';
 import {DayInvoicePaymentScreen} from './day-invoice-payment-screen';
@@ -12,11 +16,11 @@ import type {DayTimelineItem} from './day-invoice-timeline';
 import {pendingDayWork,type PendingDayWork} from './day-invoice-workspace-state';
 type Snapshot=Awaited<ReturnType<typeof readDayInvoiceClientsPrototype>>;
 type Invoice=Awaited<ReturnType<typeof readDayInvoiceFormPrototype>>;
-type Props={identity:DeviceIdentity;day:string;onSynchronize?:()=>Promise<void>};
+type Props={identity:DeviceIdentity;day:string;commercial:string;onSynchronize?:()=>Promise<void>};
 type Client={id:string;name:string};
 type Screen='clients'|'detail'|PendingDayWork['kind'];
 const money=(value:number)=>`${(value/1000).toFixed(3)} DT`;
-export function DayInvoiceWorkspace({identity,day,onSynchronize}:Props){
+export function DayInvoiceWorkspace({identity,day,commercial,onSynchronize}:Props){
  const [snapshot,setSnapshot]=useState<Snapshot|null>(null),[invoice,setInvoice]=useState<Invoice|null>(null),[timeline,setTimeline]=useState<DayTimelineItem[]>([]),[selected,setSelected]=useState<Client|null>(null),[work,setWork]=useState<PendingDayWork|null>(null),[screen,setScreen]=useState<Screen>('clients'),[query,setQuery]=useState(''),[limit,setLimit]=useState(40),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const mounted=useRef(false),running=useRef(0),generation=useRef(0),key=`${identity.commercialId}\n${identity.serverOrigin}`;
  const io=useMemo(()=>({sale:daySaleAttemptIOPrototype(identity),preinvoice:preinvoiceAttemptIOPrototype(identity),payment:dayPaymentAttemptIOPrototype(identity),oldDebt:oldDebtAttemptIOPrototype(identity)}),[identity.commercialId,identity.serverOrigin]);
@@ -33,6 +37,15 @@ export function DayInvoiceWorkspace({identity,day,onSynchronize}:Props){
  const choose=(client:Client)=>void run(async current=>{const value=await getDayInvoiceDetailPrototype(identity,client.id,day);if(current()){setSelected(client);setInvoice(value.invoice);setTimeline(value.timeline);setScreen('detail');}});
  const retry=()=>void run(refresh);
  const sync=()=>void run(async current=>{if(!onSynchronize)throw Error('Synchronisation non configurée.');await onSynchronize();if(current())await refresh(current);});
+ const exportJournal=(format:'pdf'|'csv')=>void run(async current=>{
+  if(!await Sharing.isAvailableAsync())throw Error('Partage de fichiers indisponible sur ce téléphone.');
+  const data=await getDayInvoiceJournalExportPrototype(identity,day,commercial);if(!current())return;
+  if(!FileSystem.cacheDirectory)throw Error('Stockage temporaire indisponible.');
+  const uri=`${FileSystem.cacheDirectory}journal-v6-local-${day}-${Date.now()}.${format}`;
+  if(format==='pdf'){const pdf=await Print.printToFileAsync({html:journalHtml(data),base64:true});if(!current())return;if(!pdf.base64)throw Error('PDF indisponible.');await FileSystem.writeAsStringAsync(uri,pdf.base64,{encoding:FileSystem.EncodingType.Base64});}
+  else await FileSystem.writeAsStringAsync(uri,journalCsv(data),{encoding:FileSystem.EncodingType.UTF8});
+  if(!current())return;await Sharing.shareAsync(uri,{mimeType:format==='pdf'?'application/pdf':'text/csv',dialogTitle:'Partager le journal local',UTI:format==='pdf'?'com.adobe.pdf':'public.comma-separated-values-text'});
+ });
  const backToDetail=()=>{if(!selected)return retry();void choose(selected);};
  const detailsDay=work?.day??day,detailsClient=selected;
  const search=query.trim().toLocaleLowerCase('fr'),matches=snapshot?.clients.filter(c=>!search||`${c.name} ${c.sector}`.toLocaleLowerCase('fr').includes(search))??[];
@@ -40,7 +53,7 @@ export function DayInvoiceWorkspace({identity,day,onSynchronize}:Props){
  return <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"><View style={styles.header}><Text style={styles.title}>Facture du jour</Text><Text style={styles.subtitle}>{day} · heure de Tunisie</Text></View>
   <Text style={styles.notice}>Espace préparatoire non activé. Les opérations hors ligne des autres téléphones ne sont pas visibles avant synchronisation.</Text>
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}{!!error&&screen==='detail'&&!invoice&&button('Vérifier à nouveau',retry)}{busy&&<Text style={styles.muted}>Vérification en cours…</Text>}
-  {screen==='clients'&&<>{!snapshot?button('Vérifier à nouveau',retry):<>{onSynchronize&&button('Synchroniser',sync)}<TextInput accessibilityLabel="Rechercher un client" value={query} onChangeText={v=>{setQuery(v);setLimit(40);}} placeholder="Client ou secteur" style={styles.input}/><Text style={styles.muted}>{matches.length} client(s)</Text>{matches.slice(0,limit).map(c=><TouchableOpacity accessibilityRole="button" key={c.id} disabled={busy||c.conflict} onPress={()=>choose({id:c.id,name:c.name})} style={[styles.card,c.conflict&&styles.disabled]}><Text style={styles.name}>{c.name}</Text><Text style={styles.muted}>{c.sector||'Secteur non renseigné'}</Text><Text style={styles.value}>{c.balance===null?'Solde à rapprocher':money(c.balance)}</Text></TouchableOpacity>)}{matches.length>limit&&button('Afficher plus de clients',()=>setLimit(n=>n+40))}</>}</>}
+  {screen==='clients'&&<>{!snapshot?button('Vérifier à nouveau',retry):<>{onSynchronize&&button('Synchroniser',sync)}{button('Partager le journal local PDF',()=>exportJournal('pdf'))}{button('Partager le journal local CSV',()=>exportJournal('csv'))}<TextInput accessibilityLabel="Rechercher un client" value={query} onChangeText={v=>{setQuery(v);setLimit(40);}} placeholder="Client ou secteur" style={styles.input}/><Text style={styles.muted}>{matches.length} client(s)</Text>{matches.slice(0,limit).map(c=><TouchableOpacity accessibilityRole="button" key={c.id} disabled={busy||c.conflict} onPress={()=>choose({id:c.id,name:c.name})} style={[styles.card,c.conflict&&styles.disabled]}><Text style={styles.name}>{c.name}</Text><Text style={styles.muted}>{c.sector||'Secteur non renseigné'}</Text><Text style={styles.value}>{c.balance===null?'Solde à rapprocher':money(c.balance)}</Text></TouchableOpacity>)}{matches.length>limit&&button('Afficher plus de clients',()=>setLimit(n=>n+40))}</>}</>}
   {screen==='detail'&&detailsClient&&invoice&&<><Text style={styles.name}>{detailsClient.name}</Text><View style={styles.card}><Text style={styles.label}>Préétablie</Text><Text style={styles.value}>{money(invoice.view.preInvoiceTotal)}</Text><Text style={styles.label}>Ventes sur place</Text><Text style={styles.value}>{money(invoice.view.salesTotal)}</Text><Text style={styles.label}>Facture du jour</Text><Text style={styles.total}>{money(invoice.view.total)}</Text><Text style={styles.label}>Payé · reste</Text><Text style={styles.value}>{money(invoice.view.paid)} · {money(invoice.view.remaining)}</Text></View><Text style={styles.name}>Chronologie des opérations</Text><Text style={styles.muted}>Historique local uniquement ; les opérations des autres téléphones ne sont pas toutes visibles ici.</Text>{!timeline.length&&<Text style={styles.muted}>Aucune opération locale.</Text>}{timeline.map(item=>{const date=Number.isFinite(Date.parse(item.date))?new Date(item.date).toLocaleString('fr-FR',{timeZone:'Africa/Tunis'}):'Date indisponible';let label='',detail='';
    if(item.type==='invoice'){label='Facture préétablie';detail=money(item.amount);}
    else if(item.type==='sale'){label='Vente sur place';detail=`À la création : ${money(item.originalTotal)} · actuel : ${money(item.currentTotal)}`;}
