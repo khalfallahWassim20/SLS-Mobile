@@ -2,6 +2,8 @@
  * normale. Le jeton ne transite que par les fonctions réseau de l'appelant.
  * Chaque transaction doit être exclusive et l'appelant doit vérifier la
  * session, l'origine et sa preuve de serveur avant tout transfert. */
+import {canonicalJson} from '@sls/domain';
+import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {assertDayInvoiceAttemptsSettled} from './day-invoice-attempt-guard';
 import {acquireDayInvoiceSync,releaseDayInvoiceSync} from './day-invoice-sync-lock';
@@ -21,6 +23,7 @@ type IO={
  /** Doit revalider l'identité liée et la preuve serveur authentifiée. */
  verifyServer:(identity:DeviceIdentity,check:()=>void)=>Promise<void>;
  fetchReference:()=>Promise<unknown>;
+ digest:(text:string)=>Promise<string>;
  sendSource:(path:string,payload:string)=>Promise<Response>;
  sendPayment:(payload:string)=>Promise<Response>;
  sendOldDebt?:(payload:string)=>Promise<Response>;
@@ -49,10 +52,20 @@ export async function synchronizeDayInvoicePrototype(identity:DeviceIdentity,ver
   await refresh();
   if(captured.debts.length&&!io.sendOldDebt)throw Error('Transport ancienne dette indisponible.');
   const debtCount=await uploadOldDebts(captured.debts,identity,verified,async payload=>{check();const response=await io.sendOldDebt!(payload);check();return {ok:response.ok,status:response.status,json:async()=>{check();const value=await response.json();check();return value;}};},
-   async entry=>io.transaction(async tx=>{check();await acknowledgeOldDebt(tx,identity,entry);check();}));
+   async entry=>{check();const reference=await io.fetchReference();check();await io.transaction(async tx=>{
+    check();await saveDayInvoiceReference(tx,identity,verified,reference);
+    const ref=await readDayInvoiceReferenceCache(tx,identity),event=JSON.parse(entry.payload),settlement=event.event.settlement;
+    const marker=ref?.oldDebtMarkers.find(m=>m.operationId===entry.operationId),state=ref?.settlementStates?.find(s=>s.operationId===entry.operationId),proof=ref?.settlementProofs.find(p=>p.operationId===entry.operationId);
+    if(!marker||marker.invoiceDay!==event.invoiceDay||state?.clientId!==settlement.clientId||!proof||proof.hash!==await io.digest(canonicalJson(settlement)))throw Error('Preuve serveur du règlement ancienne dette indisponible : opération conservée.');
+    check();await acknowledgeOldDebt(tx,identity,entry);check();
+   });});
   if(debtCount)await refresh();
   const paymentCount=await uploadDayInvoicePayments(captured.payments,identity,verified,async(payload)=>{check();const response=await io.sendPayment(payload);check();return {ok:response.ok,status:response.status,json:async()=>{check();const value=await response.json();check();return value;}};},
-   async(entry)=>io.transaction(async tx=>{check();const bound=await getDeviceIdentity(tx);if(!bound||bound.commercialId!==identity.commercialId||bound.serverOrigin!==identity.serverOrigin)throw Error('Identité du téléphone modifiée.');await acknowledgeDayInvoicePayment(tx,entry);check();}));
+   async entry=>{check();const reference=await io.fetchReference();check();await io.transaction(async tx=>{
+    check();await saveDayInvoiceReference(tx,identity,verified,reference);const ref=await readDayInvoiceReferenceCache(tx,identity),payment=ref?.dayPayments.find(p=>p.operationId===entry.operationId);
+    if(!payment||canonicalJson(payment)!==canonicalJson(JSON.parse(entry.payload)))throw Error('Preuve serveur du paiement indisponible : opération conservée.');
+    check();await acknowledgeDayInvoicePayment(tx,entry);check();
+   });});
   await refresh();const remaining=await capture();check();
   return {sources:sourceCount+debtCount,payments:paymentCount,remainingSources:remaining.sources.length+remaining.debts.length,remainingPayments:remaining.payments.length};
  }finally{releaseDayInvoiceSync();}

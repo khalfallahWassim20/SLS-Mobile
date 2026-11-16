@@ -52,7 +52,7 @@ test('dette et facture hors ligne : reprise HTTP après réponse perdue et absen
   assert.equal(payment.status,'created');
   let lost=true,oldRequests=0,paymentRequests=0;const post=(path:string,payload:string)=>fetch(`${base}/test/${path}`,{method:'POST',headers,body:payload});
   const lineage=(await pool.query('SELECT lineage_id FROM server_lineage_identity WHERE id=1')).rows[0].lineage_id;
-  const io={transaction,check:()=>{},verifyServer:async()=>{const r=await fetch(`${base}/test/server-lineage`,{headers});const v=await r.json() as {commercialId:string;lineageId:string};if(!r.ok||v.commercialId!==commercialId||v.lineageId!==lineage)throw Error('Lignée incohérente');},fetchReference,
+  const io={transaction,digest,check:()=>{},verifyServer:async()=>{const r=await fetch(`${base}/test/server-lineage`,{headers});const v=await r.json() as {commercialId:string;lineageId:string};if(!r.ok||v.commercialId!==commercialId||v.lineageId!==lineage)throw Error('Lignée incohérente');},fetchReference,
    sendSource:async(path:string,payload:string)=>post(path==='settlements'?path:`day-invoice-sources/${path}`,payload),
    sendOldDebt:async(payload:string)=>{oldRequests++;const response=await post('day-invoice-old-debt',payload);if(lost){lost=false;throw Error('Réponse perdue');}return response;},
    sendPayment:async(payload:string)=>{paymentRequests++;return post('day-invoice-payments',payload);}};

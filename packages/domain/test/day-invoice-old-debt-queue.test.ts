@@ -10,6 +10,7 @@ import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../../a
 import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';
 import {dayInvoiceOldDebtAttemptSchema,readOldDebtAttempt,prepareOldDebtAttempt,confirmOldDebtAttempt,acknowledgeOldDebtAttempt,cancelOldDebtAttempt} from '../../../apps/mobile/day-invoice-old-debt-attempt.js';
 import {assertDayInvoiceAttemptsSettled} from '../../../apps/mobile/day-invoice-attempt-guard.js';
+import {synchronizeDayInvoicePrototype} from '../../../apps/mobile/day-invoice-sync.js';
 import {captureOldDebtForm,confirmOldDebtForm} from '../../../apps/mobile/day-invoice-old-debt-form.js';
 import {prepareOldDebtInput} from '../../../apps/mobile/day-invoice-old-debt-input.js';
 import {captureDayInvoiceForm} from '../../../apps/mobile/day-invoice-form.js';
@@ -80,4 +81,20 @@ test('ancienne dette durable : redémarrage, atomicité, file acquittée et gard
   await assert.rejects(readOldDebtAttempt(tx,identity),/incohérente/);await assert.rejects(acknowledgeOldDebtAttempt(tx,identity,id),/incohérente/);
   db.prepare('UPDATE day_invoice_old_debt_attempt SET payload=?').run(original);await acknowledgeOldDebtAttempt(tx,identity,id);assert.equal(await readOldDebtAttempt(tx,identity),null);assert.equal(db.prepare('SELECT count(*) n FROM settlements').get()?.n,1);
  }finally{db.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('synchronisation ancienne dette : coupure ou référence sans preuve conserve la file, puis reprise atomique',async()=>{
+ const {db,tx}=setup();try{
+  const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(tx);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
+  await transaction(t=>saveDayInvoiceReference(t,identity,identity,reference));const form=await captureOldDebtForm(tx,identity,clientId,day,digest),event=debt(id,60000);
+  await transaction(t=>confirmOldDebtForm(t,identity,{fingerprint:form.fingerprint,event},digest));
+  const {canonicalJson}=await import('@sls/domain');const hash=await digest(canonicalJson(event.event.settlement));
+  const server={...reference,clients:[{...reference.clients[0],serverBalance:'290000'}],settlementStates:[{operationId:id,clientId}],settlementDays:[{operationId:id,clientId,day}],settlementProofs:[{operationId:id,hash}],oldDebtMarkers:[{operationId:id,invoiceDay:day}]};
+  let calls=0,sends=0,mode:'cut'|'stale'|'ok'='cut';
+  const io={transaction,digest,check:()=>{},verifyServer:async()=>{},fetchReference:async()=>{calls++;if(mode==='cut'&&calls===3)throw Error('référence interrompue');return mode==='ok'?server:reference;},sendSource:async()=>{throw Error('inattendu');},sendPayment:async()=>{throw Error('inattendu');},sendOldDebt:async()=>{sends++;return {ok:true,status:200,json:async()=>({status:sends===1?'received':'duplicate',operationId:id})};}};
+  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/référence interrompue/);assert.equal((await readOldDebtOutbox(tx,identity)).length,1);
+  mode='stale';await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Preuve serveur/);assert.equal((await readOldDebtOutbox(tx,identity)).length,1);
+  mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:0,remainingSources:0,remainingPayments:0});assert.equal(sends,3);assert.equal((await readOldDebtOutbox(tx,identity)).length,0);
+  assert.equal((await captureOldDebtForm(tx,identity,clientId,day,digest)).balance,290000);
+ }finally{db.close();}
 });

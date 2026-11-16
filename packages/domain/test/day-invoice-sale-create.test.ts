@@ -131,7 +131,7 @@ test('tentatives v6 : synchronisation et clôture ne précèdent pas une décisi
   await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity),/Vente en attente/);
   await assert.rejects(captureDayInvoiceClose(tx,identity,day,digest),/Vente en attente/);
   await assertDayInvoiceAttemptsSettled(tx,identity,'2026-01-02');
-  let sends=0;const io={transaction:async<T>(work:(t:typeof tx)=>Promise<T>)=>work(tx),verifyServer:async()=>{},check:()=>{},fetchReference:async()=>{sends++;return reference;},sendSource:async()=>{sends++;throw Error('ne doit pas envoyer');},sendPayment:async()=>{sends++;throw Error('ne doit pas envoyer');}};
+  let sends=0;const io={digest,transaction:async<T>(work:(t:typeof tx)=>Promise<T>)=>work(tx),verifyServer:async()=>{},check:()=>{},fetchReference:async()=>{sends++;return reference;},sendSource:async()=>{sends++;throw Error('ne doit pas envoyer');},sendPayment:async()=>{sends++;throw Error('ne doit pas envoyer');}};
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Vente en attente/);assert.equal(sends,0);
   db.exec('BEGIN');await confirmDaySaleAttempt(tx,identity,operationId,digest);db.exec('COMMIT');await assertDayInvoiceAttemptsSettled(tx,identity);
   const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest),payment={clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-02T10:00:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
@@ -156,10 +156,25 @@ test('synchronisation en cours : aucune nouvelle intention v6 ne peut être pré
   const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),saleInput={clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at};
   const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest),payment={clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:at,amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
   let release!:()=>void;const wait=new Promise<void>(resolve=>{release=resolve;});let entered!:()=>void;const ready=new Promise<void>(resolve=>{entered=resolve;});
-  const io={transaction:async<T>(work:(t:typeof tx)=>Promise<T>)=>work(tx),verifyServer:async()=>{entered();await wait;},check:()=>{},fetchReference:async()=>reference,sendSource:async()=>{throw Error('aucune source');},sendPayment:async()=>{throw Error('aucun paiement');}};
+  const io={digest,transaction:async<T>(work:(t:typeof tx)=>Promise<T>)=>work(tx),verifyServer:async()=>{entered();await wait;},check:()=>{},fetchReference:async()=>reference,sendSource:async()=>{throw Error('aucune source');},sendPayment:async()=>{throw Error('aucun paiement');}};
   const sync=synchronizeDayInvoicePrototype(identity,identity,io);await ready;
   try{await assert.rejects(prepareDaySaleAttempt(tx,identity,saleInput,digest),/Synchronisation en cours/);await assert.rejects(prepareDayPaymentAttempt(tx,identity,payment,digest),/Synchronisation en cours/);assert.equal(await readDaySaleAttempt(tx,identity),null);assert.equal(await readDayPaymentAttempt(tx,identity),null);}finally{release();}
   assert.deepEqual(await sync,{sources:0,payments:0,remainingSources:0,remainingPayments:0});
   await prepareDaySaleAttempt(tx,identity,saleInput,digest);assert.ok(await readDaySaleAttempt(tx,identity));
+ }finally{db.close();}
+});
+
+test('synchronisation paiement unifié : accusé seul insuffisant, preuve et retrait atomiques',async()=>{
+ const {db,tx}=setup();try{
+  const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(tx);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
+  await transaction(t=>saveDayInvoiceReference(t,identity,identity,reference));const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest);
+  const result=await transaction(t=>confirmDayInvoiceForm(t,identity,{clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:at,amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest));
+  const server={...reference,clients:[{...reference.clients[0],serverBalance:'400000'}],journalStates:[{...reference.journalStates[0],declaredByDayPayment:true}],dayPayments:[result.payment]};
+  let calls=0,sends=0,mode:'cut'|'stale'|'ok'='cut';
+  const io={transaction,digest,check:()=>{},verifyServer:async()=>{},fetchReference:async()=>{calls++;if(mode==='cut'&&calls===3)throw Error('référence interrompue');return mode==='ok'?server:reference;},sendSource:async()=>{throw Error('inattendu');},sendPayment:async()=>{sends++;return {ok:true,status:200,json:async()=>({status:sends===1?'received':'duplicate',operationId:paymentId})};}};
+  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/référence interrompue/);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,1);
+  mode='stale';await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Preuve serveur/);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,1);
+  mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:0,payments:1,remainingSources:0,remainingPayments:0});assert.equal(sends,3);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,0);
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,400000);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,400000);
  }finally{db.close();}
 });

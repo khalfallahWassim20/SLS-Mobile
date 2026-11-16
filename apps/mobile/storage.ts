@@ -666,7 +666,7 @@ export async function readDayInvoiceExportPaymentsPrototype(identity:DeviceIdent
 export async function synchronizeDayInvoiceStoragePrototype(identity:DeviceIdentity,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,allowPrivateHttp=false){
  const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
  const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>):Promise<T>=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
- return synchronizeDayInvoicePrototype(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{...transport,transaction});
+ return synchronizeDayInvoicePrototype(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{...transport,transaction,digest:text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)});
 }
 export async function prepareDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,version:number){
  const database=await db();let result!:Attempt;await database.withExclusiveTransactionAsync(async tx=>{result=await prepareDayInvoiceCloseAttempt(tx,identity,day,version,randomUUID,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
