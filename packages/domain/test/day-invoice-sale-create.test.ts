@@ -1,3 +1,4 @@
+import {captureDayInvoiceExportPayments} from '../../../apps/mobile/day-invoice-journal-export.js';
 import {queueJournalSnapshot} from '../../../apps/mobile/journal-queue.js';
 import {recordDeviceOperation} from '../../../apps/mobile/identified-device.js';
 import {captureDayInvoiceTimeline} from '../../../apps/mobile/day-invoice-timeline.js';
@@ -298,9 +299,11 @@ test('chronologie v6 : montant unique, jour tunisien du mouvement et preuve cons
   const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);await confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest);
   const pre=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest);await confirmNewDayPreinvoice(tx,identity,{clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId:'44444444-4444-4444-8444-444444444444',createdAt:'2026-01-01T10:00:00.000Z'},digest);
   const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest);await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-01T23:30:00.000Z',amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);
+  const exported=await captureDayInvoiceExportPayments(tx,identity,'2026-01-02');assert.equal(exported.length,1);assert.equal(exported[0].pending,true);
   const all=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.deepEqual(all.map(x=>x.type),['payment','invoice','sale']);assert.equal(all[0].type==='payment'&&all[0].amount,200000);
   assert.deepEqual((await captureDayInvoiceTimeline(tx,identity,clientId,digest,day)).map(x=>x.type),['invoice','sale']);const next=await captureDayInvoiceTimeline(tx,identity,clientId,digest,'2026-01-02');assert.equal(next.length,1);assert.equal(next[0].type==='payment'&&next[0].invoiceDay,day);
   db.prepare('DELETE FROM day_invoice_payment_outbox').run();await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/Preuve de paiement/);
+  await assert.rejects(readDayInvoiceClients(tx,identity,digest),/Preuve de paiement/);await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/Preuve de paiement/);await assert.rejects(captureDayInvoiceExportPayments(tx,identity,'2026-01-02'),/Preuve de paiement/);
  }finally{db.close();}
 });
 

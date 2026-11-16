@@ -9,6 +9,8 @@ import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {assertDayInvoiceAttemptsSettled} from './day-invoice-attempt-guard';
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
+import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
+import {assertLocalOldDebtProofs} from './day-invoice-old-debt-proof';
 import {readLocalDayInvoiceCash} from './day-invoice-cash';
 import {tunisDay} from './journal';
 import {readLocalSaleCashLedger} from './credit-sale-refund-journal-prototype';
@@ -25,6 +27,7 @@ export async function captureDayInvoiceClose(tx:Tx,identity:DeviceIdentity,day:s
  OR EXISTS(SELECT 1 FROM tour_expense_revisions WHERE pending=1) OR EXISTS(SELECT 1 FROM tour_expense_cancellations WHERE pending=1)
  OR EXISTS(SELECT 1 FROM credit_remote_sale_confirm_prototype WHERE acknowledged<2) AS n`);
  if(!pending||pending.n)throw Error('Opérations en attente : synchronisez avant clôture.');
+ await assertLocalOldDebtProofs(tx,identity,reference,await readOldDebtOutbox(tx,identity));
  async function origin(kind:'sale'|'journal'|'settlement',entity:string,at:string){
   const rows=await tx.getAllAsync<{operationId:string}>(`SELECT operation_id AS operationId FROM identified_local_operations WHERE operation_kind=? AND entity_id=? AND commercial_id=? AND recorded_at=?`,kind,entity,identity.commercialId,at);
   if(rows.length!==1)throw Error('Origine locale ambiguë : clôture refusée.');return rows[0].operationId;

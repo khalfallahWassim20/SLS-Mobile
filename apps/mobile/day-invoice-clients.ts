@@ -6,6 +6,7 @@ import {reconcileDayInvoiceClient} from './day-invoice-reference';
 import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
 import {assertLocalOldDebtProofs} from './day-invoice-old-debt-proof';
 import {readDayInvoiceOutbox} from './day-invoice-queue';
+import {assertLocalDayPaymentProofs} from './day-invoice-payment-proof';
 import {readIdentifiedOutbox} from './identified-outbox';
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
 import {validateDayPayment,type DayInvoicePayment} from '../../packages/domain/src/day-invoice';
@@ -66,6 +67,7 @@ export async function readDayInvoiceClients(tx:Tx,identity:DeviceIdentity,digest
   if(p.operationId!==row.operationId||p.clientId!==row.clientId||p.day!==row.day||row.commercialId!==identity.commercialId||row.serverOrigin!==identity.serverOrigin||!known.has(p.clientId))throw Error('Paiement unifié local incohérent.');dayPayments.push(p);
  }
  if(dayPayments.length>20000)throw Error('Historique de paiements incomplet.');
+ assertLocalDayPaymentProofs(dayPayments,dayQueue,ref);
  const clients=ref.clients.map(client=>{try{const result=reconcileDayInvoiceClient({reference:ref,clientId:client.id,localSales:sales,localSettlements:settlements,localInvoices:invoices,localDayPayments:dayPayments});const limit=Number(client.creditLimit);return {...client,balance:result.balance,conflict:false as const,saleBlocked:isSaleBlocked(result.balance,limit,false),pendingDayPayments:result.pendingAmount};}catch{return {...client,balance:null,conflict:true as const,saleBlocked:true,pendingDayPayments:null};}});
  return {version:6 as const,clients,articles:ref.articles,pendingOperations:sourceQueue.length+dayQueue.length+debtQueue.length};
 }

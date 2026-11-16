@@ -6,6 +6,7 @@ import {canonicalJson} from '@sls/domain';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readDayInvoicePayments,readDayInvoiceOutbox,type DayInvoiceIdentity} from './day-invoice-queue';
 import {getDeviceIdentity} from './identified-device';
+import {assertLocalDayPaymentProofs} from './day-invoice-payment-proof';
 import {readLocalDayInvoiceSource,writeReconciledDayInvoicePayment} from './day-invoice-local';
 import {buildMergedDayInvoiceView} from './day-invoice-merged-view';
 import {verifiedPendingSaleRevisions} from './day-invoice-pending-sale-revision';
@@ -18,6 +19,7 @@ export async function captureDayInvoiceForm(tx:Tx,identity:DayInvoiceIdentity,cl
  if(!reference)throw Error('Référence facture du jour indisponible : actualisation nécessaire.');
  const local=await readLocalDayInvoiceSource(tx,identity,clientId,day,digest);
  const payments=await readDayInvoicePayments(tx,identity,clientId,day);
+ assertLocalDayPaymentProofs(payments,await readDayInvoiceOutbox(tx,identity),reference);
  const verified=await verifiedPendingSaleRevisions(tx,identity,reference,local);
  const view=buildMergedDayInvoiceView(reference,local,payments,verified);
  const source={...view.source,sales:[...view.source.sales].sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0)};

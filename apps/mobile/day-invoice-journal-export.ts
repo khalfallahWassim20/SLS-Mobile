@@ -3,6 +3,7 @@
  * anciens écrans tant que leurs lectures ne connaissent pas la v6. */
 import {readLocalDayInvoiceCash} from './day-invoice-cash';
 import {readDayInvoiceOutbox} from './day-invoice-queue';
+import {assertLocalDayPaymentProofs} from './day-invoice-payment-proof';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import type {JournalExport} from './journal-export';
@@ -13,6 +14,7 @@ export async function captureDayInvoiceExportPayments(tx:Tx,identity:DeviceIdent
  const reference=await readDayInvoiceReferenceCache(tx,identity);if(!reference)throw Error('Référence facture du jour indisponible pour l’export.');
  const payments=await readLocalDayInvoiceCash(tx,identity,day);
  const pending=await readDayInvoiceOutbox(tx,identity);
+ assertLocalDayPaymentProofs(payments,pending,reference);
  const pendingIds=new Set(pending.map(p=>p.operationId));
  return payments.map(payment=>{const client=reference.clients.find(c=>c.id===payment.clientId);if(!client||!client.name.trim())throw Error('Client du règlement indisponible pour l’export.');return {payment,clientName:client.name,sector:client.sector,pending:pendingIds.has(payment.operationId)};});
 }
