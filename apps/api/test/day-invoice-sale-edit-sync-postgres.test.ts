@@ -1,3 +1,6 @@
+import {assertDayInvoiceAttemptsSettled} from '../../mobile/day-invoice-attempt-guard.js';
+import {dayInvoiceSaleEditAttemptSchema,prepareSaleEditAttempt,confirmSaleEditAttempt,readSaleEditAttempt,acknowledgeSaleEditAttempt} from '../../mobile/day-invoice-sale-edit-attempt.js';
+import {resumeSaleEditAttempt} from '../../mobile/day-invoice-sale-edit-attempt-flow.js';
 /** Téléphone SQLite et serveur PostgreSQL fictifs : révision hors ligne, reprise HTTP. */
 import {test} from 'node:test';import assert from 'node:assert/strict';import {randomUUID,createHash} from 'node:crypto';import {DatabaseSync} from 'node:sqlite';import {createServer,type Server} from 'node:http';import express from 'express';import pg from 'pg';
 import {schemaSql} from '../src/schema.js';import {dayInvoiceServerSchema,storeDayInvoicePayment} from '../src/day-invoice-store.js';import {identifiedCommercialRoutes} from '../src/identified-tour-routes.js';
@@ -5,7 +8,7 @@ import {setCommercialCredentials} from '../src/commercials.js';import {loginComm
 import {identifiedDeviceSchema} from '../../mobile/identified-device.js';import {tourCloseQueueSchema} from '../../mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../mobile/credit-note-offline-prototype.js';import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../mobile/sale-event-time.js';
 import {dayInvoiceCloseAttemptSchema,prepareDayInvoiceCloseAttempt} from '../../mobile/day-invoice-close-attempt.js';
 import {captureDayInvoiceClose} from '../../mobile/day-invoice-close-capture.js';
-import {captureDayInvoiceSaleEdit,confirmDayInvoiceSaleEdit} from '../../mobile/day-invoice-sale-edit.js';import {captureDayInvoiceForm,confirmDayInvoiceForm} from '../../mobile/day-invoice-form.js';import {readDayInvoiceClients} from '../../mobile/day-invoice-clients.js';import {synchronizeDayInvoicePrototype} from '../../mobile/day-invoice-sync.js';
+import {captureDayInvoiceSaleEdit} from '../../mobile/day-invoice-sale-edit.js';import {captureDayInvoiceForm,confirmDayInvoiceForm} from '../../mobile/day-invoice-form.js';import {readDayInvoiceClients} from '../../mobile/day-invoice-clients.js';import {synchronizeDayInvoicePrototype} from '../../mobile/day-invoice-sync.js';
 
 test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon',async()=>{
  const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL de test manquante');const schema='sls_edit_sync_'+randomUUID().replaceAll('-',''),root=new pg.Pool({connectionString:url});let pool:pg.Pool|undefined,server:Server|undefined,phone:DatabaseSync|undefined;
@@ -20,7 +23,7 @@ test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon
   const invoice={id:randomUUID(),journalDate:day,clientId,clientName:'Client fictif',sector:'',amount:600000,createdAt:at},invoiceOperation=randomUUID(),snapshot={operationId:invoiceOperation,version:1,invoice,receipts:[]};await storeJournalSnapshot(pool,snapshot,'identified',{...session,enforceMode:true});
   const payment={operationId:randomUUID(),clientId,day,recordedAt:at,amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoice.id,version:1,total:600000,declare:true},sales:[{id:saleId,version:1}]};await storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource);
   const app=express();app.use(express.json());app.use('/test',identifiedCommercialRoutes(pool,secret,{dayInvoiceTestOnly:true}));server=createServer(app);await new Promise<void>((resolve,reject)=>server!.listen(0,'127.0.0.1',()=>resolve()).once('error',reject));const address=server.address();assert.ok(address&&typeof address!=='string');const base=`http://127.0.0.1:${address.port}`,identity={commercialId,serverOrigin:base};
-  phone=new DatabaseSync(':memory:');const db=phone;db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceCloseAttemptSchema}
+  phone=new DatabaseSync(':memory:');const db=phone;db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceCloseAttemptSchema}${dayInvoiceSaleEditAttemptSchema}
    CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
    CREATE TABLE sale_revisions(id INTEGER PRIMARY KEY,sale_id INTEGER,created_at TEXT,previous_payload TEXT,new_payload TEXT,refund INTEGER);
    CREATE TABLE tour_expenses(pending INTEGER);CREATE TABLE tour_expense_revisions(pending INTEGER);CREATE TABLE tour_expense_cancellations(pending INTEGER);
@@ -37,7 +40,13 @@ test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon
   const otherSale={...sale,clientId:otherClient,clientName:'Autre client',syncSaleId:otherSaleId},otherEvent={operationId:otherSaleOperation,saleId:otherSaleId,version:1,sale:otherSale,refund:0};
   db.prepare('INSERT INTO sales VALUES(2,?,?)').run(otherClient,JSON.stringify(otherSale));db.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(otherSaleOperation,otherSaleId,1,JSON.stringify(otherEvent));db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(otherSaleOperation,commercialId,otherSaleId,at);
   const lines=[{...sale.lines[0],quantity:2}],draft=await transaction(t=>captureDayInvoiceSaleEdit(t,identity,1,lines,digest));assert.equal(draft.assessment.total,1100000);assert.equal(draft.assessment.remaining,900000);
-  const editId=randomUUID();await transaction(t=>confirmDayInvoiceSaleEdit(t,identity,{saleId:1,lines,fingerprint:draft.fingerprint,operationId:editId,recordedAt:'2026-01-01T10:00:00.000Z'},digest));
+  const editId=randomUUID(),editAttempt={saleId:1,clientId,day,lines,fingerprint:draft.fingerprint,operationId:editId,recordedAt:'2026-01-01T10:00:00.000Z'};
+  await transaction(t=>prepareSaleEditAttempt(t,identity,editAttempt,digest));
+  await assert.rejects(transaction(t=>assertDayInvoiceAttemptsSettled(t,identity)),/Modification en attente/);
+  const editIO={read:()=>transaction(t=>readSaleEditAttempt(t,identity)),prepare:(input:typeof editAttempt)=>transaction(t=>prepareSaleEditAttempt(t,identity,input,digest)),confirm:(id:string)=>transaction(t=>confirmSaleEditAttempt(t,identity,id,digest)),acknowledge:(id:string)=>transaction(t=>acknowledgeSaleEditAttempt(t,identity,id)),cancel:async()=>{throw Error('Annulation non prévue');}};
+  // La transaction locale a pu être validée alors que sa réponse est perdue.
+  await editIO.confirm(editId);const receipt=await resumeSaleEditAttempt(editIO,editAttempt);assert.equal(receipt.result?.updated.syncVersion,2);
+  assert.equal(db.prepare('SELECT count(*) n FROM sale_revisions').get()?.n,1);
   const offline=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(offline.view.remaining,900000);
   const secondPayment=randomUUID(),secondInput={clientId,day,fingerprint:offline.fingerprint,operationId:secondPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:100000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest));
   assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
@@ -51,6 +60,7 @@ test('révision locale v6 : HTTP, réponse perdue, reprise et solde sans doublon
   assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,1100000);assert.equal(form.view.remaining,800000);
   const clients=await transaction(t=>readDayInvoiceClients(t,identity,digest));assert.equal(clients.clients.find(c=>c.id===clientId)?.balance,800000);
+  assert.equal((await transaction(t=>readSaleEditAttempt(t,identity)))?.result?.updated.syncVersion,2);await editIO.acknowledge(editId);assert.equal(await editIO.read(),null);
   assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,2);assert.equal(db.prepare('SELECT count(*) n FROM sale_revisions').get()?.n,1);assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE client_id=$1',[clientId])).rows[0].n,2);
   const proof=await transaction(t=>captureDayInvoiceClose(t,identity,day,digest));assert.equal(proof.sales.saleStates.find(s=>s.saleId===saleId)?.version,2);assert.equal(proof.sales.saleStates.find(s=>s.saleId===saleId)?.total,500000);
   const attempt=await transaction(t=>prepareDayInvoiceCloseAttempt(t,identity,day,0,randomUUID,digest));assert.equal(attempt.cashProof,proof.cashProof);
