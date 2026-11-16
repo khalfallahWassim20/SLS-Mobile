@@ -8,9 +8,28 @@ import {verifyCommercialSession} from './commercial-session.js';
 import {JournalAuthenticationError,JournalConflict} from './journal-store.js';
 import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
-import {readDayInvoiceCompensationProjectionInTransaction} from './day-invoice-reference.js';
+import {readDayInvoiceCompensationProjectionInTransaction,readCompensatedDayInvoiceSnapshotInTransaction} from './day-invoice-reference.js';
 import {saleEventSchema} from './identified-operations.js';
 import {compensationSchema} from './day-invoice-compensation.js';
+
+/** Lecture test-only du client concerné, sans exposer la référence complète.
+ * Session, propriétaire, sources et solde partagent le même instantané. */
+export async function readAuthenticatedCompensatedInvoice(pool:Pool,operationId:string,session:{secret:string;token:string}){
+ z.string().uuid().parse(operationId);
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
+  const actor=await verifyCommercialSession(db,session.secret,session.token,true);
+  if(!actor)throw new JournalAuthenticationError('Session invalide.');
+  const owner=await db.query('SELECT commercial_id FROM identified_day_invoice_compensations WHERE operation_id=$1',[operationId]);
+  if(owner.rows.length!==1||owner.rows[0].commercial_id!==actor.id)throw new JournalConflict('Facture indisponible pour ce commercial.');
+  await assertOldCreditProtocolSafe(db);
+  const snapshot=await readCompensatedDayInvoiceSnapshotInTransaction(db,operationId);
+  if(snapshot.compensation.commercialId!==actor.id)throw new JournalConflict('Facture incohérente.');
+  const result={version:1 as const,compensation:snapshot.compensation,invoice:snapshot.invoice};
+  await db.query('COMMIT');return result;
+ }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+}
 
 export async function readCompensationReceipt(pool:Pool,operationId:string,session:{secret:string;token:string}){
  z.string().uuid().parse(operationId);

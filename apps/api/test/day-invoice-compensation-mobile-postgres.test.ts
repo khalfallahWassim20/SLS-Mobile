@@ -8,7 +8,7 @@ import {startPaymentAttempt,resumePaymentAttempt,finishPaymentAttempt} from '../
 import {captureDayInvoiceForm} from '../../mobile/day-invoice-form.js';import {makeDayPaymentAttempt} from '../../mobile/day-invoice-payment-input.js';import {synchronizeDayInvoicePrototype} from '../../mobile/day-invoice-sync.js';
 import {identifiedDeviceSchema} from '../../mobile/identified-device.js';import {tourCloseQueueSchema} from '../../mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../mobile/credit-note-offline-prototype.js';import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../mobile/sale-event-time.js';
 import {createDayInvoiceTransportPrototype} from '../../mobile/day-invoice-transport.js';import {captureWorkspaceState} from '../../mobile/day-invoice-workspace-state.js';
-import {captureDayInvoiceSaleEdit} from '../../mobile/day-invoice-sale-edit.js';import {dayInvoiceCompensationLocalSchema,confirmLocalCompensation,readLocalCompensation} from '../../mobile/day-invoice-compensation-local.js';import {readLocalCompensationView,readLocalCompensationCollectionImpact} from '../../mobile/day-invoice-compensation-view.js';import {synchronizeLocalCompensation} from '../../mobile/day-invoice-compensation-sync.js';import {assertDayInvoiceAttemptsSettled} from '../../mobile/day-invoice-attempt-guard.js';
+import {captureDayInvoiceSaleEdit} from '../../mobile/day-invoice-sale-edit.js';import {dayInvoiceCompensationLocalSchema,confirmLocalCompensation,readLocalCompensation} from '../../mobile/day-invoice-compensation-local.js';import {readLocalCompensationView,readLocalCompensationCollectionImpact} from '../../mobile/day-invoice-compensation-view.js';import {synchronizeLocalCompensation} from '../../mobile/day-invoice-compensation-sync.js';import {reconcileCompensatedInvoice} from '../../mobile/day-invoice-compensation-reconcile.js';import {assertDayInvoiceAttemptsSettled} from '../../mobile/day-invoice-attempt-guard.js';
 
 for(const choice of ['refund','credit'] as const)test(`compensation mobile ${choice} : SQLite, réponse HTTP perdue et reçu serveur`,async()=>{
  const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL de test manquante');const schema='sls_comp_phone_'+randomUUID().replaceAll('-',''),root=new pg.Pool({connectionString:url});let pool:pg.Pool|undefined,server:Server|undefined,phone:DatabaseSync|undefined;
@@ -41,6 +41,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
    const response=await fetch(`${base}/test/${path}`,options);if(path==='day-invoice-payments'){paymentSends++;if(lostPayment){lostPayment=false;throw Error('Réponse paiement perdue');}}if(path==='day-invoice-compensated-sale'){sends++;if(lost){lost=false;throw Error('Réponse perdue');}}return response;
   }});
   const io={transaction,check:transport.check,verifyServer:transport.verifyServer,send:transport.sendCompensation,receipt:transport.readCompensationReceipt};
+  const reconciliation={transaction,check:transport.check,verifyServer:transport.verifyServer,read:transport.readCompensatedInvoice};
   // Règlement unique saisi hors ligne : 600 + 250 = 850, payé 800.
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.preInvoiceTotal,600000);assert.equal(form.view.salesTotal,250000);assert.equal(form.view.total,850000);assert.equal(form.view.remaining,850000);
   const attempt=makeDayPaymentAttempt(form,clientId,day,{amount:'800,000',mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},randomUUID(),'2026-01-01T09:30:00.000Z');
@@ -56,6 +57,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   const lines=[{...sale.lines[0],quantity:3}],draft=await transaction(t=>captureDayInvoiceSaleEdit(t,identity,1,lines,digest));assert.equal(draft.assessment.excess,50000);
   const input={saleId:1,lines,fingerprint:draft.fingerprint,operationId:randomUUID(),recordedAt:'2026-01-01T10:00:00.000Z',choice};
   const saved=await transaction(t=>confirmLocalCompensation(t,identity,input,digest));assert.equal(saved.status,'created');
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,reconciliation),/Reçu de compensation indisponible/);
   const workspace=await transaction(t=>captureWorkspaceState({compensation:()=>readLocalCompensationView(t,identity),preinvoice:async()=>null,sale:async()=>null,saleEdit:async()=>null,payment:async()=>null,oldDebt:async()=>null,clients:async()=>{throw Error('Clients non autorisés');}}));
   assert.deepEqual(workspace,{pending:{kind:'compensation',clientId,day},clients:null});
   await assert.rejects(synchronizeLocalCompensation(identity,{...identity,serverOrigin:'https://autre.test'},io),/différent/);assert.equal(sends,0);
@@ -68,6 +70,20 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   assert.equal(consolidated.invoice.paid,view.paid);assert.equal(consolidated.invoice.applied,view.paidApplied);assert.equal(consolidated.invoice.remaining,view.remaining);
   assert.equal(Number(consolidated.reference.clients.find(c=>c.id===clientId)?.serverBalance),view.localBalanceAfter);
   assert.deepEqual(consolidated.invoice.payments.map(p=>({operationId:p.operationId,amount:p.amount,mode:p.mode})),view.payments.map(p=>({operationId:p.operationId,amount:p.amount,mode:p.mode})));
+  const matched=await reconcileCompensatedInvoice(identity,identity,reconciliation);
+  assert.deepEqual(matched,{operationId:input.operationId,clientId,day,total:750000,paid:800000,applied:750000,remaining:0,balance:view.localBalanceAfter,balanceNeedsReview:false});
+  const fakeResponse=(data:unknown)=>({ok:true,status:200,json:async()=>data});
+  const remote={version:1,compensation:consolidated.compensation,invoice:consolidated.invoice};
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,invoice:{...remote.invoice,paid:1}})}),/divergentes/);
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,invoice:{...remote.invoice,payments:[]}})}),/divergentes/);
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,compensation:{...remote.compensation,choice:choice==='refund'?'credit':'refund'}})}),/divergentes/);
+  let expired=false;await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,check:()=>{if(expired)throw Error('Session expirée');},read:async()=>{expired=true;return fakeResponse(remote);}}),/Session expirée/);
+  const localInput=String(db.prepare('SELECT input FROM day_invoice_compensation_local').get()?.input),altered=JSON.parse(localInput),captured=JSON.parse(altered.fingerprint);captured.balance=123456;altered.fingerprint=JSON.stringify(captured);
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>{db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(JSON.stringify(altered));return fakeResponse(remote);}}),/divergentes/);
+  db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(localInput);
+  const changedBalance=await reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,compensation:{...remote.compensation,balance:remote.compensation.balance+1}})});
+  assert.equal(changedBalance.balanceNeedsReview,true);assert.equal(changedBalance.balance,view.localBalanceAfter+1);
+  assert.equal((await transaction(t=>readLocalCompensation(t,identity)))?.receipt!==null,true);
   const impact=await transaction(t=>readLocalCompensationCollectionImpact(t,identity,commercialId,day));assert.equal(impact.refund,choice==='refund'?50000:0);assert.equal(impact.credit,choice==='credit'?50000:0);
   assert.deepEqual(await synchronizeLocalCompensation(identity,identity,io),{status:'already-proven',operationId:input.operationId});assert.equal(sends,2);
   assert.equal((await transaction(t=>confirmLocalCompensation(t,identity,input,digest))).status,'duplicate');

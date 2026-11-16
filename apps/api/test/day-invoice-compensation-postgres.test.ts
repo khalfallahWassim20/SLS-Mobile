@@ -69,6 +69,13 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const receipt=await receiptResponse.json() as {event:unknown;compensation:unknown;projection:{operationId:string;commercialId:string}};
   assert.deepEqual(receipt.event,edit);assert.deepEqual(receipt.compensation,compensation);assert.equal(receipt.projection.operationId,edit.operationId);assert.equal(receipt.projection.commercialId,actorId);
   if(actorId!==commercialId)assert.equal((await fetch(receiptUrl,{headers:{Authorization:`Bearer ${session.token}`}})).status,409);
+  const invoicePath=`day-invoice-compensated-sale/${edit.operationId}/invoice`;
+  assert.equal((await fetch(`${base}/normal/${invoicePath}`,{headers:{Authorization:`Bearer ${editSession.token}`}})).status,404);
+  assert.equal((await fetch(`${base}/test/${invoicePath}`)).status,401);
+  if(actorId!==commercialId)assert.equal((await fetch(`${base}/test/${invoicePath}`,{headers:{Authorization:`Bearer ${session.token}`}})).status,409);
+  const invoiceResponse=await fetch(`${base}/test/${invoicePath}`,{headers:{Authorization:`Bearer ${editSession.token}`}});assert.equal(invoiceResponse.status,200);assert.match(invoiceResponse.headers.get('cache-control')??'',/no-store/);
+  const invoiceBody=await invoiceResponse.json() as {version:number;invoice:{payments:unknown[];total:number};compensation:{commercialId:string}};
+  assert.deepEqual(Object.keys(invoiceBody).sort(),['compensation','invoice','version']);assert.equal(invoiceBody.version,1);assert.equal(invoiceBody.compensation.commercialId,actorId);assert.equal(invoiceBody.invoice.total,750000);assert.deepEqual(invoiceBody.invoice.payments,[payment,cheque]);
   // Reprise après réponse perdue : l'acquittement attend le reçu vérifié.
   const identity={commercialId:actorId,serverOrigin:base},payload=JSON.stringify({event:edit,compensation});let acknowledged=0;
   await uploadCompensatedSale(payload,identity,identity,{check:()=>{},send:async p=>send('test',JSON.parse(p)),receipt:async id=>fetch(`${base}/test/day-invoice-compensated-sale/${id}/receipt`,{headers:{Authorization:`Bearer ${editSession.token}`}}),acknowledge:async p=>{assert.equal(p,payload);acknowledged++;}});

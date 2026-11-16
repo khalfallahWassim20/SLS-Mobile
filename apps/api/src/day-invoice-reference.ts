@@ -115,10 +115,7 @@ export async function readDayInvoiceCompensationProjectionInTransaction(db:PoolC
  * ancien lecteur ne doit consommer `reference` séparément : le paiement brut
  * dépasse désormais le total et la compensation est indispensable au calcul.
  * Ne l'exposer ni aux routes normales ni à la clôture avant migration complète. */
-export async function readCompensatedDayInvoiceSnapshot(pool:Pool,operationId:string){
- const db=await pool.connect();
- try{
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);
+export async function readCompensatedDayInvoiceSnapshotInTransaction(db:PoolClient,operationId:string){
   const compensation=await readDayInvoiceCompensationProjectionInTransaction(db,operationId);
   const reference=await readUnprojectedDayInvoiceReference(db,true);
   const client=reference.clients.find(c=>c.id===compensation.clientId);
@@ -135,7 +132,13 @@ export async function readCompensatedDayInvoiceSnapshot(pool:Pool,operationId:st
   const paid=BigInt(summary?.prePaid??0)+sales.reduce((n,s)=>n+BigInt(s.paid),0n)+payments.reduce((n,p)=>n+BigInt(p.amount),0n);
   if(preInvoiceTotal+salesTotal!==BigInt(compensation.total)||paid!==BigInt(compensation.paidBeforeCompensation)||paid-BigInt(compensation.compensation)!==BigInt(compensation.applied))throw Error('Facture ou paiements de compensation incohérents.');
   const clients=reference.clients.map(c=>c.id===client.id?{...c,serverBalance:String(balance)}:c);
-  const result={reference:{...reference,clients},compensation,invoice:{clientId:compensation.clientId,day:compensation.invoiceDay,preInvoiceTotal:safe(preInvoiceTotal),salesTotal:safe(salesTotal),total:compensation.total,paid:safe(paid),applied:compensation.applied,remaining:compensation.remaining,payments}};
+  return {reference:{...reference,clients},compensation,invoice:{clientId:compensation.clientId,day:compensation.invoiceDay,preInvoiceTotal:safe(preInvoiceTotal),salesTotal:safe(salesTotal),total:compensation.total,paid:safe(paid),applied:compensation.applied,remaining:compensation.remaining,payments}};
+}
+export async function readCompensatedDayInvoiceSnapshot(pool:Pool,operationId:string){
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);
+  const result=await readCompensatedDayInvoiceSnapshotInTransaction(db,operationId);
   await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
