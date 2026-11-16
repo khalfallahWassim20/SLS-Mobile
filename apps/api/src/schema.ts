@@ -34,6 +34,8 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       active boolean NOT NULL DEFAULT true, created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now(), deleted_at timestamptz
     );
+    -- Droit explicite de consulter les prix d'achat sur mobile ; refusé par défaut.
+    ALTER TABLE commercials ADD COLUMN IF NOT EXISTS can_view_purchase_price boolean NOT NULL DEFAULT false;
     -- Comptes préparatoires : aucun accès mobile accordé à ce stade.
     CREATE TABLE IF NOT EXISTS commercial_credentials (
       commercial_id uuid PRIMARY KEY REFERENCES commercials(id), login text NOT NULL UNIQUE,
