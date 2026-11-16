@@ -1,3 +1,4 @@
+import {captureNewDayPreinvoice,confirmNewDayPreinvoice,type NewDayPreinvoice} from './day-invoice-preinvoice-create';
 import {dayInvoiceOldDebtAttemptSchema,readOldDebtAttempt,prepareOldDebtAttempt,confirmOldDebtAttempt,acknowledgeOldDebtAttempt,cancelOldDebtAttempt,type OldDebtAttempt} from './day-invoice-old-debt-attempt';
 import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt,type PaymentAttempt} from './day-invoice-payment-attempt';
 import {dayInvoiceSaleAttemptSchema,prepareDaySaleAttempt,readDaySaleAttempt,confirmDaySaleAttempt,acknowledgeDaySaleAttempt,cancelDaySaleAttempt} from './day-invoice-sale-attempt';
@@ -743,3 +744,11 @@ export async function confirmOldDebtAttemptPrototype(identity:DeviceIdentity,ope
 export async function acknowledgeOldDebtAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgeOldDebtAttempt(tx,identity,operationId));}
 export async function cancelOldDebtAttemptPrototype(identity:DeviceIdentity,operationId:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelOldDebtAttempt(tx,identity,operationId));}
 export function oldDebtAttemptIOPrototype(identity:DeviceIdentity){return {read:()=>readOldDebtAttemptPrototype(identity),prepare:(input:OldDebtAttempt)=>prepareOldDebtAttemptPrototype(identity,input),confirm:(id:string)=>confirmOldDebtAttemptPrototype(identity,id),acknowledge:(id:string)=>acknowledgeOldDebtAttemptPrototype(identity,id),cancel:(id:string)=>cancelOldDebtAttemptPrototype(identity,id)};}
+
+/** Préétablie v6 préparatoire : jamais utilisée par les écrans hérités. */
+export async function captureNewDayPreinvoicePrototype(identity:DeviceIdentity,clientId:string,day:string,amount:number){
+ const database=await db();let result!:Awaited<ReturnType<typeof captureNewDayPreinvoice>>;await database.withExclusiveTransactionAsync(async tx=>{result=await captureNewDayPreinvoice(tx,identity,clientId,day,amount,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+export async function confirmNewDayPreinvoicePrototype(identity:DeviceIdentity,input:NewDayPreinvoice){
+ const database=await db();let result!:Awaited<ReturnType<typeof confirmNewDayPreinvoice>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmNewDayPreinvoice(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}

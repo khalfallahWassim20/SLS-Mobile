@@ -1,3 +1,4 @@
+import {captureNewDayPreinvoice,confirmNewDayPreinvoice} from '../../../apps/mobile/day-invoice-preinvoice-create.js';
 import {test} from 'node:test';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import assert from 'node:assert/strict';import {DatabaseSync} from 'node:sqlite';import {createHash} from 'node:crypto';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../../apps/mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
 import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt} from '../../../apps/mobile/day-invoice-payment-attempt.js';
@@ -11,8 +12,8 @@ const reference={version:6,clients:[{id:clientId,name:'Client',sector:'',opening
 function wrap(db:DatabaseSync){return {getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};}
 function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}
  CREATE TABLE sales(id INTEGER PRIMARY KEY,created_at TEXT,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
- CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,payload TEXT);
- CREATE TABLE tour_pre_invoices(id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT,version INTEGER,payload TEXT);`);
+ CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
+ CREATE TABLE tour_pre_invoices(id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);`);
  db.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(identity.commercialId,identity.serverOrigin);
  const tx=wrap(db);return {db,tx};}
 test('vente sur place v6 : facture 600 + 250, règlement unique 200 et solde 650',async()=>{
@@ -213,5 +214,41 @@ test('source règlement : le retrait exige la preuve exacte dans la référence'
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Preuve serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
   mode='wrong';calls=0;await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Preuve serveur/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
   mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:0,remainingSources:0,remainingPayments:0});
+ }finally{db.close();}
+});
+
+
+test('préétablie v6 après vente hors ligne : 600 + 250, règlement unique et reprise',async()=>{
+ const {db,tx}=setup();try{
+  const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(tx);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
+  await transaction(t=>saveDayInvoiceReference(t,identity,identity,{...reference,journalStates:[],journalProofs:[]}));
+  const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);await transaction(t=>confirmNewDayInvoiceSale(t,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest));
+  const form=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest);assert.equal(form.invoiceTotal,850000);assert.equal(form.balance,250000);
+  const input={clientId,day,amount:600000,fingerprint:form.fingerprint,invoiceId,operationId:'44444444-4444-4444-8444-444444444444',createdAt:at};
+  const failure={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{if(sql.startsWith('INSERT INTO journal_sync_state'))throw Error('panne simulée');return tx.runAsync(sql,...args);}};
+  db.exec('BEGIN');await assert.rejects(confirmNewDayPreinvoice(failure,identity,input,digest),/panne simulée/);db.exec('ROLLBACK');assert.equal(db.prepare('SELECT count(*) n FROM tour_pre_invoices').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM journal_sync_outbox').get()?.n,0);
+  assert.equal((await transaction(t=>confirmNewDayPreinvoice(t,identity,input,digest))).status,'created');assert.equal((await transaction(t=>confirmNewDayPreinvoice(t,identity,input,digest))).status,'duplicate');
+  await assert.rejects(confirmNewDayPreinvoice(tx,identity,{...input,amount:599000},digest),/différentes/);
+  const invoice=await captureDayInvoiceForm(tx,identity,clientId,day,digest);assert.equal(invoice.view.total,850000);
+  await transaction(t=>confirmDayInvoiceForm(t,identity,{clientId,day,fingerprint:invoice.fingerprint,operationId:paymentId,recordedAt:at,amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest));
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,650000);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,650000);
+  await assert.rejects(captureNewDayPreinvoice(tx,identity,clientId,day,1000,digest),/préétablie existe/);
+ }finally{db.close();}
+});
+
+test('préétablie v6 : conflits, fermeture, date tunisienne et paiement antérieur bloquent',async()=>{
+ const {db,tx}=setup();try{
+  const blank={...reference,journalStates:[],journalProofs:[]};await saveDayInvoiceReference(tx,identity,identity,blank);
+  await assert.rejects(captureNewDayPreinvoice(tx,{...identity,serverOrigin:'https://other.test'},clientId,day,600000,digest),/Identité/);
+  await assert.rejects(captureNewDayPreinvoice(tx,identity,clientId,'2026-02-30',600000,digest),/invalide/);
+  await assert.rejects(captureNewDayPreinvoice(tx,identity,clientId,day,0,digest),/invalide/);
+  const pre=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest),input={clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId,createdAt:at};
+  await assert.rejects(confirmNewDayPreinvoice(tx,identity,{...input,createdAt:'2026-01-01T23:30:00.000Z'},digest),/date/);
+  await assert.rejects(confirmNewDayPreinvoice(tx,identity,{...input,fingerprint:'stale'},digest),/modifié/);
+  db.prepare("INSERT INTO tour_known_server_states(commercial_id,journal_date,status,version) VALUES(?,?,'closed',1)").run(identity.commercialId,day);await assert.rejects(confirmNewDayPreinvoice(tx,identity,input,digest),/clôturée/);db.prepare('DELETE FROM tour_known_server_states').run();
+  db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(operationId,identity.commercialId,saleId,at);await assert.rejects(confirmNewDayPreinvoice(tx,identity,input,digest),/différentes|illisible/);db.prepare('DELETE FROM identified_local_operations').run();
+  const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);await confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest);
+  const invoice=await captureDayInvoiceForm(tx,identity,clientId,day,digest);await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:invoice.fingerprint,operationId:paymentId,recordedAt:at,amount:100000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);
+  await assert.rejects(captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest),/déjà réglée/);assert.equal(db.prepare('SELECT count(*) n FROM tour_pre_invoices').get()?.n,0);
  }finally{db.close();}
 });
