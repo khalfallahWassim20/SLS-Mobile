@@ -19,3 +19,15 @@ export function parseDayInvoicePayment(input:unknown):DayInvoicePayment {
 export function dayInvoicePaymentHash(input:unknown):string {
  return createHash('sha256').update(JSON.stringify(parseDayInvoicePayment(input))).digest('hex');
 }
+
+/** Vérifie le contenu enregistré et ses colonnes d'index avant de le prendre
+ * en compte ou d'accuser une reprise. Le hachage détecte les incohérences,
+ * il ne constitue pas une preuve cryptographique contre une base compromise. */
+export function parseStoredDayInvoicePayment(row:{operation_id:unknown;client_id:unknown;invoice_day:unknown;event_day:unknown;payload:unknown;payload_hash:unknown}):DayInvoicePayment {
+ const payment=parseDayInvoicePayment(row.payload);
+ const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Africa/Tunis',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(payment.recordedAt));
+ const get=(name:string)=>parts.find(p=>p.type===name)?.value;
+ const eventDay=`${get('year')}-${get('month')}-${get('day')}`;
+ if(payment.operationId!==row.operation_id||payment.clientId!==row.client_id||payment.day!==row.invoice_day||eventDay!==row.event_day||dayInvoicePaymentHash(payment)!==row.payload_hash)throw Error('Paiement du jour enregistré incohérent.');
+ return payment;
+}

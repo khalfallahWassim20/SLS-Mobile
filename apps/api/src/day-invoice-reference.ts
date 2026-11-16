@@ -4,7 +4,7 @@ import type {Pool,PoolClient} from 'pg';
 import {summarizePreInvoice,canonicalJson} from '@sls/domain';
 import {createHash} from 'node:crypto';
 import {readIdentifiedReferenceInTransaction} from './identified-reference.js';
-import {parseDayInvoicePayment,dayInvoicePaymentHash} from './day-invoice-protocol.js';
+import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 function tunisDay(iso:string):string {
@@ -41,7 +41,7 @@ export async function readDayInvoiceReferenceInTransaction(db:PoolClient,include
  const settlementProofs=settlementRows.rows.map(row=>({operationId:row.operationId as string,hash:createHash('sha256').update(canonicalJson(row.payload.settlement)).digest('hex')}));
  const markers=await db.query(`SELECT m.operation_id AS "operationId",m.invoice_day::text AS "invoiceDay" FROM identified_day_invoice_old_debt m JOIN identified_settlements s ON s.operation_id=m.operation_id JOIN clients c ON c.id=s.client_id WHERE c.deleted_at IS NULL${active} ORDER BY m.operation_id`);
  const oldDebtMarkers=markers.rows.map(row=>{if(!settlements.has(row.operationId)||settlementDays.find(d=>d.operationId===row.operationId)?.day!==row.invoiceDay)throw Error('Marqueur de dette incohérent.');return {operationId:row.operationId as string,invoiceDay:row.invoiceDay as string};});
- const rows=await db.query(`SELECT p.operation_id AS "operationId",p.client_id AS "clientId",p.invoice_day::text AS day,p.payload,p.payload_hash AS hash
+ const rows=await db.query(`SELECT p.operation_id AS "operationId",p.client_id AS "clientId",p.invoice_day::text AS day,p.event_day::text AS "eventDay",p.payload,p.payload_hash AS hash
  FROM identified_day_invoice_payments p JOIN clients c ON c.id=p.client_id WHERE c.deleted_at IS NULL${active} ORDER BY p.operation_id`);
  const operations=await db.query(`SELECT operation_id FROM demo_sale_events UNION ALL SELECT operation_id FROM identified_sale_events
  UNION ALL SELECT operation_id FROM demo_settlements UNION ALL SELECT operation_id FROM identified_settlements
@@ -51,8 +51,8 @@ export async function readDayInvoiceReferenceInTransaction(db:PoolClient,include
  const operationIds=new Set<string>();for(const row of operations.rows){if(operationIds.has(row.operation_id))throw Error('Identifiant d’opération serveur ambigu.');operationIds.add(row.operation_id);}
  const clients=new Map(base.clients.map(c=>[c.id,c])),declared=new Set<string>();
  const payments=rows.rows.map(row=>{
-  const payment=parseDayInvoicePayment(row.payload);
-  if(payment.operationId!==row.operationId||payment.clientId!==row.clientId||payment.day!==row.day||dayInvoicePaymentHash(payment)!==row.hash||operationIds.has(payment.operationId))throw Error('Paiement serveur incohérent.');
+  const payment=parseStoredDayInvoicePayment({operation_id:row.operationId,client_id:row.clientId,invoice_day:row.day,event_day:row.eventDay,payload:row.payload,payload_hash:row.hash});
+  if(operationIds.has(payment.operationId))throw Error('Paiement serveur incohérent.');
   operationIds.add(payment.operationId);
   const client=clients.get(payment.clientId);if(!client)throw Error('Client du paiement indisponible.');
   if(payment.preInvoice){

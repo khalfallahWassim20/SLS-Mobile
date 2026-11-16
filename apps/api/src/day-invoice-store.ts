@@ -4,7 +4,7 @@
 import type {Pool,PoolClient} from 'pg';
 import {assertTourWritable} from '@sls/domain';
 import {validateDayInvoiceWrite,type DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
-import {dayInvoicePaymentHash,parseDayInvoicePayment} from './day-invoice-protocol.js';
+import {dayInvoicePaymentHash,parseDayInvoicePayment,parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 import {verifyCommercialSession} from './commercial-session.js';
 import {lockTourClosure} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed} from './journal-store.js';
@@ -39,9 +39,10 @@ export async function storeDayInvoicePayment(pool:Pool,input:unknown,session:Ses
   if(!actor)throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
   await lockIdentifiedOperation(db,event.operationId);
   await assertCreditOperationAvailable(db,event.operationId);
-  const existing=await db.query('SELECT payload_hash,commercial_id FROM identified_day_invoice_payments WHERE operation_id=$1',[event.operationId]);
+  const existing=await db.query('SELECT operation_id,client_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash,commercial_id FROM identified_day_invoice_payments WHERE operation_id=$1',[event.operationId]);
   if(existing.rows.length) {
    if(existing.rows[0].payload_hash!==hash || existing.rows[0].commercial_id!==actor.id)throw new JournalConflict('Identifiant de paiement déjà utilisé.');
+   try {parseStoredDayInvoicePayment(existing.rows[0]);} catch {throw new JournalConflict('Paiement du jour enregistré incohérent : rapprochement requis.');}
    await db.query('COMMIT');return 'duplicate';
   }
   await assertOperationUnambiguous(db,event.operationId,'settlement');

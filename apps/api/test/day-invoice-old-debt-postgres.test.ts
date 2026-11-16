@@ -42,6 +42,28 @@ test('ancienne dette explicite : plafond, concurrence, reprise et facture indép
   const competing=await Promise.allSettled([storeDayInvoiceOldDebt(pool,debt(30000),session),storeDayInvoiceOldDebt(pool,debt(30000),session)]);assert.equal(competing.filter(x=>x.status==='fulfilled').length,1);
   const payment={operationId:randomUUID(),clientId,day,recordedAt:at,amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',preInvoice:{id:invoice.id,version:1,total:600000,declare:true},sales:[{id:saleId,version:1}]};
   assert.equal(await storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource),'received');
+  assert.equal(await storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource),'duplicate');
+  const nextPayment={...payment,operationId:randomUUID(),amount:1000,preInvoice:{...payment.preInvoice,declare:false}};
+  await pool.query("UPDATE identified_day_invoice_payments SET payload=jsonb_set(payload,'{amount}','1000'::jsonb) WHERE operation_id=$1",[payment.operationId]);
+  await assert.rejects(storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource),/enregistré incohérent/);
+  await assert.rejects(storeDayInvoicePayment(pool,nextPayment,session,readServerDayInvoiceSource),/enregistré incohérent/);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_day_invoice_payments')).rows[0].n,1);
+  await pool.query('UPDATE identified_day_invoice_payments SET payload=$1::jsonb WHERE operation_id=$2',[JSON.stringify(payment),payment.operationId]);
+  await pool.query("UPDATE identified_day_invoice_payments SET event_day='2026-01-02'::date WHERE operation_id=$1",[payment.operationId]);
+  await assert.rejects(storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource),/enregistré incohérent/);
+  await assert.rejects(storeDayInvoicePayment(pool,nextPayment,session,readServerDayInvoiceSource),/enregistré incohérent/);
+  await assert.rejects(readDayInvoiceReference(pool,true),/enregistré incohérent/);
+  await pool.query('UPDATE identified_day_invoice_payments SET event_day=$1::date WHERE operation_id=$2',[day,payment.operationId]);
+  assert.equal(await storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource),'duplicate');
+
+  await pool.query("UPDATE identified_day_invoice_payments SET invoice_day='2026-01-02'::date WHERE operation_id=$1",[payment.operationId]);
+  await assert.rejects(storeDayInvoicePayment(pool,payment,session,readServerDayInvoiceSource),/enregistré incohérent/);
+  await assert.rejects(storeDayInvoicePayment(pool,nextPayment,session,readServerDayInvoiceSource),/enregistré incohérent/);
+  await pool.query('UPDATE identified_day_invoice_payments SET invoice_day=$1::date WHERE operation_id=$2',[day,payment.operationId]);
+  const otherPaymentClient=randomUUID();await pool.query('INSERT INTO clients(id,name) VALUES($1,$2)',[otherPaymentClient,'Client fictif tiers']);
+  await pool.query('UPDATE identified_day_invoice_payments SET client_id=$1 WHERE operation_id=$2',[otherPaymentClient,payment.operationId]);
+  await assert.rejects(storeDayInvoicePayment(pool,nextPayment,session,readServerDayInvoiceSource),/enregistré incohérent/);
+  await pool.query('UPDATE identified_day_invoice_payments SET client_id=$1 WHERE operation_id=$2',[clientId,payment.operationId]);
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_day_invoice_old_debt')).rows[0].n,2);
   const reference=await readDayInvoiceReference(pool,true);assert.equal(reference.oldDebtMarkers.length,2);assert.equal(reference.clients.find(c=>c.id===clientId)?.serverBalance,'660000');
   const report=await readIdentifiedJournalDay(pool,commercialId,day,true),row=report.rows.find(r=>r.clientId===clientId);assert.ok(row);
