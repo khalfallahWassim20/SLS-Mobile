@@ -4,6 +4,7 @@ import {rateLimit} from 'express-rate-limit';
 import {ZodError,z} from 'zod';
 import type {Pool} from 'pg';
 import {verifyCommercialSession} from './commercial-session.js';
+import {commercialCanViewPurchasePrice} from './commercials.js';
 import {ClosureAuthenticationError,ClosureConflict,ClosureProofConflict,ClosureAbandoned,abandonTourClose,readTourClosure,requestTourTransition} from './tour-closure-store.js';
 import {JournalAuthenticationError,JournalConflict,TourDayClosed,storeJournalSnapshot} from './journal-store.js';
 import {storeDayInvoicePayment} from './day-invoice-store.js';
@@ -69,7 +70,14 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
   res.json({version:1,commercialId:actor.id,lineageId:result.rows[0].lineageId});
  }catch(e){errorHandler(e,res,next);}});
 
- r.get('/reference',async(req,res,next)=>{try{const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}res.json(supportsCredit(req)?await readPrototypeCreditReference(pool,false):await readIdentifiedReference(pool,false,enforceMode));}catch(e){errorHandler(e,res,next);}});
+ r.get('/reference',async(req,res,next)=>{try{
+  const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));
+  if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
+  // Le droit est lu côté serveur pour le commercial authentifié, jamais fourni par le client.
+  // La référence v5 de test n'inclut pas le prix d'achat.
+  const withPurchasePrice=!supportsCredit(req)&&await commercialCanViewPurchasePrice(pool,actor.id);
+  res.json(supportsCredit(req)?await readPrototypeCreditReference(pool,false):await readIdentifiedReference(pool,false,enforceMode,withPurchasePrice));
+ }catch(e){errorHandler(e,res,next);}});
  // Uniquement pour une base de test isolée, jamais activé par défaut.
  if(options.allowCreditProtocol===true)r.post('/credit-notes-abandon',async(req,res,next)=>{try{
   if(!supportsCredit(req)){res.status(409).json({error:'Référence v5 requise.'});return;}
