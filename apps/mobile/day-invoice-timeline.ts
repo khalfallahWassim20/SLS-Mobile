@@ -6,7 +6,6 @@ import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {readDayInvoiceClients} from './day-invoice-clients';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readDayInvoiceOutbox} from './day-invoice-queue';
-import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
 import {readLocalSaleCashLedger} from './credit-sale-refund-journal-prototype';
 import {chronologicalOperations,operationDay} from './client-timeline';
 import type {SavedSale,Settlement,TourPreInvoice,TourJournalReceipt} from './storage';
@@ -40,7 +39,7 @@ export async function captureDayInvoiceTimeline(tx:Tx,identity:DeviceIdentity,cl
  for(const row of invoices){const p=parse(row.payload) as TourPreInvoice;if(p.id!==row.id||p.clientId!==clientId||!validAmount(p.amount))throw Error('Préétablie locale incohérente.');items.push({type:'invoice',key:`invoice:${p.id}`,date:p.createdAt,amount:p.amount});}
  const receipts=await tx.getAllAsync<{id:string;payload:string}>('SELECT id,payload FROM tour_journal_receipts WHERE client_id=? ORDER BY rowid',clientId);
  for(const row of receipts){const r=parse(row.payload) as TourJournalReceipt;if(r.id!==row.id||r.clientId!==clientId||!validAmount(r.prePaid)||!validAmount(r.oldDebtPaid)||!['Espèces','Chèque','Virement'].includes(r.mode)||typeof r.creditFull!=='boolean')throw Error('Reçu local incohérent.');items.push({type:'receipt',key:`receipt:${r.id}`,date:r.createdAt,prePaid:r.prePaid,oldDebtPaid:r.oldDebtPaid,mode:r.mode,creditFull:r.creditFull});}
- const debts=await readOldDebtOutbox(tx,identity),oldIds=new Set(debts.map(entry=>entry.operationId));
+ const debts=await tx.getAllAsync<{operationId:string}>('SELECT operation_id AS operationId FROM day_invoice_old_debt_local WHERE client_id=?',clientId),oldIds=new Set(debts.map(row=>row.operationId));
  const settlements=await tx.getAllAsync<{id:number;payload:string}>('SELECT id,payload FROM settlements WHERE client_id=? ORDER BY id',clientId);
  for(const row of settlements){const p=parse(row.payload) as Settlement;if(p.clientId!==clientId||!validAmount(p.amount)||p.amount===0||!['Espèces','Chèque','Virement'].includes(p.mode)||!p.syncOperationId)throw Error('Règlement local incohérent.');items.push({type:'settlement',key:`settlement:${row.id}`,date:p.createdAt,amount:p.amount,mode:p.mode,oldDebt:oldIds.has(p.syncOperationId)||reference.oldDebtMarkers.some(m=>m.operationId===p.syncOperationId)});}
  const queue=await readDayInvoiceOutbox(tx,identity),queued=new Map(queue.map(q=>[q.operationId,q]));

@@ -4,6 +4,7 @@ import {canonicalJson,isSaleBlocked} from '@sls/domain';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {reconcileDayInvoiceClient} from './day-invoice-reference';
 import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
+import {assertLocalOldDebtProofs} from './day-invoice-old-debt-proof';
 import {readDayInvoiceOutbox} from './day-invoice-queue';
 import {readIdentifiedOutbox} from './identified-outbox';
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
@@ -42,6 +43,7 @@ export async function readDayInvoiceClients(tx:Tx,identity:DeviceIdentity,digest
   else if(canonicalJson(queueSettlements.get(p.syncOperationId)??null)!==canonicalJson(p))throw Error('Règlement en attente indisponible.');
   settlements.push({...p,id:row.id} as Settlement);
  }
+ await assertLocalOldDebtProofs(tx,identity,ref,debtQueue);
  const rows=await tx.getAllAsync<{id:string;clientId:string;day:string;payload:string}>('SELECT id,client_id AS clientId,journal_date AS day,payload FROM tour_pre_invoices ORDER BY rowid');
  const invoices: (TourPreInvoice&{version:number;receipts:TourJournalReceipt[]})[]=[];
  const states=await tx.getAllAsync<{invoiceId:string;version:number;payload:string}>('SELECT invoice_id AS invoiceId,version,payload FROM journal_sync_state');

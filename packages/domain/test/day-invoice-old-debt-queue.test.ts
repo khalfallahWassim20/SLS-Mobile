@@ -1,3 +1,5 @@
+import {readDayInvoiceClients} from '../../../apps/mobile/day-invoice-clients.js';
+import {captureDayInvoiceTimeline} from '../../../apps/mobile/day-invoice-timeline.js';
 import {test} from 'node:test';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
@@ -96,5 +98,22 @@ test('synchronisation ancienne dette : coupure ou référence sans preuve conser
   mode='stale';await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Preuve serveur/);assert.equal((await readOldDebtOutbox(tx,identity)).length,1);
   mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:0,remainingSources:0,remainingPayments:0});assert.equal(sends,3);assert.equal((await readOldDebtOutbox(tx,identity)).length,0);
   assert.equal((await captureOldDebtForm(tx,identity,clientId,day,digest)).balance,290000);
+ }finally{db.close();}
+});
+
+
+test('chronologie : ancienne dette distincte, preuve avant et après acquittement',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,reference);const form=await captureOldDebtForm(tx,identity,clientId,day,digest),event=debt(id,60000);
+  await confirmOldDebtForm(tx,identity,{fingerprint:form.fingerprint,event},digest);
+  let timeline=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.equal(timeline.length,1);assert.equal(timeline[0].type==='settlement'&&timeline[0].oldDebt,true);
+  const entry=(await readOldDebtOutbox(tx,identity))[0];await acknowledgeOldDebt(tx,identity,entry);
+  await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/Règlement en attente indisponible|Preuve ancienne dette/);
+  const {canonicalJson}=await import('@sls/domain');const hash=await digest(canonicalJson(event.event.settlement));
+  const server={...reference,clients:[{...reference.clients[0],serverBalance:'290000'}],settlementStates:[{operationId:id,clientId}],settlementDays:[{operationId:id,clientId,day}],settlementProofs:[{operationId:id,hash}],oldDebtMarkers:[{operationId:id,invoiceDay:day}]};
+  await saveDayInvoiceReference(tx,identity,identity,server);timeline=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.equal(timeline[0].type==='settlement'&&timeline[0].oldDebt,true);
+  db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(JSON.stringify({...server,oldDebtMarkers:[]}));await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/Preuve ancienne dette/);await assert.rejects(readDayInvoiceClients(tx,identity,digest),/Preuve ancienne dette/);db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(JSON.stringify(server));
+  const original=db.prepare('SELECT payload FROM day_invoice_old_debt_local').get()?.payload as string;db.prepare('UPDATE day_invoice_old_debt_local SET payload=?').run(JSON.stringify({...event,event:{...event.event,settlement:{...event.event.settlement,amount:1}}}));
+  await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/Preuve ancienne dette/);db.prepare('UPDATE day_invoice_old_debt_local SET payload=?').run(original);
  }finally{db.close();}
 });

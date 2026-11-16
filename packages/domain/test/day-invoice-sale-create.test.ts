@@ -1,3 +1,5 @@
+import {queueJournalSnapshot} from '../../../apps/mobile/journal-queue.js';
+import {recordDeviceOperation} from '../../../apps/mobile/identified-device.js';
 import {captureDayInvoiceTimeline} from '../../../apps/mobile/day-invoice-timeline.js';
 import {dayInvoicePreinvoiceAttemptSchema,readPreinvoiceAttempt,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt,cancelPreinvoiceAttempt} from '../../../apps/mobile/day-invoice-preinvoice-attempt.js';
 import {startPreinvoiceAttempt,resumePreinvoiceAttempt,finishPreinvoiceAttempt,abandonPreinvoiceAttempt} from '../../../apps/mobile/day-invoice-preinvoice-attempt-flow.js';
@@ -181,6 +183,8 @@ test('synchronisation paiement unifié : accusé seul insuffisant, preuve et ret
   mode='stale';await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Preuve serveur/);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,1);
   mode='ok';assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:0,payments:1,remainingSources:0,remainingPayments:0});assert.equal(sends,3);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,0);
   assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,400000);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,400000);
+  const timeline=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.equal(timeline.length,1);assert.equal(timeline[0].type==='payment'&&timeline[0].pending,false);assert.equal(timeline[0].type==='payment'&&timeline[0].amount,200000);
+  db.prepare('UPDATE day_invoice_payments SET payload=?').run(JSON.stringify({...result.payment,amount:199000}));await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/incohérent|indisponible|rapprochement/);
  }finally{db.close();}
 });
 
@@ -310,5 +314,18 @@ test('chronologie v6 : modification classée à son heure de Tunisie, avec ancie
   db.prepare('INSERT INTO sales_outbox(operation_id,sale_id,version,payload) VALUES(?,?,?,?)').run(paymentId,saleId,2,JSON.stringify({operationId:paymentId,saleId,version:2,sale:payload,refund:0}));db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(paymentId,identity.commercialId,saleId,changedAt);
   const all=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.deepEqual(all.map(x=>x.type),['revision','sale']);assert.equal(all[0].type==='revision'&&all[0].previousTotal,250000);assert.equal(all[0].type==='revision'&&all[0].currentTotal,500000);assert.equal(all[1].type==='sale'&&all[1].originalTotal,250000);
   assert.deepEqual((await captureDayInvoiceTimeline(tx,identity,clientId,digest,'2026-01-02')).map(x=>x.type),['revision']);
+ }finally{db.close();}
+});
+
+
+test('chronologie : reçu historique, filtre jour et preuve du journal',async()=>{
+ const {db,tx}=setup();try{
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,journalStates:[],journalProofs:[]});
+  const pre=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest);await confirmNewDayPreinvoice(tx,identity,{clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId,createdAt:at},digest);
+  const receipt={id:'77777777-7777-4777-8777-777777777777',preInvoiceId:invoiceId,clientId,journalDate:day,createdAt:'2026-01-01T23:30:00.000Z',prePaid:100000,oldDebtPaid:0,creditFull:false,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:'',oldDebtLimitAtStart:0};
+  db.prepare('INSERT INTO tour_journal_receipts VALUES(?,?,?,?,?)').run(receipt.id,invoiceId,clientId,day,JSON.stringify(receipt));await queueJournalSnapshot(tx,invoiceId,()=>paymentId);await recordDeviceOperation(tx,identity,paymentId,'journal',invoiceId,receipt.createdAt);
+  const timeline=await captureDayInvoiceTimeline(tx,identity,clientId,digest);assert.deepEqual(timeline.map(x=>x.type),['receipt','invoice']);assert.equal(timeline[0].type==='receipt'&&timeline[0].prePaid,100000);
+  assert.deepEqual((await captureDayInvoiceTimeline(tx,identity,clientId,digest,'2026-01-02')).map(x=>x.type),['receipt']);
+  db.prepare('UPDATE tour_journal_receipts SET payload=?').run(JSON.stringify({...receipt,prePaid:1}));await assert.rejects(captureDayInvoiceTimeline(tx,identity,clientId,digest),/journal locale incohérente/);
  }finally{db.close();}
 });
