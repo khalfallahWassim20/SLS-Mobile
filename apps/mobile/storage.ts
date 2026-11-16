@@ -1,3 +1,4 @@
+import {closeDayInvoicePrototype} from './day-invoice-close-flow';
 import {captureDayInvoiceTimeline} from './day-invoice-timeline';
 import {dayInvoicePreinvoiceAttemptSchema,readPreinvoiceAttempt,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt,cancelPreinvoiceAttempt} from './day-invoice-preinvoice-attempt';
 import {captureNewDayPreinvoice,confirmNewDayPreinvoice,type NewDayPreinvoice} from './day-invoice-preinvoice-create';
@@ -14,7 +15,7 @@ import {captureDayInvoiceForm,confirmDayInvoiceForm} from './day-invoice-form';
 import {captureDayInvoiceExportPayments,captureDayInvoiceJournalExport} from './day-invoice-journal-export';
 import {synchronizeDayInvoicePrototype} from './day-invoice-sync';
 import {createDayInvoiceTransportPrototype} from './day-invoice-transport';
-import {prepareDayInvoiceCloseAttempt,abandonDayInvoiceCloseAttempt,applyDayInvoiceReopenedState} from './day-invoice-close-attempt';
+import {prepareDayInvoiceCloseAttempt,abandonDayInvoiceCloseAttempt,applyDayInvoiceReopenedState,acknowledgeDayInvoiceCloseAttempt} from './day-invoice-close-attempt';
 import type {LineagePin} from './server-lineage-proof';
 import type {DayInvoicePayment} from '../../packages/domain/src/day-invoice';
 import {dayInvoiceQueueSchema} from './day-invoice-queue';
@@ -674,8 +675,8 @@ export async function synchronizeDayInvoiceStoragePrototype(identity:DeviceIdent
 export async function prepareDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,version:number){
  const database=await db();let result!:Attempt;await database.withExclusiveTransactionAsync(async tx=>{result=await prepareDayInvoiceCloseAttempt(tx,identity,day,version,randomUUID,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }
-export async function acknowledgeDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,response:unknown){
- const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await checkIdentity(tx,identity);await acknowledgeTourClose(tx,identity.commercialId,day,response);});
+export async function acknowledgeDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,attempt:Attempt,response:unknown){
+ const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgeDayInvoiceCloseAttempt(tx,identity,day,attempt,response));
 }
 export async function abandonDayInvoiceClosePrototype(identity:DeviceIdentity,day:string,attempt:Attempt,response:unknown){
  const database=await db();await database.withExclusiveTransactionAsync(async tx=>{await abandonDayInvoiceCloseAttempt(tx,identity,day,attempt,response);});
@@ -777,4 +778,12 @@ export async function getDayInvoiceDetailPrototype(identity:DeviceIdentity,clien
 export async function getDayInvoiceJournalExportPrototype(identity:DeviceIdentity,day:string,commercial:string){
  const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceJournalExport>>;
  await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceJournalExport(tx,identity,day,commercial,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+
+/** Clôture v6 expérimentale : le transport vérifie session et lignée ; les
+ * tentatives et accusés restent transactionnels et conservés en cas de panne. */
+export async function closeDayInvoiceStoragePrototype(identity:DeviceIdentity,day:string,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,allowPrivateHttp=false){
+ const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
+ const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>):Promise<T>=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
+ return closeDayInvoicePrototype(identity,day,{...transport,transaction,uuid:randomUUID,digest:text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)});
 }

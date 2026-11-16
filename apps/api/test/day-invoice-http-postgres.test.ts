@@ -1,3 +1,4 @@
+import {closeDayInvoicePrototype} from '../../mobile/day-invoice-close-flow.js';
 /** Essai HTTP/SQLite/PostgreSQL isolé. Cette route de test n'est pas installée sur l'API réelle. */
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +20,7 @@ import {writeReconciledDayInvoicePayment,readLocalDayInvoiceSource} from '../../
 import {buildMergedDayInvoiceView} from '../../mobile/day-invoice-merged-view.js';
 import {guardDayInvoiceWrite} from '../../mobile/day-invoice-guards.js';
 import {identifiedDeviceSchema} from '../../mobile/identified-device.js';
-import {tourCloseQueueSchema,acknowledgeTourClose} from '../../mobile/tour-close-queue.js';
+import {tourCloseQueueSchema} from '../../mobile/tour-close-queue.js';
 import {dayInvoiceCloseAttemptSchema,prepareDayInvoiceCloseAttempt,abandonDayInvoiceCloseAttempt,applyDayInvoiceReopenedState} from '../../mobile/day-invoice-close-attempt.js';
 import {creditReferencePrototypeSchema} from '../../mobile/credit-note-reference-cache-prototype.js';
 import {offlineCreditPrototypeSchema} from '../../mobile/credit-note-offline-prototype.js';
@@ -168,8 +169,9 @@ test('HTTP réel en schéma isolé : réponse perdue, renvoi et accusé exact sa
   const close=await post('/test/day-invoice-close',body);assert.equal(close.status,201);
   // Simule une réponse perdue : le même UUID et la même preuve reprennent sans double clôture.
   db.exec('BEGIN');assert.deepEqual(await prepareDayInvoiceCloseAttempt(tx,identity,day,0,randomUUID,digest),attempt);db.exec('COMMIT');
-  const retry=await post('/test/day-invoice-close',body);assert.equal(retry.status,200);const receipt=await retry.json() as {status:string};assert.equal(receipt.status,'duplicate');
-  db.exec('BEGIN');await acknowledgeTourClose(tx,commercialId,day,receipt);db.exec('COMMIT');
+  const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(tx);db.exec('COMMIT');return value;}catch(error){db.exec('ROLLBACK');throw error;}};
+  const resumed=await closeDayInvoicePrototype(identity,day,{transaction,digest,uuid:()=>{throw Error('nouvel UUID interdit');},check:()=>{},verifyServer:async()=>{const response=await fetch(`${base}/test/server-lineage`,{headers:{Authorization:`Bearer ${session.token}`}});const value=await response.json() as {commercialId:string;lineageId:string};assert.equal(response.status,200);assert.equal(value.commercialId,commercialId);assert.equal(value.lineageId,lineage);},readDay:async()=>{throw Error('lecture inutile pour une reprise');},sendClose:async raw=>{assert.deepEqual(JSON.parse(raw),body);const response=await post('/test/day-invoice-close',JSON.parse(raw));assert.equal(response.status,200);return response;}});
+  assert.deepEqual(resumed,{day,version:1});
   assert.equal(db.prepare('SELECT status FROM tour_close_attempts').get()?.status,'closed');
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM tour_closure_events WHERE commercial_id=$1 AND journal_date=$2',[commercialId,day])).rows[0].n,1);
   const afterClose={...event,operationId:randomUUID(),amount:1000,preInvoice:{...event.preInvoice!,declare:false}};

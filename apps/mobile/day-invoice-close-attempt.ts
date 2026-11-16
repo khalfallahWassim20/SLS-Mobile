@@ -2,7 +2,7 @@
  * SQLite exclusive. Elles ne sont pas raccordées au mobile normal. */
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {captureDayInvoiceClose} from './day-invoice-close-capture';
-import {findTourCloseAttempt,prepareExperimentalDayInvoiceTourClose,acknowledgeAbandonedTourClose,applyReopenedServerState,type Attempt} from './tour-close-queue';
+import {findTourCloseAttempt,prepareExperimentalDayInvoiceTourClose,acknowledgeAbandonedTourClose,acknowledgeTourClose,applyReopenedServerState,type Attempt} from './tour-close-queue';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
 export const dayInvoiceCloseAttemptSchema=`CREATE TABLE IF NOT EXISTS day_invoice_close_attempt_markers (request_id TEXT PRIMARY KEY, cash_proof TEXT NOT NULL);`;
@@ -37,4 +37,14 @@ export async function applyDayInvoiceReopenedState(tx:Tx,identity:DeviceIdentity
  const applied=await applyReopenedServerState(tx,identity.commercialId,day,state);
  if(applied)await tx.runAsync('DELETE FROM day_invoice_close_attempt_markers WHERE request_id=?',attempt.requestId);
  return applied;
+}
+
+/** Acquitter seulement la tentative v6 exacte dont la preuve est toujours
+ * présente. Une réponse douteuse ou une autre tentative ne déverrouille rien. */
+export async function acknowledgeDayInvoiceCloseAttempt(tx:Tx,identity:DeviceIdentity,day:string,expected:Attempt,response:unknown){
+ await assertBound(tx,identity);
+ const actual=await findTourCloseAttempt(tx,identity.commercialId,day);
+ const marker=await tx.getFirstAsync<{cashProof:string}>('SELECT cash_proof AS cashProof FROM day_invoice_close_attempt_markers WHERE request_id=?',expected.requestId);
+ if(!actual||actual.status!=='closing'||actual.requestId!==expected.requestId||actual.expectedVersion!==expected.expectedVersion||actual.commercialId!==expected.commercialId||actual.day!==expected.day||actual.adminRefundProof!==undefined||expected.adminRefundProof!==undefined||!actual.cashProof||actual.cashProof!==expected.cashProof||!marker||marker.cashProof!==actual.cashProof)throw Error('Preuve de clôture v6 indisponible ou modifiée.');
+ await acknowledgeTourClose(tx,identity.commercialId,day,response);
 }
