@@ -3,6 +3,7 @@
 import {selectDayInvoiceExcessPlan} from '../../packages/domain/src/day-invoice-excess-plan';
 import type {DeviceIdentity} from './identified-device';
 import {readLocalCompensation} from './day-invoice-compensation-local';
+import {provePreCompensationSnapshot} from './day-invoice-compensation-snapshot';
 import {tunisDay} from './journal';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
@@ -10,13 +11,18 @@ export async function readLocalCompensationView(tx:Tx,identity:DeviceIdentity){
  const saved=await readLocalCompensation(tx,identity);if(!saved)return null;
  try{
   const {input,receipt}=saved,{event,compensation}=JSON.parse(saved.payload),capture=JSON.parse(input.fingerprint),invoice=JSON.parse(capture.invoice),previous=capture.previous;
+  const before=await provePreCompensationSnapshot(tx,identity,capture,event.sale.clientId,tunisDay(new Date(event.sale.createdAt)));
   const source={...invoice.source,dayPayments:invoice.payments.map((p:any)=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))};
   const plan=selectDayInvoiceExcessPlan(source,event.saleId,event.sale.total,capture.balance,input.choice);
-  if(!plan.requiresChoice||plan.excess!==compensation.amount||plan.paid!==compensation.paid||plan.previousTotal!==compensation.previousTotal||event.sale.clientId!==previous.clientId)throw Error();
+  if(!plan.requiresChoice||plan.excess!==compensation.amount||plan.paid!==compensation.paid||plan.previousTotal!==compensation.previousTotal||before.total!==plan.previousTotal||before.paid!==plan.paid||event.sale.clientId!==previous.clientId)throw Error();
+  const afterSales=BigInt(before.salesTotal)-BigInt(previous.total)+BigInt(event.sale.total);
+  if(afterSales<0n||afterSales>BigInt(Number.MAX_SAFE_INTEGER)||BigInt(before.preInvoiceTotal)+afterSales!==BigInt(plan.total))throw Error();
   const serverBalance=receipt===null?null:(receipt as {projection:{balance:number}}).projection.balance;
   if(serverBalance!==null&&!Number.isSafeInteger(serverBalance))throw Error();
   return {operationId:event.operationId,clientId:event.sale.clientId,commercialId:identity.commercialId,invoiceDay:tunisDay(new Date(event.sale.createdAt)),eventDay:tunisDay(new Date(event.recordedAt)),recordedAt:event.recordedAt,choice:input.choice,previousTotal:plan.previousTotal,total:plan.total,paid:plan.paid,excess:plan.excess,
    localBalanceBefore:plan.balanceBefore,localBalanceAfter:plan.selected.balanceAfter,serverBalanceAtReceipt:serverBalance,balanceNeedsReview:serverBalance===null?null:serverBalance!==plan.selected.balanceAfter,
+   preInvoiceTotal:before.preInvoiceTotal,salesTotalBefore:before.salesTotal,salesTotalAfter:Number(afterSales),paidApplied:plan.paid-plan.excess,remaining:0,
+   payments:before.payments.map(({operationId,recordedAt,amount,mode,chequeNumber,chequeBank,chequeDue})=>({operationId,recordedAt,amount,mode,chequeNumber,chequeBank,chequeDue})),
    refund:plan.selected.refundAmount,credit:plan.selected.creditAmount,syncStatus:receipt===null?'pending' as const:'proven' as const};
  }catch{throw Error('Vue de compensation incohérente : rapprochement nécessaire.');}
 }
