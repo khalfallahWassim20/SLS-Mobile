@@ -5,6 +5,7 @@ import {canonicalJson} from '@sls/domain';
 import type {DeviceIdentity} from './identified-device';
 import {acquireDayInvoiceSync,releaseDayInvoiceSync} from './day-invoice-sync-lock';
 import {readLocalCompensation,acknowledgeLocalCompensation} from './day-invoice-compensation-local';
+import {readLocalCompensationView} from './day-invoice-compensation-view';
 import {uploadCompensatedSale} from './day-invoice-compensation-upload';
 
 type Bind=string|number|null;
@@ -23,13 +24,14 @@ export async function synchronizeLocalCompensation(identity:DeviceIdentity,verif
  try{
   const check=()=>{io.check();if(identity.commercialId!==verified.commercialId||identity.serverOrigin!==verified.serverOrigin)throw Error('Session ou serveur différent du téléphone lié.');};
   check();await io.verifyServer(identity,check);check();
-  const read=()=>io.transaction(async tx=>{check();const value=await readLocalCompensation(tx,identity);check();return value;});
+  const read=()=>io.transaction(async tx=>{check();const value=await readLocalCompensation(tx,identity);if(value)await readLocalCompensationView(tx,identity);check();return value;});
   const pending=await read();if(!pending)return {status:'empty' as const};
   if(pending.receipt!==null)return {status:'already-proven' as const,operationId:pending.input.operationId};
   const wrap=async(work:()=>Promise<Response>)=>{check();const response=await work();check();return {ok:response.ok,status:response.status,json:async()=>{check();const body=await response.json();check();return body;}};};
   await uploadCompensatedSale(pending.payload,identity,verified,{check,send:payload=>wrap(()=>io.send(payload)),receipt:id=>wrap(()=>io.receipt(id)),acknowledge:async(payload,receipt)=>{
    await io.transaction(async tx=>{check();const current=await readLocalCompensation(tx,identity);
     if(!current||current.payload!==pending.payload||canonicalJson(current.input)!==canonicalJson(pending.input)||current.receipt!==null)throw Error('Compensation locale modifiée pendant le transfert.');
+    await readLocalCompensationView(tx,identity);check();
     await acknowledgeLocalCompensation(tx,identity,payload,receipt);check();
     const saved=await readLocalCompensation(tx,identity);if(!saved||saved.payload!==payload||saved.receipt===null||canonicalJson(saved.receipt)!==canonicalJson(receipt))throw Error('Reçu local indisponible.');check();
    });

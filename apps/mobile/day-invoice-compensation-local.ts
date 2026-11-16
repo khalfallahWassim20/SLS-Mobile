@@ -3,6 +3,7 @@
  * rester bloqués tant qu'ils ne savent pas projeter la compensation. Toutes
  * les fonctions exigent une transaction SQLite exclusive de l'appelant. */
 import {canonicalJson,calculateInvoice} from '@sls/domain';
+import {provePreCompensationSnapshot} from './day-invoice-compensation-snapshot';
 import {assessDayInvoiceSaleRevision} from '../../packages/domain/src/day-invoice';
 import {captureDayInvoiceSaleEdit} from './day-invoice-sale-edit';
 import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
@@ -60,6 +61,12 @@ export async function confirmLocalCompensation(tx:Tx,identity:DeviceIdentity,inp
  if(!current.assessment.requiresChoice||!current.excessPlan||!current.excessPlan.options.some(o=>o.choice===input.choice))throw Error('Compensation non justifiée.');
  if(Date.parse(input.recordedAt)<=Date.parse(previous.createdAt))throw Error('Date de révision invalide.');
  const captured=JSON.parse(input.fingerprint),invoice=JSON.parse(captured.invoice);
+ // Ne jamais enregistrer un choix dont la photographie ne sera pas lisible
+ // ensuite. Cette vérification est faite avant toute modification locale.
+ try{
+  const before=await provePreCompensationSnapshot(tx,identity,captured,previous.clientId,current.day);
+  if(before.total!==current.assessment.previousTotal||before.paid!==current.assessment.paid)throw Error();
+ }catch{throw Error('Photographie de compensation non vérifiable : synchronisation et rapprochement nécessaires.');}
  if(invoice.payments.some((p:any)=>Date.parse(p.recordedAt)>Date.parse(input.recordedAt)))throw Error('Modification antérieure à un paiement.');
  await assertDeviceWritable(tx,identity,[current.day,tunisDay(new Date(input.recordedAt))]);
  const taken=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM sales_outbox WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM journal_sync_outbox WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM day_invoice_payments WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM day_invoice_old_debt_local WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM offline_credit_prototype WHERE lower(operation_id)=lower(?)) AS n`,input.operationId,input.operationId,input.operationId,input.operationId,input.operationId,input.operationId);

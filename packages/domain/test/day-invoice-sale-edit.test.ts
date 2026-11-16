@@ -200,6 +200,8 @@ for(const choice of ['refund','credit'] as const)test(`compensation locale ${cho
   await assert.rejects(readLocalCompensationView(tx,identity),/Vue de compensation incohérente/);db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(originalInput);
   const originalReference=String(db.prepare('SELECT payload FROM day_invoice_reference_cache').get()?.payload),altered=JSON.parse(originalReference);altered.dayPayments[0].amount=799000;db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(JSON.stringify(altered));
   await assert.rejects(readLocalCompensationView(tx,identity),/Vue de compensation incohérente/);db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(originalReference);
+  await assert.rejects(saveDayInvoiceReference(tx,identity,identity,reference),/Compensation/);
+  assert.equal(db.prepare('SELECT payload FROM day_invoice_reference_cache').get()?.payload,originalReference);
   assert.deepEqual(await readLocalCompensationCollectionImpact(tx,identity,identity.commercialId,day),{refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0,netCollectedChange:choice==='refund'?-50000:0,operationId:editOperation,syncStatus:'pending'});
   assert.equal((await readLocalCompensationCollectionImpact(tx,identity,identity.commercialId,'2026-01-02')).operationId,null);
   assert.equal((await readLocalCompensationCollectionImpact(tx,identity,saleId,day)).operationId,null);
@@ -221,6 +223,25 @@ for(const choice of ['refund','credit'] as const)test(`compensation locale ${cho
  }finally{db.close();}
 });
 
+test('compensation : une photographie non vérifiable ne modifie aucune donnée',async()=>{
+ const {db,tx}=setup();try{
+  db.exec(dayInvoiceCompensationLocalSchema);await saveDayInvoiceReference(tx,identity,identity,reference);
+  const lines=[{...line,quantity:3}];let reads=0;
+  const counting={...tx,getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>{if(sql.includes('payload FROM day_invoice_reference_cache WHERE id=1'))reads++;return tx.getFirstAsync<T>(sql,...args);}};
+  const preview=await captureDayInvoiceSaleEdit(counting,identity,1,lines,digest),captureReads=reads;
+  const input={saleId:1,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z',choice:'refund' as const};
+  reads=0;const inconsistent={...tx,getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>{
+   const row=await tx.getFirstAsync<T>(sql,...args);
+   if(sql.includes('payload FROM day_invoice_reference_cache WHERE id=1')&&++reads>captureReads&&row){const r=row as unknown as {payload:string};const payload=JSON.parse(r.payload);payload.clients[0].serverBalance='999999';return {...r,payload:JSON.stringify(payload)} as T;}
+   return row;
+  }};
+  db.exec('BEGIN');await assert.rejects(confirmLocalCompensation(inconsistent,identity,input,digest),/Photographie de compensation non vérifiable/);db.exec('ROLLBACK');
+  assert.deepEqual(JSON.parse(String(db.prepare('SELECT payload FROM sales WHERE id=1').get()?.payload)),sale);
+  for(const table of ['sale_revisions','sale_event_times','day_invoice_compensation_local'])assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get()?.n,0);
+  assert.equal(db.prepare('SELECT count(*) n FROM identified_local_operations WHERE operation_id=?').get(editOperation)?.n,0);
+ }finally{db.close();}
+});
+
 test('synchronisation compensation : session révoquée annule le reçu et reprise',async()=>{
  const {db,tx}=setup();try{
   db.exec(dayInvoiceCompensationLocalSchema);await saveDayInvoiceReference(tx,identity,identity,reference);
@@ -231,6 +252,10 @@ test('synchronisation compensation : session révoquée annule le reçu et repri
   const guarded={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{await tx.runAsync(sql,...args);if(interrupt&&sql.startsWith('UPDATE day_invoice_compensation_local SET receipt'))revoked=true;}};
   const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(guarded);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
   const io={transaction,check:()=>{if(revoked)throw Error('session révoquée');},verifyServer:async()=>{verified++;},send:async()=>{sends++;return {ok:true,status:200,json:async()=>({status:'duplicate',operationId:editOperation})};},receipt:async()=>({ok:true,status:200,json:async()=>proof})};
+  const original=String(db.prepare('SELECT input FROM day_invoice_compensation_local').get()?.input),changed=JSON.parse(original),captured=JSON.parse(changed.fingerprint);captured.balance=999999;changed.fingerprint=JSON.stringify(captured);
+  db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(JSON.stringify(changed));
+  await assert.rejects(synchronizeLocalCompensation(identity,identity,io),/Vue de compensation incohérente/);assert.equal(sends,0);
+  db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(original);verified=0;
   await assert.rejects(synchronizeLocalCompensation(identity,identity,io),/session révoquée/);
   assert.equal((await readLocalCompensation(tx,identity))?.receipt,null);
   revoked=false;interrupt=false;assert.deepEqual(await synchronizeLocalCompensation(identity,identity,io),{status:'proven',operationId:editOperation});

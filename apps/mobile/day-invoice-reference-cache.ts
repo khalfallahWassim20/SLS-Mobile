@@ -2,6 +2,7 @@
  * faite dans une transaction exclusive après authentification du serveur.
  * Les références v5 ne sont pas compatibles : on ne les efface jamais. */
 import {canonicalJson} from '@sls/domain';
+import {assertNoLocalDayCompensation} from './day-invoice-compensation-guard';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {validateDayInvoiceReference} from './day-invoice-reference';
 import {validateIdentifiedReference} from './identified-reference';
@@ -55,6 +56,10 @@ function assertPaymentProgress(old:V6,next:V6) {
 /** Compare aussi le cache v4, sans le remplacer. Si v5 existe, l'intégration
  * doit d'abord fournir un protocole combiné ; aucune régression silencieuse. */
 export async function saveDayInvoiceReference(tx:Tx,identity:DeviceIdentity,verified:DeviceIdentity,input:unknown):Promise<void> {
+ // La reprise de compensation utilise cette référence comme photographie
+ // antérieure. Ne pas la remplacer, même après réception du serveur : aucun
+ // mécanisme de réconciliation historique n'est encore disponible.
+ await assertNoLocalDayCompensation(tx);
  await identityIsBound(tx,identity);
  if(verified.commercialId!==identity.commercialId||verified.serverOrigin!==identity.serverOrigin)throw Error('Session ou serveur incohérent.');
  const next=validateDayInvoiceReference(input);
