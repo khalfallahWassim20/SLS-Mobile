@@ -81,10 +81,8 @@ async function readUnprojectedJournalDay(db:PoolClient,commercialId:string,day:s
 /** Projection interne pour une seule compensation prouvée. Elle n'active ni
  * clôture, ni export, ni route et ne prouve pas le versement au client. Les
  * remboursements appartiennent au jour et commercial de leur enregistrement. */
-export async function readCompensatedJournalDay(pool:Pool,commercialId:string,day:string,operationId:string){
+export async function readCompensatedJournalDayInTransaction(db:PoolClient,commercialId:string,day:string,operationId:string){
  z.string().uuid().parse(commercialId);z.string().uuid().parse(operationId);journalDateSchema.parse(day);
- const db=await pool.connect();try{
-  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);
   const projection=await readDayInvoiceCompensationProjectionInTransaction(db,operationId),journal=await readUnprojectedJournalDay(db,commercialId,day);
   const own=projection.commercialId===commercialId&&projection.eventDay===day;
   const safe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Total encaissé trop élevé.');return Number(n);};
@@ -96,7 +94,12 @@ export async function readCompensatedJournalDay(pool:Pool,commercialId:string,da
    rows.push({clientId:projection.clientId,clientName:client.name,sector:client.sector,preInvoiceId:null,preInvoiceTotal:0,preInvoicePaid:0,oldDebtPaid:0,preInvoiceRemaining:0,declared:false,tourTotal:0,tourPaid:0,saleCount:0,totalClient:0,totalCollected:0,dayInvoicePaid:0,dayInvoiceOldDebtPaid:0,compensationRefund:refund,compensationCredit:credit,afterCompensationRefund:safe(-BigInt(refund))});
   }
   rows.sort((a,b)=>a.clientName.localeCompare(b.clientName));
-  const result={...journal,rows,clientCount:rows.length,compensationEvents:own?[projection]:[],compensationRefundTotal:refund,compensationCreditTotal:credit,collectedAfterCompensationRefund:net};
+  return {...journal,rows,clientCount:rows.length,compensationEvents:own?[projection]:[],compensationRefundTotal:refund,compensationCreditTotal:credit,collectedAfterCompensationRefund:net};
+}
+export async function readCompensatedJournalDay(pool:Pool,commercialId:string,day:string,operationId:string){
+ const db=await pool.connect();try{
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);
+  const result=await readCompensatedJournalDayInTransaction(db,commercialId,day,operationId);
   await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

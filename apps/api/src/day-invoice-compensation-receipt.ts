@@ -10,6 +10,7 @@ import {assertIdentifiedMode,lockSyncMode} from './tour-sync-mode.js';
 import {assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import {readDayInvoiceCompensationProjectionInTransaction,readCompensatedDayInvoiceSnapshotInTransaction} from './day-invoice-reference.js';
 import {saleEventSchema} from './identified-operations.js';
+import {readCompensatedJournalDayInTransaction} from './identified-journal-day.js';
 import {compensationSchema} from './day-invoice-compensation.js';
 
 /** Lecture test-only du client concerné, sans exposer la référence complète.
@@ -26,7 +27,14 @@ export async function readAuthenticatedCompensatedInvoice(pool:Pool,operationId:
   await assertOldCreditProtocolSafe(db);
   const snapshot=await readCompensatedDayInvoiceSnapshotInTransaction(db,operationId);
   if(snapshot.compensation.commercialId!==actor.id)throw new JournalConflict('Facture incohérente.');
-  const result={version:1 as const,compensation:snapshot.compensation,invoice:snapshot.invoice};
+  const p=snapshot.compensation;
+  const day=await readCompensatedJournalDayInTransaction(db,actor.id,p.eventDay,operationId);
+  const rows=day.rows.filter(r=>r.clientId===p.clientId);
+  if(day.compensationEvents.length!==1||day.compensationEvents[0].operationId!==operationId||rows.length!==1||day.compensationRefundTotal!==p.refund||day.compensationCreditTotal!==p.credit)throw new JournalConflict('Journal de compensation incohérent.');
+  // Impact théorique uniquement : le choix n'atteste aucun versement physique
+  // et ne permet pas de l'attribuer à un mode de paiement.
+  const journal={commercialId:actor.id,day:p.eventDay,clientId:p.clientId,gross:day.totalCollected,refund:p.refund,credit:p.credit,theoreticalNet:day.collectedAfterCompensationRefund,clientGross:rows[0].totalCollected,clientTheoreticalNet:rows[0].afterCompensationRefund};
+  const result={version:2 as const,compensation:p,invoice:snapshot.invoice,journal};
   await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

@@ -71,12 +71,14 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   assert.equal(Number(consolidated.reference.clients.find(c=>c.id===clientId)?.serverBalance),view.localBalanceAfter);
   assert.deepEqual(consolidated.invoice.payments.map(p=>({operationId:p.operationId,amount:p.amount,mode:p.mode})),view.payments.map(p=>({operationId:p.operationId,amount:p.amount,mode:p.mode})));
   const matched=await reconcileCompensatedInvoice(identity,identity,reconciliation);
-  assert.deepEqual(matched,{operationId:input.operationId,clientId,day,total:750000,paid:800000,applied:750000,remaining:0,balance:view.localBalanceAfter,balanceNeedsReview:false});
+  assert.deepEqual(matched,{operationId:input.operationId,clientId,day,total:750000,paid:800000,applied:750000,remaining:0,balance:view.localBalanceAfter,balanceNeedsReview:false,journal:{day,gross:800000,refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0,theoreticalNet:choice==='refund'?750000:800000,clientGross:800000,clientTheoreticalNet:choice==='refund'?750000:800000}});
   const fakeResponse=(data:unknown)=>({ok:true,status:200,json:async()=>data});
-  const remote={version:1,compensation:consolidated.compensation,invoice:consolidated.invoice};
+  const remote={version:2,compensation:consolidated.compensation,invoice:consolidated.invoice,journal:{commercialId,clientId,...matched.journal}};
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,invoice:{...remote.invoice,paid:1}})}),/divergentes/);
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,invoice:{...remote.invoice,payments:[]}})}),/divergentes/);
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,compensation:{...remote.compensation,choice:choice==='refund'?'credit':'refund'}})}),/divergentes/);
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,journal:{...remote.journal,theoreticalNet:remote.journal.theoreticalNet+1}})}),/divergentes/);
+  await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>fakeResponse({...remote,journal:{...remote.journal,day:'2026-01-02'}})}),/divergentes/);
   let expired=false;await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,check:()=>{if(expired)throw Error('Session expirée');},read:async()=>{expired=true;return fakeResponse(remote);}}),/Session expirée/);
   const localInput=String(db.prepare('SELECT input FROM day_invoice_compensation_local').get()?.input),altered=JSON.parse(localInput),captured=JSON.parse(altered.fingerprint);captured.balance=123456;altered.fingerprint=JSON.stringify(captured);
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,{...reconciliation,read:async()=>{db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(JSON.stringify(altered));return fakeResponse(remote);}}),/divergentes/);
