@@ -11,7 +11,8 @@ import {lockSyncMode,lockSyncModeExclusive,assertIdentifiedMode} from './tour-sy
 import {assertLegacyClientDaySafe,lockDayInvoiceClient,assertDayInvoiceAwareSaleSafe} from './day-invoice-legacy-guard.js';
 import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import {readServerDayInvoiceSource,readSourceForNewIndependentCompensation} from './day-invoice-source.js';
-import {readIndependentCompensationProjectionsInTransaction} from './day-invoice-reference.js';
+import {readIndependentCompensationProjectionsInTransaction,readCompensatedDayInvoiceSnapshotInTransaction} from './day-invoice-reference.js';
+import {readCompensatedJournalDayInTransaction} from './identified-journal-day.js';
 import {compensationSchema,compensationHash,compensationRegistryExists} from './day-invoice-compensation.js';
 import {assessDayInvoiceSaleRevision,type DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
 
@@ -122,7 +123,18 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   } else if(compensation)throw new JournalConflict('Aucun règlement unifié ne justifie cette compensation.');
   await clientExists(db,sale.clientId);
   await db.query('INSERT INTO identified_sale_events(operation_id,sale_id,version,client_id,commercial_id,journal_date,event_date,payload,payload_hash) VALUES($1,$2,$3,$4,$5,$6::date,$7::date,$8::jsonb,$9)',[event.operationId,event.saleId,event.version,sale.clientId,actor.id,day,operationDay,payload,hash]);
-  if(compensation)await db.query('INSERT INTO identified_day_invoice_compensations(operation_id,client_id,commercial_id,invoice_day,event_day,payload,payload_hash) VALUES($1,$2,$3,$4::date,$5::date,$6::jsonb,$7)',[event.operationId,sale.clientId,actor.id,day,operationDay,JSON.stringify(compensation),compensationHash(compensation)]);
+  if(compensation){
+   await db.query('INSERT INTO identified_day_invoice_compensations(operation_id,client_id,commercial_id,invoice_day,event_day,payload,payload_hash) VALUES($1,$2,$3,$4::date,$5::date,$6::jsonb,$7)',[event.operationId,sale.clientId,actor.id,day,operationDay,JSON.stringify(compensation),compensationHash(compensation)]);
+   // Ne jamais valider une écriture que les lecteurs de reprise ne peuvent
+   // pas prouver. En particulier une ancienne version issue du registre démo
+   // ou une preuve historique altérée doit annuler les deux insertions.
+   try{
+    const snapshot=await readCompensatedDayInvoiceSnapshotInTransaction(db,event.operationId);
+    const journal=await readCompensatedJournalDayInTransaction(db,actor.id,operationDay,event.operationId);
+    const row=journal.rows.filter(r=>r.clientId===sale.clientId);
+    if(snapshot.compensation.commercialId!==actor.id||row.length!==1||row[0].compensationRefund!==snapshot.compensation.refund||row[0].compensationCredit!==snapshot.compensation.credit)throw Error('Journal de compensation incohérent.');
+   }catch{throw new JournalConflict('Preuve de compensation non vérifiable : opération annulée, rapprochement nécessaire.');}
+  }
   await db.query('COMMIT');return 'received';
  } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
 }

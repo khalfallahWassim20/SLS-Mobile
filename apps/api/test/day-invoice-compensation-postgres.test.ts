@@ -39,6 +39,23 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const eventDay=choice==='refund'?'2026-01-02':day;
   const edit={operationId:randomUUID(),saleId,version:2,recordedAt:`${eventDay}T10:00:00.000Z`,sale:{...sale,syncVersion:2,lines:[{...sale.lines[0],unitPrice:150000}],total:150000,remaining:150000},refund:0};
   const compensation={choice,amount:50000,previousTotal:850000,paid:800000};
+  // Un historique illisible ne doit pas pouvoir créer une compensation qui
+  // bloquerait ensuite toutes les lectures, même si les montants concordent.
+  const originalSale=(await pool.query('SELECT * FROM identified_sale_events WHERE operation_id=$1',[creationId])).rows[0];
+  await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),creationId]);
+  await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession),/non vérifiable/);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE operation_id=$1',[edit.operationId])).rows[0].n,0);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_compensations')).rows[0].n,0);
+  await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',[originalSale.payload_hash,creationId]);
+  // Une vente héritée de l'espace démo ne possède pas la preuve précédente
+  // identifiée que le lecteur actuel exige : refuser avant commit.
+  await pool.query('DELETE FROM identified_sale_events WHERE operation_id=$1',[creationId]);
+  await pool.query('INSERT INTO demo_sale_events(operation_id,sale_id,version,client_id,payload,payload_hash) VALUES($1,$2,$3,$4,$5::jsonb,$6)',[creationId,saleId,1,clientId,JSON.stringify(originalSale.payload),originalSale.payload_hash]);
+  await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession),/non vérifiable/);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE operation_id=$1',[edit.operationId])).rows[0].n,0);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_compensations')).rows[0].n,0);
+  await pool.query('DELETE FROM demo_sale_events WHERE operation_id=$1',[creationId]);
+  await pool.query('INSERT INTO identified_sale_events(operation_id,sale_id,version,client_id,commercial_id,journal_date,event_date,payload,payload_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9)',[creationId,saleId,1,clientId,commercialId,originalSale.journal_date,originalSale.event_date,JSON.stringify(originalSale.payload),originalSale.payload_hash]);
   await assert.rejects(storeDayInvoiceCompensatedSale(pool,{...edit,operationId:randomUUID(),recordedAt:'2026-01-01T09:15:00.000Z'},compensation,editSession),/antérieure à un paiement/);
   for(const invalid of [{...compensation,amount:49999},{...compensation,previousTotal:849999},{...compensation,paid:799999}])await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,invalid,editSession),/compensation incohérente/);
   const nonExcess={...edit,operationId:randomUUID(),sale:{...edit.sale,lines:[{...sale.lines[0],unitPrice:300000}],total:300000,remaining:300000}};

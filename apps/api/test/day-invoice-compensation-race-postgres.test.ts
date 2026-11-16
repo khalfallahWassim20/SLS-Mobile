@@ -10,7 +10,7 @@ import {storeJournalSnapshot} from '../src/journal-store.js';
 import {readServerDayInvoiceSource} from '../src/day-invoice-source.js';
 import {readDayInvoiceCompensationProjection,readCompensatedDayInvoiceSnapshot,readDayInvoiceReference} from '../src/day-invoice-reference.js';
 import {readCompensatedJournalDay,readIdentifiedJournalDay} from '../src/identified-journal-day.js';
-import {readAuthenticatedCompensatedInvoice} from '../src/day-invoice-compensation-receipt.js';
+import {readAuthenticatedCompensatedInvoice,readCompensationReceipt} from '../src/day-invoice-compensation-receipt.js';
 import {setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
 
@@ -25,6 +25,10 @@ test('deux compensations concurrentes sur des clients indépendants restent vér
   await setCommercialCredentials(pool,'admin',commercialId,{login:'race.comp',password:'mot de passe fictif'});
   const login=await loginCommercial(pool,secret,{login:'race.comp',password:'mot de passe fictif'});assert.ok(login);
   const session={secret,token:login.token};
+  const secondCommercial=randomUUID();await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[secondCommercial,'Second commercial fictif']);
+  await setCommercialCredentials(pool,'admin',secondCommercial,{login:'race.comp.other',password:'mot de passe fictif'});
+  const secondLogin=await loginCommercial(pool,secret,{login:'race.comp.other',password:'mot de passe fictif'});assert.ok(secondLogin);
+  const secondSession={secret,token:secondLogin.token};
   const cases=[];
   for(const day of ['2026-01-01','2026-01-02','2026-01-04']){
    const clientId=randomUUID(),saleId=randomUUID(),invoiceId=randomUUID(),at=`${day}T09:00:00.000Z`;
@@ -52,8 +56,14 @@ test('deux compensations concurrentes sur des clients indépendants restent vér
   }
   assert.equal(sleeping,true,'première compensation non observée dans le trigger');
   const outcomesPromise=Promise.allSettled([first,storeDayInvoiceCompensatedSale(pool,cases[1].event,cases[1].choice,session)]);
+  const conflictEvent={...cases[0].event,operationId:randomUUID()};
+  const conflicting=storeDayInvoiceCompensatedSale(pool,conflictEvent,{...cases[0].choice,choice:'credit'},secondSession).then(value=>({value,error:null}),error=>({value:null,error}));
   const concurrentPayment=storeDayInvoicePayment(pool,cases[1].nextPayment,session,readServerDayInvoiceSource).then(value=>({value,error:null}),error=>({value:null,error}));
-  const outcomes=await outcomesPromise,paymentResult=await concurrentPayment;
+  const outcomes=await outcomesPromise,paymentResult=await concurrentPayment,conflictResult=await conflicting;
+  assert.equal(conflictResult.value,null);assert.match(String(conflictResult.error),/Client déjà compensé|version/i);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE operation_id=$1',[conflictEvent.operationId])).rows[0].n,0);
+  await assert.rejects(readCompensationReceipt(pool,cases[0].event.operationId,secondSession),/indisponible/);
+  await assert.rejects(readAuthenticatedCompensatedInvoice(pool,cases[0].event.operationId,secondSession),/indisponible/);
   assert.equal(paymentResult.value,null);assert.match(String(paymentResult.error),/compensation|rapprochement/i);
   assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE operation_id=$1',[cases[1].nextPayment.operationId])).rows[0].n,0);
   assert.deepEqual(outcomes.map(r=>r.status==='fulfilled'?r.value:String(r.reason)),['received','received']);
