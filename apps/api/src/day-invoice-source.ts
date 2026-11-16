@@ -15,6 +15,16 @@ function tunisDay(iso:string):string {
  * La route reste désactivée tant que les écritures de vente ne partagent pas ce verrou. */
 export async function readServerDayInvoiceSource(db:PoolClient,event:DayInvoicePayment) {
  await assertNoUnprojectedCompensation(db);
+ return readUnprojectedSource(db,event);
+}
+/** Interne, uniquement pour vérifier la compensation identifiée. N'autorise
+ * aucune écriture ; la projection doit d'abord prouver l'événement lié. */
+export async function readSourceForCompensationCheck(db:PoolClient,event:DayInvoicePayment,operationId:string) {
+ const rows=await db.query('SELECT operation_id,client_id,invoice_day::text AS day FROM identified_day_invoice_compensations ORDER BY operation_id LIMIT 2');
+ if(rows.rows.length!==1||rows.rows[0].operation_id!==operationId||rows.rows[0].client_id!==event.clientId||rows.rows[0].day!==event.day)throw Error('Compensation ambiguë ou indisponible.');
+ return readUnprojectedSource(db,event);
+}
+async function readUnprojectedSource(db:PoolClient,event:DayInvoicePayment) {
  const reference=await readIdentifiedReferenceInTransaction(db,true);
  if(!reference.clients.some(c=>c.id===event.clientId))throw Error('Client introuvable.');
  const salesRows=await db.query(`WITH combined AS (
