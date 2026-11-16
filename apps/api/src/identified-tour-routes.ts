@@ -14,7 +14,9 @@ import {readLocalSaleHistoryPrototype} from './local-sale-history-prototype.js';
 import {readRemoteSaleReceiptPrototype} from './remote-sale-receipt-prototype.js';
 import {abandonRemoteSalePrototype} from './remote-sale-abandon-prototype.js';
 import {abandonCreditNotePrototype} from './credit-note-abandon-prototype.js';
-import {storeIdentifiedSale,storeIdentifiedSettlement} from './identified-operations.js';
+import {storeIdentifiedSale,storeIdentifiedSettlement,storeDayInvoiceCompensatedSale,saleEventSchema} from './identified-operations.js';
+import {compensationSchema} from './day-invoice-compensation.js';
+import {readCompensationReceipt} from './day-invoice-compensation-receipt.js';
 import {storeTourExpense} from './tour-expenses.js';
 import {storeExpenseRevision} from './tour-expense-revisions.js';
 import {storeExpenseCancellation} from './tour-expense-cancellations.js';
@@ -137,6 +139,16 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  if(options.dayInvoiceTestOnly===true)r.post('/day-invoice-old-debt',async(req,res,next)=>{try{
   const status=await storeDayInvoiceOldDebt(pool,req.body,{secret,token:bearer(req.get('Authorization'))});
   res.status(status==='received'?201:200).json({status,operationId:req.body.event.operationId});
+ }catch(e){errorHandler(e,res,next);}});
+ // Transport isolé de la révision et de son choix. Ne pas activer en
+ // production : les lectures et clôtures ordinaires refusent la compensation.
+ if(options.dayInvoiceTestOnly===true)r.post('/day-invoice-compensated-sale',async(req,res,next)=>{try{
+  const body=z.object({event:saleEventSchema,compensation:compensationSchema}).strict().parse(req.body);
+  const status=await storeDayInvoiceCompensatedSale(pool,body.event,body.compensation,{secret,token:bearer(req.get('Authorization'))});
+  res.status(status==='received'?201:200).json({status,operationId:body.event.operationId});
+ }catch(e){errorHandler(e,res,next);}});
+ if(options.dayInvoiceTestOnly===true)r.get('/day-invoice-compensated-sale/:operationId/receipt',async(req,res,next)=>{try{
+  res.json(await readCompensationReceipt(pool,req.params.operationId,{secret,token:bearer(req.get('Authorization'))}));
  }catch(e){errorHandler(e,res,next);}});
  // Sources v6 : chemins distincts, uniquement pour les essais isolés. Les
  // anciennes routes ne peuvent jamais s'auto-déclarer compatibles par en-tête.

@@ -1,4 +1,9 @@
-/** Test isolé : aucune route publique ne permet d'enregistrer ces choix. */
+/** Test isolé : transport opt-in et aucune route de production. */
+import express from 'express';
+import {createServer,type Server} from 'node:http';
+import {identifiedCommercialRoutes} from '../src/identified-tour-routes.js';
+import {uploadCompensatedSale} from '../../mobile/day-invoice-compensation-upload.js';
+import {readCompensationReceipt} from '../src/day-invoice-compensation-receipt.js';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomUUID} from 'node:crypto';
@@ -15,7 +20,7 @@ import {readIdentifiedJournalDay,readCompensatedJournalDay} from '../src/identif
 
 for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : révision atomique, concurrence et reprise`,async()=>{
  const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL de test manquante');
- const schema='sls_comp_'+randomUUID().replaceAll('-',''),root=new pg.Pool({connectionString:url});let pool:pg.Pool|undefined;
+ const schema='sls_comp_'+randomUUID().replaceAll('-',''),root=new pg.Pool({connectionString:url});let pool:pg.Pool|undefined,server:Server|undefined;
  try {
   await root.query(`CREATE SCHEMA "${schema}"`);pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`,max:6});await pool.query(schemaSql);await pool.query(dayInvoiceServerSchema);
   const clientId=randomUUID(),commercialId=randomUUID(),saleId=randomUUID(),invoiceId=randomUUID(),day='2026-01-01',at='2026-01-01T09:00:00.000Z';
@@ -42,8 +47,30 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   await assert.rejects(storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession));
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);
   await pool.query('ALTER TABLE identified_day_invoice_compensations DROP CONSTRAINT reject_test');
-  const received=await Promise.all([storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession),storeDayInvoiceCompensatedSale(pool,edit,compensation,editSession)]);
-  assert.deepEqual(received.sort(),['duplicate','received']);
+  const app=express();app.use(express.json());app.use('/normal',identifiedCommercialRoutes(pool,secret));app.use('/test',identifiedCommercialRoutes(pool,secret,{dayInvoiceTestOnly:true}));
+  server=createServer(app);await new Promise<void>((resolve,reject)=>server!.listen(0,'127.0.0.1',()=>resolve()).once('error',reject));const address=server.address();assert.ok(address&&typeof address!=='string');const base=`http://127.0.0.1:${address.port}`;
+  const send=(path:string,body:unknown,token=editSession.token)=>fetch(`${base}/${path}/day-invoice-compensated-sale`,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
+  assert.equal((await send('normal',{event:edit,compensation})).status,404);
+  assert.equal((await send('test',{event:edit,compensation},'invalid')).status,401);
+  assert.equal((await send('test',{event:edit})).status,400);
+  assert.equal((await send('test',{event:edit,compensation,extra:true})).status,400);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);
+  const responses=await Promise.all([send('test',{event:edit,compensation}),send('test',{event:edit,compensation})]);
+  assert.deepEqual(responses.map(r=>r.status).sort(),[200,201]);
+  const received=await Promise.all(responses.map(r=>r.json())) as {status:string;operationId:string}[];
+  assert.deepEqual(received.map(r=>r.status).sort(),['duplicate','received']);assert.ok(received.every(r=>r.operationId===edit.operationId));
+  const mismatch=await send('test',{event:edit,compensation:{...compensation,choice:choice==='refund'?'credit':'refund'}});assert.equal(mismatch.status,409);
+  const receiptUrl=`${base}/test/day-invoice-compensated-sale/${edit.operationId}/receipt`;
+  assert.equal((await fetch(receiptUrl)).status,401);
+  assert.equal((await fetch(`${base}/normal/day-invoice-compensated-sale/${edit.operationId}/receipt`,{headers:{Authorization:`Bearer ${editSession.token}`}})).status,404);
+  const receiptResponse=await fetch(receiptUrl,{headers:{Authorization:`Bearer ${editSession.token}`}});assert.equal(receiptResponse.status,200);
+  const receipt=await receiptResponse.json() as {event:unknown;compensation:unknown;projection:{operationId:string;commercialId:string}};
+  assert.deepEqual(receipt.event,edit);assert.deepEqual(receipt.compensation,compensation);assert.equal(receipt.projection.operationId,edit.operationId);assert.equal(receipt.projection.commercialId,actorId);
+  if(actorId!==commercialId)assert.equal((await fetch(receiptUrl,{headers:{Authorization:`Bearer ${session.token}`}})).status,409);
+  // Reprise après réponse perdue : l'acquittement attend le reçu vérifié.
+  const identity={commercialId:actorId,serverOrigin:base},payload=JSON.stringify({event:edit,compensation});let acknowledged=0;
+  await uploadCompensatedSale(payload,identity,identity,{check:()=>{},send:async p=>send('test',JSON.parse(p)),receipt:async id=>fetch(`${base}/test/day-invoice-compensated-sale/${id}/receipt`,{headers:{Authorization:`Bearer ${editSession.token}`}}),acknowledge:async p=>{assert.equal(p,payload);acknowledged++;}});
+  assert.equal(acknowledged,1);
   const stored=await pool.query('SELECT payload,client_id,commercial_id FROM identified_day_invoice_compensations WHERE operation_id=$1',[edit.operationId]);assert.equal(stored.rows.length,1);assert.deepEqual(stored.rows[0].payload,compensation);assert.equal(stored.rows[0].client_id,clientId);assert.equal(stored.rows[0].commercial_id,actorId);
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,2);
   const projection=await readDayInvoiceCompensationProjection(pool,edit.operationId);
@@ -66,6 +93,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),edit.operationId]);
   await assert.rejects(readDayInvoiceCompensationProjection(pool,edit.operationId),/Preuve de compensation incohérente/);
   await assert.rejects(readCompensatedJournalDay(pool,actorId,eventDay,edit.operationId),/Preuve de compensation incohérente/);
+  await assert.rejects(readCompensationReceipt(pool,edit.operationId,editSession),/Preuve de compensation incohérente/);
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',[originalHash,edit.operationId]);
   const previousHash=(await pool.query('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[creationId])).rows[0].payload_hash;
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),creationId]);
@@ -89,5 +117,5 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   await assert.rejects(readIdentifiedJournalDay(pool,commercialId,day,true),/non projetée/);
   const newPayment={...payment,operationId:randomUUID(),amount:1000,preInvoice:{...payment.preInvoice,declare:false},sales:[{id:saleId,version:2}]};
   await assert.rejects(storeDayInvoicePayment(pool,newPayment,session,readServerDayInvoiceSource),/non projetée/);
- }finally{await pool?.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}
+ }finally{if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await pool?.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}
 });

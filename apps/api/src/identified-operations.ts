@@ -117,11 +117,10 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   await db.query('COMMIT');return 'received';
  } catch(error) {await db.query('ROLLBACK');throw error;} finally {db.release();}
 }
-/** Interne uniquement : la révision et son choix sont écrits atomiquement.
- * Pas de route ni d'activation : les projections de solde et caisse ne savent
- * pas encore comptabiliser ces enregistrements et doivent rester bloquées. */
+/** Révision et choix écrits atomiquement ; transport réservé aux tests isolés.
+ * Les lectures et clôtures ordinaires restent bloquées après compensation. */
 export async function storeDayInvoiceCompensatedSale(pool:Pool,input:unknown,choice:unknown,session:{token:string;secret:string}){
- return storeIdentifiedSale(pool,input,{...session,enforceMode:true,dayInvoiceAware:true},undefined,choice);
+ return storeIdentifiedSale(pool,input,{...session,enforceMode:true,dayInvoiceAware:true},undefined,compensationSchema.parse(choice));
 }
 export async function storeIdentifiedSettlement(pool:Pool,input:unknown,session:Session):Promise<'received'|'duplicate'> {
  const event=settlementSchema.parse(input),p=event.settlement;
