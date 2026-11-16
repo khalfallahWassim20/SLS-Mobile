@@ -14,8 +14,10 @@ function checked(value:bigint):string {
  if(value>BigInt(Number.MAX_SAFE_INTEGER)||value<BigInt(Number.MIN_SAFE_INTEGER))throw new RangeError('Solde trop élevé.');return value.toString();
 }
 /** L'appelant doit fournir une transaction REPEATABLE READ et appliquer lui-même
- * la garde de mode si nécessaire. Aucun commit ou rollback n'est effectué ici. */
-export async function readIdentifiedReferenceInTransaction(db:PoolClient,includeInactive=false) {
+ * la garde de mode si nécessaire. Aucun commit ou rollback n'est effectué ici.
+ * includePurchasePrice reste faux par défaut : seul un appelant ayant vérifié le droit
+ * explicite du commercial authentifié peut l'activer. */
+export async function readIdentifiedReferenceInTransaction(db:PoolClient,includeInactive=false,includePurchasePrice=false) {
  const active=includeInactive?'':' AND c.active';
   const clients=await db.query(`SELECT c.id,c.name,c.sector,c.opening_balance::text AS "openingBalance",c.credit_limit::text AS "creditLimit",c.opening_balance::text AS "serverBalance" FROM clients c WHERE c.deleted_at IS NULL${active} ORDER BY c.name`);
   const sales=await db.query(`WITH legacy AS (SELECT DISTINCT ON (sale_id) sale_id,client_id,version,payload FROM demo_sale_events ORDER BY sale_id,version DESC),
@@ -52,7 +54,9 @@ export async function readIdentifiedReferenceInTransaction(db:PoolClient,include
   const operations=await db.query(`SELECT operation_id FROM demo_sale_events UNION ALL SELECT operation_id FROM identified_sale_events UNION ALL
    SELECT operation_id FROM demo_settlements UNION ALL SELECT operation_id FROM identified_settlements UNION ALL
    SELECT operation_id FROM sync_journal_events UNION ALL SELECT operation_id FROM identified_journal_events`);
-  const articles=await db.query(`SELECT id,code,barcode,name,sale_ttc::text AS "saleTtc",vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton" FROM articles WHERE active AND deleted_at IS NULL ORDER BY name`);
+  // Projection explicite : le prix d'achat n'est jamais inclus sans demande expresse de l'appelant.
+  const purchaseColumn=includePurchasePrice?',purchase_ttc::text AS "purchaseTtc"':'';
+  const articles=await db.query(`SELECT id,code,barcode,name,sale_ttc::text AS "saleTtc"${purchaseColumn},vat_rate AS "vatRate",units_per_carton AS "unitsPerCarton" FROM articles WHERE active AND deleted_at IS NULL ORDER BY name`);
   unique(operations.rows.map(r=>r.operation_id),'Opération');
   unique(payments.rows.map(r=>r.operationId),'Règlement');
   const latestJournals=new Map<string,ReturnType<typeof parseJournalSnapshot>>();
@@ -72,14 +76,14 @@ export async function readIdentifiedReferenceInTransaction(db:PoolClient,include
  return {version:4 as const,clients:clients.rows,articles:articles.rows,saleStates:[...latestSales.values()],settlementStates:payments.rows.map(({operationId,clientId})=>({operationId,clientId})),journalStates,journalProofs};
 }
 /** Anciennes et nouvelles écritures partagent un instantané MVCC. */
-export async function readIdentifiedReference(pool:Pool,includeInactive=false,enforceMode=false) {
+export async function readIdentifiedReference(pool:Pool,includeInactive=false,enforceMode=false,includePurchasePrice=false) {
  const db=await pool.connect();
  try {
   await db.query(enforceMode?'BEGIN ISOLATION LEVEL REPEATABLE READ':'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   if(enforceMode)assertIdentifiedMode(await lockSyncMode(db));
   await assertOldCreditProtocolSafe(db);
   await assertLegacyDayInvoiceReferenceSafe(db);
-  const result=await readIdentifiedReferenceInTransaction(db,includeInactive);
+  const result=await readIdentifiedReferenceInTransaction(db,includeInactive,includePurchasePrice);
   await db.query('COMMIT');return result;
  } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
