@@ -1,3 +1,4 @@
+import {dayInvoicePreinvoiceAttemptSchema,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt} from '../../mobile/day-invoice-preinvoice-attempt.js';
 import {captureNewDayPreinvoice,confirmNewDayPreinvoice} from '../../mobile/day-invoice-preinvoice-create.js';
 /** Téléphone SQLite et serveur PostgreSQL fictifs : création hors ligne, reprise HTTP. */
 import {test} from 'node:test';import assert from 'node:assert/strict';import {randomUUID,createHash} from 'node:crypto';import {DatabaseSync} from 'node:sqlite';import {createServer,type Server} from 'node:http';import express from 'express';import pg from 'pg';
@@ -76,7 +77,7 @@ test('préétablie et vente créées hors ligne : synchronisation, paiement uniq
   const sale={createdAt:at,clientId,clientName:'Client fictif',syncSaleId:saleId,syncVersion:1,lines:[{name:'Produit',code:'X',quantity:1,unitPrice:210084,discount:0,vat:1900}],total:250000,paid:0,remaining:250000,paymentMode:'Crédit',chequeNumber:'',chequeBank:'',chequeDue:''};
   const invoiceId=randomUUID(),invoiceOperation=randomUUID();
   const app=express();app.use(express.json());app.use('/test',identifiedCommercialRoutes(pool,secret,{dayInvoiceTestOnly:true}));server=createServer(app);await new Promise<void>((resolve,reject)=>server!.listen(0,'127.0.0.1',()=>resolve()).once('error',reject));const address=server.address();assert.ok(address&&typeof address!=='string');const base=`http://127.0.0.1:${address.port}`,identity={commercialId,serverOrigin:base};
-  phone=new DatabaseSync(':memory:');const db=phone;db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceCloseAttemptSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}
+  phone=new DatabaseSync(':memory:');const db=phone;db.exec(`PRAGMA foreign_keys=ON;${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceCloseAttemptSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}${dayInvoicePreinvoiceAttemptSchema}
    CREATE TABLE sales(id INTEGER PRIMARY KEY,created_at TEXT,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
    CREATE TABLE sale_revisions(id INTEGER PRIMARY KEY,sale_id INTEGER,created_at TEXT,previous_payload TEXT,new_payload TEXT,refund INTEGER);
    CREATE TABLE tour_expenses(pending INTEGER);CREATE TABLE tour_expense_revisions(pending INTEGER);CREATE TABLE tour_expense_cancellations(pending INTEGER);
@@ -93,7 +94,8 @@ test('préétablie et vente créées hors ligne : synchronisation, paiement uniq
   assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'saved');
   const pre=await transaction(t=>captureNewDayPreinvoice(t,identity,clientId,day,600000,digest));assert.equal(pre.invoiceTotal,850000);
   const preInput={clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId:invoiceOperation,createdAt:at};
-  assert.equal((await transaction(t=>confirmNewDayPreinvoice(t,identity,preInput,digest))).status,'created');
+  await transaction(t=>preparePreinvoiceAttempt(t,identity,preInput,digest));
+  assert.equal((await transaction(t=>confirmPreinvoiceAttempt(t,identity,invoiceOperation,digest))).status,'created');
   const offline=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(offline.view.total,850000);
   const secondPayment=randomUUID(),secondInput={clientId,day,fingerprint:offline.fingerprint,operationId:secondPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};await transaction(t=>prepareDayPaymentAttempt(t,identity,secondInput,digest));await transaction(t=>confirmDayPaymentAttempt(t,identity,secondPayment,digest));
   assert.equal((await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest))).view.remaining,650000);
@@ -109,6 +111,7 @@ test('préétablie et vente créées hors ligne : synchronisation, paiement uniq
   assert.equal((await transaction(t=>confirmDayPaymentAttempt(t,identity,secondPayment,digest))).status,'duplicate');await transaction(t=>acknowledgeDayPaymentAttempt(t,identity,secondPayment));
   assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   assert.equal((await transaction(t=>confirmNewDayPreinvoice(t,identity,preInput,digest))).status,'duplicate');
+  assert.equal((await transaction(t=>confirmPreinvoiceAttempt(t,identity,invoiceOperation,digest))).status,'duplicate');await transaction(t=>acknowledgePreinvoiceAttempt(t,identity,invoiceOperation));
   const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,850000);assert.equal(form.view.remaining,650000);
   const clients=await transaction(t=>readDayInvoiceClients(t,identity,digest));assert.equal(clients.clients.find(c=>c.id===clientId)?.balance,650000);
   assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE client_id=$1',[clientId])).rows[0].n,1);

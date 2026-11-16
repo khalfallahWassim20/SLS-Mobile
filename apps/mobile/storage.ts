@@ -1,3 +1,4 @@
+import {dayInvoicePreinvoiceAttemptSchema,readPreinvoiceAttempt,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt,cancelPreinvoiceAttempt} from './day-invoice-preinvoice-attempt';
 import {captureNewDayPreinvoice,confirmNewDayPreinvoice,type NewDayPreinvoice} from './day-invoice-preinvoice-create';
 import {dayInvoiceOldDebtAttemptSchema,readOldDebtAttempt,prepareOldDebtAttempt,confirmOldDebtAttempt,acknowledgeOldDebtAttempt,cancelOldDebtAttempt,type OldDebtAttempt} from './day-invoice-old-debt-attempt';
 import {dayInvoicePaymentAttemptSchema,readDayPaymentAttempt,prepareDayPaymentAttempt,confirmDayPaymentAttempt,acknowledgeDayPaymentAttempt,cancelDayPaymentAttempt,type PaymentAttempt} from './day-invoice-payment-attempt';
@@ -98,7 +99,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema} ${dayInvoicePreinvoiceAttemptSchema}`);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -752,3 +753,11 @@ export async function captureNewDayPreinvoicePrototype(identity:DeviceIdentity,c
 export async function confirmNewDayPreinvoicePrototype(identity:DeviceIdentity,input:NewDayPreinvoice){
  const database=await db();let result!:Awaited<ReturnType<typeof confirmNewDayPreinvoice>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmNewDayPreinvoice(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
 }
+
+/** Tentative durable de préétablie pour le parcours v6 non activé. */
+export async function readPreinvoiceAttemptPrototype(identity:DeviceIdentity){const database=await db();let result!:Awaited<ReturnType<typeof readPreinvoiceAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await readPreinvoiceAttempt(tx,identity);});return result;}
+export async function preparePreinvoiceAttemptPrototype(identity:DeviceIdentity,input:NewDayPreinvoice){const database=await db();let result!:Awaited<ReturnType<typeof preparePreinvoiceAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await preparePreinvoiceAttempt(tx,identity,input,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function confirmPreinvoiceAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();let result!:Awaited<ReturnType<typeof confirmPreinvoiceAttempt>>;await database.withExclusiveTransactionAsync(async tx=>{result=await confirmPreinvoiceAttempt(tx,identity,id,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;}
+export async function acknowledgePreinvoiceAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>acknowledgePreinvoiceAttempt(tx,identity,id));}
+export async function cancelPreinvoiceAttemptPrototype(identity:DeviceIdentity,id:string){const database=await db();await database.withExclusiveTransactionAsync(tx=>cancelPreinvoiceAttempt(tx,identity,id));}
+export function preinvoiceAttemptIOPrototype(identity:DeviceIdentity){return {read:()=>readPreinvoiceAttemptPrototype(identity),prepare:(input:NewDayPreinvoice)=>preparePreinvoiceAttemptPrototype(identity,input),confirm:(id:string)=>confirmPreinvoiceAttemptPrototype(identity,id),acknowledge:(id:string)=>acknowledgePreinvoiceAttemptPrototype(identity,id),cancel:(id:string)=>cancelPreinvoiceAttemptPrototype(identity,id)};}

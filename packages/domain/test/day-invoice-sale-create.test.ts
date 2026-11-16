@@ -1,3 +1,5 @@
+import {dayInvoicePreinvoiceAttemptSchema,readPreinvoiceAttempt,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt,cancelPreinvoiceAttempt} from '../../../apps/mobile/day-invoice-preinvoice-attempt.js';
+import {startPreinvoiceAttempt,resumePreinvoiceAttempt,finishPreinvoiceAttempt,abandonPreinvoiceAttempt} from '../../../apps/mobile/day-invoice-preinvoice-attempt-flow.js';
 import {captureNewDayPreinvoice,confirmNewDayPreinvoice} from '../../../apps/mobile/day-invoice-preinvoice-create.js';
 import {test} from 'node:test';import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';import assert from 'node:assert/strict';import {DatabaseSync} from 'node:sqlite';import {createHash} from 'node:crypto';
 import {identifiedDeviceSchema} from '../../../apps/mobile/identified-device.js';import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../../apps/mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../../apps/mobile/credit-note-offline-prototype.js';import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../../apps/mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../../apps/mobile/sale-event-time.js';
@@ -10,7 +12,7 @@ const identity={commercialId:clientId,serverOrigin:'https://example.test'},day='
 const line={name:'Produit',code:'X',quantity:1,unitPrice:210084,discount:0,vat:1900};
 const reference={version:6,clients:[{id:clientId,name:'Client',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[{id:'33333333-3333-4333-8333-333333333333',code:'X',name:'Produit',barcode:'',saleTtc:'250000',vatRate:1900,unitsPerCarton:1}],saleStates:[],saleDays:[],settlementStates:[],settlementDays:[],settlementProofs:[],oldDebtMarkers:[],journalStates:[{id:invoiceId,clientId,journalDate:day,total:600000,receipts:[],declaredByDayPayment:false}],journalProofs:[{id:invoiceId,version:1,hash:'a'.repeat(64)}],dayPayments:[]};
 function wrap(db:DatabaseSync){return {getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};}
-function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}
+function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}${dayInvoicePreinvoiceAttemptSchema}
  CREATE TABLE sales(id INTEGER PRIMARY KEY,created_at TEXT,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
  CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT,sale_id TEXT,version INTEGER,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,version INTEGER,payload TEXT);
  CREATE TABLE tour_pre_invoices(id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT PRIMARY KEY,version INTEGER,payload TEXT);`);
@@ -250,5 +252,35 @@ test('préétablie v6 : conflits, fermeture, date tunisienne et paiement antéri
   const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);await confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest);
   const invoice=await captureDayInvoiceForm(tx,identity,clientId,day,digest);await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:invoice.fingerprint,operationId:paymentId,recordedAt:at,amount:100000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);
   await assert.rejects(captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest),/déjà réglée/);assert.equal(db.prepare('SELECT count(*) n FROM tour_pre_invoices').get()?.n,0);
+ }finally{db.close();}
+});
+
+
+test('préétablie durable : reprise, panne atomique, blocages et reçu vérifié',async()=>{
+ const dir=mkdtempSync(join(tmpdir(),'sls-preinvoice-')),path=join(dir,'phone.db');let {db,tx}=setup(path);try{
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,journalStates:[],journalProofs:[]});const form=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest),input={clientId,day,amount:600000,fingerprint:form.fingerprint,invoiceId,operationId,createdAt:at};
+  await preparePreinvoiceAttempt(tx,identity,input,digest);await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity),/Préétablie en attente/);await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity,day),/Préétablie en attente/);await assertDayInvoiceAttemptsSettled(tx,identity,'2026-01-02');
+  await assert.rejects(assertLegacyMobileDayInvoiceSafe(tx),/Tentative de facture du jour|Référence facture du jour/);await assert.rejects(acknowledgePreinvoiceAttempt(tx,identity,operationId),/non confirmée/);
+  await assert.rejects(preparePreinvoiceAttempt(tx,identity,{...input,amount:700000},digest),/autre préétablie/);
+  await cancelPreinvoiceAttempt(tx,identity,operationId);assert.equal(await readPreinvoiceAttempt(tx,identity),null);await preparePreinvoiceAttempt(tx,identity,input,digest);
+  db.close();db=new DatabaseSync(path);tx=wrap(db);assert.deepEqual((await readPreinvoiceAttempt(tx,identity))?.attempt,input);
+  const failure={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{if(sql.startsWith('UPDATE day_invoice_preinvoice_attempt'))throw Error('panne avant reçu');return tx.runAsync(sql,...args);}};
+  db.exec('BEGIN');await assert.rejects(confirmPreinvoiceAttempt(failure,identity,operationId,digest),/panne avant reçu/);db.exec('ROLLBACK');assert.equal(db.prepare('SELECT count(*) n FROM tour_pre_invoices').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM journal_sync_outbox').get()?.n,0);
+  await assert.rejects(confirmNewDayPreinvoice(tx,identity,{...input,amount:700000},digest),/Préétablie en attente/);
+  db.exec('BEGIN');assert.equal((await confirmPreinvoiceAttempt(tx,identity,operationId,digest)).status,'created');db.exec('COMMIT');await assertDayInvoiceAttemptsSettled(tx,identity);
+  db.close();db=new DatabaseSync(path);tx=wrap(db);assert.equal((await confirmPreinvoiceAttempt(tx,identity,operationId,digest)).status,'duplicate');
+  const original=db.prepare('SELECT payload FROM day_invoice_preinvoice_attempt').get()?.payload as string,corrupt=JSON.parse(original);corrupt.result.invoice.amount++;db.prepare('UPDATE day_invoice_preinvoice_attempt SET payload=?').run(JSON.stringify(corrupt));
+  await assert.rejects(readPreinvoiceAttempt(tx,identity),/incohérente/);await assert.rejects(acknowledgePreinvoiceAttempt(tx,identity,operationId),/incohérente/);db.prepare('UPDATE day_invoice_preinvoice_attempt SET payload=?').run(original);
+  await assert.rejects(cancelPreinvoiceAttempt(tx,identity,operationId),/abandonnable/);await assert.rejects(readPreinvoiceAttempt(tx,{...identity,serverOrigin:'https://wrong.test'}),/Identité/);
+  await acknowledgePreinvoiceAttempt(tx,identity,operationId);assert.equal(await readPreinvoiceAttempt(tx,identity),null);assert.equal(db.prepare('SELECT count(*) n FROM tour_pre_invoices').get()?.n,1);
+ }finally{db.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test('orchestration préétablie : réponse locale perdue, relecture et même identifiant',async()=>{
+ const {db,tx}=setup();try{await saveDayInvoiceReference(tx,identity,identity,{...reference,journalStates:[],journalProofs:[]});const form=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest),input={clientId,day,amount:600000,fingerprint:form.fingerprint,invoiceId,operationId,createdAt:at};
+  const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(tx);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
+  let lose=true;const io={read:()=>transaction(t=>readPreinvoiceAttempt(t,identity)),prepare:(a:typeof input)=>transaction(t=>preparePreinvoiceAttempt(t,identity,a,digest)),confirm:async(id:string)=>{const result=await transaction(t=>confirmPreinvoiceAttempt(t,identity,id,digest));if(lose){lose=false;throw Error('réponse locale perdue');}return result;},acknowledge:(id:string)=>transaction(t=>acknowledgePreinvoiceAttempt(t,identity,id)),cancel:(id:string)=>transaction(t=>cancelPreinvoiceAttempt(t,identity,id))};
+  await assert.rejects(startPreinvoiceAttempt(io,input),/réponse locale perdue/);assert.equal((await io.read())?.result?.status,'created');
+  await assert.rejects(abandonPreinvoiceAttempt(io,input),/non abandonnable/);const resumed=await resumePreinvoiceAttempt(io,input);assert.equal(resumed.result?.invoice.id,invoiceId);await finishPreinvoiceAttempt(io,input);assert.equal(await io.read(),null);assert.equal(db.prepare('SELECT count(*) n FROM journal_sync_outbox').get()?.n,1);
  }finally{db.close();}
 });
