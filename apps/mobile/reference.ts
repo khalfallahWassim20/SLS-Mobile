@@ -1,6 +1,7 @@
 import { summarizePreInvoice, type JournalSyncReceipt } from '@sls/domain';
 export type RefClient = { id: string; name: string; sector: string; openingBalance?: string; creditLimit?: string; serverBalance?: string };
-export type RefArticle = { id: string; code: string; barcode: string; name: string; saleTtc: string; vatRate: number; unitsPerCarton: number };
+/** purchaseTtc (millimes) n'est présent que si le serveur autorise ce commercial à voir les prix d'achat. */
+export type RefArticle = { id: string; code: string; barcode: string; name: string; saleTtc: string; purchaseTtc?: string; vatRate: number; unitsPerCarton: number };
 export type SaleState = { saleId: string; clientId: string; version: number; total: string; paid: string };
 export type SettlementState = { operationId: string; clientId: string };
 export type JournalState = { id:string; clientId:string; journalDate?:string; total:number; receipts:JournalSyncReceipt[] };
@@ -20,7 +21,9 @@ export function validateReference(value: unknown): Omit<ReferenceData, 'syncedAt
   });
   const articles = value.articles.map(v => {
     if (!record(v) || !text(v.id) || !text(v.name) || !text(v.code) || !text(v.barcode) || typeof v.saleTtc !== 'string' || !/^\d+$/.test(v.saleTtc) || BigInt(v.saleTtc) > BigInt(Number.MAX_SAFE_INTEGER) || !Number.isInteger(v.vatRate) || (v.vatRate as number) < 0 || (v.vatRate as number) > 10000 || !Number.isInteger(v.unitsPerCarton) || (v.unitsPerCarton as number) < 1) throw new Error('Article invalide dans la réponse.');
-    return { id: v.id as string, name: v.name as string, code: v.code as string, barcode: v.barcode as string, saleTtc: v.saleTtc, vatRate: v.vatRate as number, unitsPerCarton: v.unitsPerCarton as number };
+    // Prix d'achat facultatif : absent pour un commercial sans droit ou pour un serveur plus ancien.
+    if (v.purchaseTtc !== undefined && (typeof v.purchaseTtc !== 'string' || !/^\d+$/.test(v.purchaseTtc) || BigInt(v.purchaseTtc) > BigInt(Number.MAX_SAFE_INTEGER))) throw new Error('Prix d\u2019achat invalide dans la réponse.');
+    return { id: v.id as string, name: v.name as string, code: v.code as string, barcode: v.barcode as string, saleTtc: v.saleTtc, ...(v.purchaseTtc !== undefined ? { purchaseTtc: v.purchaseTtc as string } : {}), vatRate: v.vatRate as number, unitsPerCarton: v.unitsPerCarton as number };
   });
   if (value.version === 1) return { version: 1, clients, articles };
   if (!Array.isArray(value.saleStates) || !Array.isArray(value.settlementStates)) throw new Error('Marqueurs de synchronisation absents.');
@@ -87,4 +90,16 @@ export function unitPriceExcludingVat(saleTtc: string, vatRate: number): number 
   const result = (BigInt(saleTtc) * 10000n + denom / 2n) / denom;
   if (result > BigInt(Number.MAX_SAFE_INTEGER)) throw new RangeError('Prix trop élevé');
   return Number(result);
+}
+
+/** Marge unitaire HT : montant en millimes (négatif si vente à perte), taux en centièmes de pour cent du prix de vente HT.
+ * Hypothèse provisoire, à valider avec le comptable : l'achat est soumis au même taux de TVA que la vente. */
+export function unitMargin(saleTtc: string, purchaseTtc: string, vatRate: number): { amount: number; rate: number } {
+  const saleHt = BigInt(unitPriceExcludingVat(saleTtc, vatRate));
+  const purchaseHt = BigInt(unitPriceExcludingVat(purchaseTtc, vatRate));
+  const amount = saleHt - purchaseHt;
+  if (saleHt === 0n) return { amount: Number(amount), rate: 0 };
+  const scaled = amount * 10000n, half = saleHt / 2n;
+  // Arrondi à la moitié supérieure en valeur absolue, y compris pour une marge négative.
+  return { amount: Number(amount), rate: Number((scaled >= 0n ? scaled + half : scaled - half) / saleHt) };
 }
