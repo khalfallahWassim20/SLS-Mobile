@@ -1,5 +1,7 @@
 import {readEditableDaySale} from '../../../apps/mobile/day-invoice-sale-edit-read.js';
 import {dayInvoiceCompensationLocalSchema,confirmLocalCompensation,readLocalCompensation,acknowledgeLocalCompensation} from '../../../apps/mobile/day-invoice-compensation-local.js';
+import {readLocalCompensationView,readLocalCompensationCollectionImpact} from '../../../apps/mobile/day-invoice-compensation-view.js';
+import {synchronizeLocalCompensation} from '../../../apps/mobile/day-invoice-compensation-sync.js';
 import {readDayInvoiceClients} from '../../../apps/mobile/day-invoice-clients.js';
 import {dayInvoiceSaleEditAttemptSchema,prepareSaleEditAttempt,readSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt} from '../../../apps/mobile/day-invoice-sale-edit-attempt.js';
 import {assertDayInvoiceAttemptsSettled} from '../../../apps/mobile/day-invoice-attempt-guard.js';
@@ -189,6 +191,10 @@ for(const choice of ['refund','credit'] as const)test(`compensation locale ${cho
   assert.equal(result.status,'created');assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);
   assert.equal((JSON.parse(String(db.prepare('SELECT payload FROM sales WHERE id=1').get()?.payload))).total,150000);
   assert.equal((await confirmLocalCompensation(tx,identity,input,digest)).status,'duplicate');
+  const view=await readLocalCompensationView(tx,identity);assert.ok(view);assert.equal(view.syncStatus,'pending');assert.equal(view.localBalanceBefore,50000);assert.equal(view.localBalanceAfter,choice==='refund'?0:-50000);assert.equal(view.serverBalanceAtReceipt,null);assert.equal(view.balanceNeedsReview,null);
+  assert.deepEqual(await readLocalCompensationCollectionImpact(tx,identity,identity.commercialId,day),{refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0,netCollectedChange:choice==='refund'?-50000:0,operationId:editOperation,syncStatus:'pending'});
+  assert.equal((await readLocalCompensationCollectionImpact(tx,identity,identity.commercialId,'2026-01-02')).operationId,null);
+  assert.equal((await readLocalCompensationCollectionImpact(tx,identity,saleId,day)).operationId,null);
   await assert.rejects(confirmLocalCompensation(tx,identity,{...input,choice:choice==='refund'?'credit':'refund'},digest),/différente/);
   await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/Compensation/);
   await assert.rejects(readDayInvoiceClients(tx,identity,digest),/Compensation/);
@@ -198,7 +204,31 @@ for(const choice of ['refund','credit'] as const)test(`compensation locale ${cho
   const receipt={...payload,projection};
   await assert.rejects(acknowledgeLocalCompensation(tx,identity,result.payload,{...receipt,projection:{...projection,compensation:1}}),/divergente/);
   await acknowledgeLocalCompensation(tx,identity,result.payload,receipt);assert.deepEqual((await readLocalCompensation(tx,identity))?.receipt,receipt);
+  const proven=await readLocalCompensationView(tx,identity);assert.equal(proven?.syncStatus,'proven');assert.equal(proven?.balanceNeedsReview,false);
+  db.prepare('UPDATE day_invoice_compensation_local SET receipt=?').run(JSON.stringify({...receipt,projection:{...projection,balance:projection.balance+1}}));
+  const differing=await readLocalCompensationView(tx,identity);assert.equal(differing?.balanceNeedsReview,true);assert.equal(differing?.serverBalanceAtReceipt,projection.balance+1);
+  db.prepare('UPDATE day_invoice_compensation_local SET receipt=?').run(JSON.stringify(receipt));
   await assertLegacyMobileDayInvoiceSafe(tx).then(()=>assert.fail('garde levée'),e=>assert.match(String(e),/Compensation/));
   db.prepare('UPDATE sale_revisions SET refund=1').run();await assert.rejects(readLocalCompensation(tx,identity),/incohérente/);
+ }finally{db.close();}
+});
+
+test('synchronisation compensation : session révoquée annule le reçu et reprise',async()=>{
+ const {db,tx}=setup();try{
+  db.exec(dayInvoiceCompensationLocalSchema);await saveDayInvoiceReference(tx,identity,identity,reference);
+  const lines=[{...line,quantity:3}],preview=await captureDayInvoiceSaleEdit(tx,identity,1,lines,digest),input={saleId:1,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z',choice:'refund' as const};
+  const saved=await confirmLocalCompensation(tx,identity,input,digest),payload=JSON.parse(saved.payload);
+  const proof={...payload,projection:{operationId:editOperation,clientId,commercialId:identity.commercialId,invoiceDay:day,eventDay:day,recordedAt:input.recordedAt,choice:'refund',compensation:50000,total:750000,paidBeforeCompensation:800000,applied:750000,remaining:0,balance:0,refund:50000,credit:0}};
+  let revoked=false,interrupt=true,verified=0,sends=0;
+  const guarded={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{await tx.runAsync(sql,...args);if(interrupt&&sql.startsWith('UPDATE day_invoice_compensation_local SET receipt'))revoked=true;}};
+  const transaction=async<T>(fn:(t:typeof tx)=>Promise<T>)=>{db.exec('BEGIN');try{const value=await fn(guarded);db.exec('COMMIT');return value;}catch(e){db.exec('ROLLBACK');throw e;}};
+  const io={transaction,check:()=>{if(revoked)throw Error('session révoquée');},verifyServer:async()=>{verified++;},send:async()=>{sends++;return {ok:true,status:200,json:async()=>({status:'duplicate',operationId:editOperation})};},receipt:async()=>({ok:true,status:200,json:async()=>proof})};
+  await assert.rejects(synchronizeLocalCompensation(identity,identity,io),/session révoquée/);
+  assert.equal((await readLocalCompensation(tx,identity))?.receipt,null);
+  revoked=false;interrupt=false;assert.deepEqual(await synchronizeLocalCompensation(identity,identity,io),{status:'proven',operationId:editOperation});
+  assert.ok((await readLocalCompensation(tx,identity))?.receipt);assert.equal(sends,2);assert.equal(verified,2);
+  let resume!:()=>void;const gate=new Promise<void>(resolve=>{resume=resolve;});let waiting!:()=>void;const started=new Promise<void>(resolve=>{waiting=resolve;});
+  const concurrent=synchronizeLocalCompensation(identity,identity,{...io,verifyServer:async()=>{waiting();await gate;}});await started;
+  await assert.rejects(synchronizeLocalCompensation(identity,identity,io),/déjà en cours/);resume();assert.equal((await concurrent).status,'already-proven');
  }finally{db.close();}
 });
