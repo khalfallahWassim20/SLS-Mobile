@@ -22,7 +22,7 @@ export function verifyCompensationReceipt(expected:unknown,receipt:unknown,comme
 }
 
 /** Aucun acquittement sur réponse perdue, preuve absente ou session changée. */
-export async function uploadCompensatedSale(payload:string,identity:{commercialId:string;serverOrigin:string},verified:{commercialId:string;serverOrigin:string},io:{check:()=>void;send:(payload:string)=>Promise<Response>;receipt:(operationId:string)=>Promise<Response>;acknowledge:(payload:string)=>Promise<void>}){
+export async function uploadCompensatedSale(payload:string,identity:{commercialId:string;serverOrigin:string},verified:{commercialId:string;serverOrigin:string},io:{check:()=>void;send:(payload:string)=>Promise<Response>;receipt:(operationId:string)=>Promise<Response>;acknowledge:(payload:string,receipt:unknown)=>Promise<void>}){
  const check=()=>{io.check();if(identity.commercialId!==verified.commercialId||identity.serverOrigin!==verified.serverOrigin)throw Error('Session ou serveur différent du téléphone lié.');};
  check();let expected:unknown;try{expected=JSON.parse(payload);}catch{throw Error('Compensation locale illisible : opération conservée.');}
  if(!object(expected)||!object(expected.event)||!uuid(expected.event.operationId))throw Error('Compensation locale invalide : opération conservée.');
@@ -31,5 +31,5 @@ export async function uploadCompensatedSale(payload:string,identity:{commercialI
  if(!response.ok){const closed=parseClosedDaySyncError(response.status,body);if(closed)throw closed;const message=object(body)&&typeof body.error==='string'?body.error.slice(0,300):`Erreur serveur (${response.status}).`;if(response.status===409)throw new OperationConflictSyncError(message);throw Error(message);}
  if(!object(body)||!['received','duplicate'].includes(body.status)||body.operationId!==operationId)throw Error('Accusé invalide : opération conservée.');
  const proof=await io.receipt(operationId);check();if(!proof.ok)throw Error('Reçu serveur indisponible : opération conservée.');
- const receipt=await proof.json();check();verifyCompensationReceipt(expected,receipt,identity.commercialId);check();await io.acknowledge(payload);check();
+ const receipt=await proof.json();check();verifyCompensationReceipt(expected,receipt,identity.commercialId);check();await io.acknowledge(payload,receipt);check();
 }

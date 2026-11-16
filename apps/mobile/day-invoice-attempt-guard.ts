@@ -1,4 +1,5 @@
 import {readSaleEditAttempt} from './day-invoice-sale-edit-attempt';
+import {assertNoLocalDayCompensation} from './day-invoice-compensation-guard';
 /** Empêche une clôture ou une synchronisation de passer devant une décision
  * de vente ou de règlement durable encore ouverte. Les reçus déjà enregistrés
  * sont vérifiés puis traités normalement par les files et preuves de caisse. */
@@ -15,6 +16,7 @@ type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync
 /** Sans day : toute décision inachevée bloque la synchronisation. Avec day :
  * seules la journée de facture ou celle du mouvement bloquent la clôture. */
 export async function assertDayInvoiceAttemptsSettled(tx:Tx,identity:DeviceIdentity,day?:string,ignorePreinvoiceAttempt?:NewDayPreinvoice,ignoreSaleEditOperationId?:string){
+ await assertNoLocalDayCompensation(tx);
  const tables=await tx.getFirstAsync<{sale:number;payment:number;debt:number;preinvoice:number}>(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_attempt') AS sale, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payment_attempt') AS payment, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_old_debt_attempt') AS debt, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_preinvoice_attempt') AS preinvoice`);
  const editTable=await tx.getFirstAsync<{n:number}>("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_edit_attempt') AS n");
  if(!editTable||![0,1].includes(editTable.n))throw Error('État de modification indisponible.');
@@ -34,6 +36,7 @@ export async function assertDayInvoiceAttemptsSettled(tx:Tx,identity:DeviceIdent
  * confirmation. Les reçus restent autorisés pour la synchronisation mais pas
  * pour une nouvelle saisie qui pourrait invalider leur preuve. */
 export async function assertDayInvoiceAttemptExclusive(tx:Tx,identity:DeviceIdentity,ignore?:{kind:'preinvoice'|'sale'|'saleEdit'|'payment'|'oldDebt';operationId:string}){
+ await assertNoLocalDayCompensation(tx);
  const tables=await tx.getFirstAsync<{sale:number;payment:number;debt:number;preinvoice:number;edit:number}>(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_attempt') AS sale, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payment_attempt') AS payment, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_old_debt_attempt') AS debt, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_preinvoice_attempt') AS preinvoice, EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_edit_attempt') AS edit`);
  if(!tables||![tables.sale,tables.payment,tables.debt,tables.preinvoice,tables.edit].every(n=>n===0||n===1))throw Error('État des tentatives indisponible.');
  const check=(kind:NonNullable<typeof ignore>['kind'],id:string)=>{if(!ignore||ignore.kind!==kind||ignore.operationId!==id)throw Error('Une autre opération attend confirmation ou vérification : reprenez-la avant de continuer.');};

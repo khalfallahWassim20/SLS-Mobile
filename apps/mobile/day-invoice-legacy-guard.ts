@@ -1,8 +1,10 @@
 /** Les anciens écrans ne calculent pas les règlements unifiés ou la référence
  * v6. Bloquer les lectures et écritures obsolètes sans effacer aucune donnée. */
+import {assertNoLocalDayCompensation} from './day-invoice-compensation-guard';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>};
 export async function assertLegacyMobileDayInvoiceSafe(tx:Tx):Promise<void>{
+ await assertNoLocalDayCompensation(tx);
  const tables=await tx.getFirstAsync<{payments:number;reference:number}>(`SELECT
   EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_payments') AS payments,
   EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='day_invoice_reference_cache') AS reference`);

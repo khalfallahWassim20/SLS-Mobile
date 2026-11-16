@@ -3,6 +3,7 @@
  * exclusive distincte ; le reçu affiché doit encore correspondre au moment de
  * l'écriture. Ne raccorde pas les anciens écrans au protocole v6. */
 import {canonicalJson} from '@sls/domain';
+import {assertNoLocalDayCompensation} from './day-invoice-compensation-guard';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readDayInvoicePayments,readDayInvoiceOutbox,type DayInvoiceIdentity} from './day-invoice-queue';
 import {getDeviceIdentity} from './identified-device';
@@ -15,6 +16,7 @@ import {validateDayInvoiceWrite,validateDayPayment,type DayInvoicePayment} from 
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
 export async function captureDayInvoiceForm(tx:Tx,identity:DayInvoiceIdentity,clientId:string,day:string,digest?:(value:string)=>Promise<string>){
+ await assertNoLocalDayCompensation(tx);
  const reference=await readDayInvoiceReferenceCache(tx,identity);
  if(!reference)throw Error('Référence facture du jour indisponible : actualisation nécessaire.');
  const local=await readLocalDayInvoiceSource(tx,identity,clientId,day,digest);

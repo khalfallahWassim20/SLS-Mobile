@@ -1,4 +1,6 @@
 import {readEditableDaySale} from '../../../apps/mobile/day-invoice-sale-edit-read.js';
+import {dayInvoiceCompensationLocalSchema,confirmLocalCompensation,readLocalCompensation,acknowledgeLocalCompensation} from '../../../apps/mobile/day-invoice-compensation-local.js';
+import {readDayInvoiceClients} from '../../../apps/mobile/day-invoice-clients.js';
 import {dayInvoiceSaleEditAttemptSchema,prepareSaleEditAttempt,readSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt} from '../../../apps/mobile/day-invoice-sale-edit-attempt.js';
 import {assertDayInvoiceAttemptsSettled} from '../../../apps/mobile/day-invoice-attempt-guard.js';
 import {assertLegacyMobileDayInvoiceSafe} from '../../../apps/mobile/day-invoice-legacy-guard.js';
@@ -168,5 +170,35 @@ test('parcours expérimental : édition, reprise depuis le registre et facture m
   const stored=await resumeSaleEditAttempt(io,attempt);assert.equal(stored.result?.assessment.total,900000);assert.equal(stored.result?.assessment.remaining,100000);
   assert.equal((await state()).pending?.kind,'saleEdit');await finishSaleEditAttempt(io,attempt);assert.deepEqual(await state(),{pending:null,clients:['client']});
   assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,100000);
+ }finally{db.close();}
+});
+
+for(const choice of ['refund','credit'] as const)test(`compensation locale ${choice} : écriture atomique, reprise et garde`,async()=>{
+ const {db,tx}=setup();try{
+  db.exec(dayInvoiceCompensationLocalSchema);await saveDayInvoiceReference(tx,identity,identity,reference);
+  const lines=[{...line,quantity:3}],preview=await captureDayInvoiceSaleEdit(tx,identity,1,lines,digest);
+  const input={saleId:1,lines,fingerprint:preview.fingerprint,operationId:editOperation,recordedAt:'2026-01-01T10:00:00.000Z',choice};
+  await assert.rejects(confirmLocalCompensation(tx,identity,{...input,fingerprint:'périmé'},digest),/modifié/);
+  await assert.rejects(confirmLocalCompensation(tx,identity,{...input,recordedAt:at},digest),/Date/);
+  await assert.rejects(confirmLocalCompensation(tx,{...identity,serverOrigin:'https://autre.test'},input,digest),/Identité/);
+  const fail={...tx,runAsync:async(sql:string,...p:(string|number|null)[])=>{if(sql.startsWith('INSERT INTO day_invoice_compensation_local'))throw Error('échec simulé');await tx.runAsync(sql,...p);}};
+  db.exec('BEGIN');await assert.rejects(confirmLocalCompensation(fail,identity,input,digest),/échec simulé/);db.exec('ROLLBACK');
+  assert.deepEqual(JSON.parse(String(db.prepare('SELECT payload FROM sales WHERE id=1').get()?.payload)),sale);
+  for(const table of ['sale_revisions','sales_outbox','sale_event_times','day_invoice_compensation_local'])assert.equal(db.prepare(`SELECT count(*) n FROM ${table}`).get()?.n,0);
+  db.exec('BEGIN');const result=await confirmLocalCompensation(tx,identity,input,digest);db.exec('COMMIT');
+  assert.equal(result.status,'created');assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);
+  assert.equal((JSON.parse(String(db.prepare('SELECT payload FROM sales WHERE id=1').get()?.payload))).total,150000);
+  assert.equal((await confirmLocalCompensation(tx,identity,input,digest)).status,'duplicate');
+  await assert.rejects(confirmLocalCompensation(tx,identity,{...input,choice:choice==='refund'?'credit':'refund'},digest),/différente/);
+  await assert.rejects(captureDayInvoiceForm(tx,identity,clientId,day,digest),/Compensation/);
+  await assert.rejects(readDayInvoiceClients(tx,identity,digest),/Compensation/);
+  await assert.rejects(assertLegacyMobileDayInvoiceSafe(tx),/Compensation/);
+  await assert.rejects(assertDayInvoiceAttemptsSettled(tx,identity),/Compensation/);
+  const payload=JSON.parse(result.payload),projection={operationId:editOperation,clientId,commercialId:identity.commercialId,invoiceDay:day,eventDay:day,recordedAt:input.recordedAt,choice,compensation:50000,total:750000,paidBeforeCompensation:800000,applied:750000,remaining:0,balance:choice==='refund'?0:-50000,refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0};
+  const receipt={...payload,projection};
+  await assert.rejects(acknowledgeLocalCompensation(tx,identity,result.payload,{...receipt,projection:{...projection,compensation:1}}),/divergente/);
+  await acknowledgeLocalCompensation(tx,identity,result.payload,receipt);assert.deepEqual((await readLocalCompensation(tx,identity))?.receipt,receipt);
+  await assertLegacyMobileDayInvoiceSafe(tx).then(()=>assert.fail('garde levée'),e=>assert.match(String(e),/Compensation/));
+  db.prepare('UPDATE sale_revisions SET refund=1').run();await assert.rejects(readLocalCompensation(tx,identity),/incohérente/);
  }finally{db.close();}
 });
