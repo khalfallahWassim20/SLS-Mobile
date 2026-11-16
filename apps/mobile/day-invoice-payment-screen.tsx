@@ -9,9 +9,9 @@ import type {PaymentAttempt,StoredPaymentAttempt} from './day-invoice-payment-at
 import {startPaymentAttempt,resumePaymentAttempt,finishPaymentAttempt,abandonPaymentAttempt,type PaymentAttemptIO} from './day-invoice-payment-attempt-flow';
 type Form=Awaited<ReturnType<typeof captureDayInvoiceForm>>;
 /** bindingKey change à chaque changement de commercial ou serveur lié. */
-type Props={bindingKey:string;clientId:string;clientName:string;day:string;read:()=>Promise<Form>;attempts:PaymentAttemptIO;onBack:()=>void;onSaved:()=>void};
+type Props={bindingKey:string;clientId:string;clientName:string;day:string;read:()=>Promise<Form>;attempts:PaymentAttemptIO;onBack:()=>void;onSaved:()=>void;onAbandoned?:()=>void};
 const money=(value:number)=>`${(value/1000).toFixed(3)} DT`;
-export function DayInvoicePaymentScreen({bindingKey,clientId,clientName,day,read,attempts,onBack,onSaved}:Props){
+export function DayInvoicePaymentScreen({bindingKey,clientId,clientName,day,read,attempts,onBack,onSaved,onAbandoned}:Props){
  const [form,setForm]=useState<Form|null>(null),[amount,setAmount]=useState(''),[mode,setMode]=useState<DayInvoicePayment['mode']>('Espèces');
  const [number,setNumber]=useState(''),[bank,setBank]=useState(''),[due,setDue]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[reload,setReload]=useState(0),[loaded,setLoaded]=useState(false),[stored,setStored]=useState<StoredPaymentAttempt|null>(null);
  const working=useRef(false),generation=useRef(0),mounted=useRef(true);
@@ -31,7 +31,7 @@ export function DayInvoicePaymentScreen({bindingKey,clientId,clientName,day,read
  };
  const resume=()=>{if(!stored||other||stored.result)return;void run(async current=>{const result=await resumePaymentAttempt(attempts,stored.attempt);if(current())setStored(result);});};
  const finish=()=>{if(!stored||other||!stored.result)return;void run(async current=>{await finishPaymentAttempt(attempts,stored.attempt);if(current()){setStored(null);onSaved();}});};
- const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonPaymentAttempt(attempts,stored.attempt);if(current())setReload(n=>n+1);});};
+ const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonPaymentAttempt(attempts,stored.attempt);if(current()){if(onAbandoned)onAbandoned();else setReload(n=>n+1);}});};
  return <View style={styles.container}>
   <View style={styles.header}><TouchableOpacity accessibilityRole="button" accessibilityLabel="Retour" onPress={onBack} disabled={busy||!loaded}><Text style={styles.back}>‹</Text></TouchableOpacity><View style={styles.grow}><Text style={styles.title}>Facture du jour</Text><Text style={styles.subtitle}>{clientName} · {day}</Text></View></View>
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}

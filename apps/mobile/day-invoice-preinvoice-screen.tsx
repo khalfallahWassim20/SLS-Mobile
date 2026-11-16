@@ -8,9 +8,9 @@ import type {captureNewDayPreinvoice} from './day-invoice-preinvoice-create';
 import type {StoredPreinvoiceAttempt} from './day-invoice-preinvoice-attempt';
 import {startPreinvoiceAttempt,resumePreinvoiceAttempt,finishPreinvoiceAttempt,abandonPreinvoiceAttempt,type PreinvoiceAttemptIO} from './day-invoice-preinvoice-attempt-flow';
 type Preview=Awaited<ReturnType<typeof captureNewDayPreinvoice>>;
-type Props={bindingKey:string;clientId:string;clientName:string;day:string;capture:(clientId:string,day:string,amount:number)=>Promise<Preview>;attempts:PreinvoiceAttemptIO;onBack:()=>void;onSaved:()=>void};
+type Props={bindingKey:string;clientId:string;clientName:string;day:string;capture:(clientId:string,day:string,amount:number)=>Promise<Preview>;attempts:PreinvoiceAttemptIO;onBack:()=>void;onSaved:()=>void;onAbandoned?:()=>void};
 const money=(value:number)=>`${(value/1000).toFixed(3)} DT`;
-export function DayInvoicePreinvoiceScreen({bindingKey,clientId,clientName,day,capture,attempts,onBack,onSaved}:Props){
+export function DayInvoicePreinvoiceScreen({bindingKey,clientId,clientName,day,capture,attempts,onBack,onSaved,onAbandoned}:Props){
  const [amount,setAmount]=useState(''),[preview,setPreview]=useState<Preview|null>(null),[stored,setStored]=useState<StoredPreinvoiceAttempt|null>(null),[loaded,setLoaded]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState(''),[reload,setReload]=useState(0);
  const generation=useRef(0),working=useRef(false),mounted=useRef(true);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;generation.current++;};},[]);
@@ -21,7 +21,7 @@ export function DayInvoicePreinvoiceScreen({bindingKey,clientId,clientName,day,c
  const save=()=>{if(locked||!preview||working.current)return;const now=new Date();if(tunisDay(now)!==day){setPreview(null);setError('La journée a changé : vérifiez à nouveau.');return;}const input={clientId,day,amount:preview.amount,fingerprint:preview.fingerprint,invoiceId:randomUUID(),operationId:randomUUID(),createdAt:now.toISOString()};void run(async current=>{const value=await startPreinvoiceAttempt(attempts,input);if(current()){setPreview(null);setStored(value);}});};
  const resume=()=>{if(!stored||other||stored.result)return;void run(async current=>{const value=await resumePreinvoiceAttempt(attempts,stored.attempt);if(current())setStored(value);});};
  const finish=()=>{if(!stored||other||!stored.result)return;void run(async current=>{await finishPreinvoiceAttempt(attempts,stored.attempt);if(current()){setStored(null);onSaved();}});};
- const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonPreinvoiceAttempt(attempts,stored.attempt);if(current())setReload(n=>n+1);});};
+ const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonPreinvoiceAttempt(attempts,stored.attempt);if(current()){if(onAbandoned)onAbandoned();else setReload(n=>n+1);}});};
  return <View style={styles.container}><View style={styles.header}><TouchableOpacity accessibilityRole="button" accessibilityLabel="Retour" disabled={busy||!loaded} onPress={onBack}><Text style={styles.back}>‹</Text></TouchableOpacity><View><Text style={styles.title}>Facture préétablie</Text><Text style={styles.subtitle}>{clientName} · {day}</Text></View></View>
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
   {!loaded&&<><Text style={styles.muted}>Vérification de la tentative enregistrée…</Text><TouchableOpacity accessibilityRole="button" disabled={busy} onPress={()=>setReload(n=>n+1)}><Text style={styles.link}>Vérifier à nouveau</Text></TouchableOpacity></>}

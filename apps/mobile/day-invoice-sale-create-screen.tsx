@@ -9,9 +9,9 @@ import {startSaleAttempt,resumeSaleAttempt,finishSaleAttempt,abandonSaleAttempt,
 import type {SavedSale} from './storage';
 type Line=SavedSale['lines'][number];
 /** bindingKey must change when the bound commercial or server changes. */
-type Props={bindingKey:string;clientId:string;clientName:string;day:string;articles:readonly SaleEditArticle[];capture:(clientId:string,day:string,lines:Line[])=>Promise<NewSalePreview>;attempts:SaleAttemptIO;onBack:()=>void;onSaved:()=>void};
+type Props={bindingKey:string;clientId:string;clientName:string;day:string;articles:readonly SaleEditArticle[];capture:(clientId:string,day:string,lines:Line[])=>Promise<NewSalePreview>;attempts:SaleAttemptIO;onBack:()=>void;onSaved:()=>void;onAbandoned?:()=>void};
 const money=(value:number)=>`${(value/1000).toFixed(3)} DT`;
-export function DayInvoiceSaleCreateScreen({bindingKey,clientId,clientName,day,articles,capture,attempts,onBack,onSaved}:Props){
+export function DayInvoiceSaleCreateScreen({bindingKey,clientId,clientName,day,articles,capture,attempts,onBack,onSaved,onAbandoned}:Props){
  const [draft,setDraft]=useState<SaleEditDraftLine[]>([]),[query,setQuery]=useState(''),[preview,setPreview]=useState<NewSalePreview|null>(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
  const [loaded,setLoaded]=useState(false),[stored,setStored]=useState<StoredSaleAttempt|null>(null),[reload,setReload]=useState(0);
  const epoch=useRef(0),working=useRef(false),mounted=useRef(true);
@@ -39,7 +39,7 @@ export function DayInvoiceSaleCreateScreen({bindingKey,clientId,clientName,day,a
  };
  const resume=()=>{if(!stored||other||stored.result)return;void run(async current=>{const result=await resumeSaleAttempt(attempts,stored.attempt);if(current())setStored(result);});};
  const finish=()=>{if(!stored||other||!stored.result)return;void run(async current=>{await finishSaleAttempt(attempts,stored.attempt);if(current()){setStored(null);onSaved();}});};
- const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonSaleAttempt(attempts,stored.attempt);if(current()){setStored(null);setPreview(null);setDraft([]);}});};
+ const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonSaleAttempt(attempts,stored.attempt);if(current()){if(onAbandoned)onAbandoned();else{setStored(null);setPreview(null);setDraft([]);}}});};
  return <View style={styles.container}>
   <View style={styles.header}><TouchableOpacity accessibilityRole="button" accessibilityLabel="Retour" disabled={busy||!loaded} onPress={onBack}><Text style={styles.back}>‹</Text></TouchableOpacity><View style={{flex:1}}><Text style={styles.title}>Nouvelle vente</Text><Text style={styles.subtitle}>{clientName} · {day}</Text></View></View>
   {!!error&&<Text accessibilityRole="alert" style={styles.error}>{error}</Text>}

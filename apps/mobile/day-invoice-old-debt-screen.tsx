@@ -8,10 +8,10 @@ import type {StoredOldDebtAttempt} from './day-invoice-old-debt-attempt';
 import {startOldDebtAttempt,resumeOldDebtAttempt,finishOldDebtAttempt,abandonOldDebtAttempt,type OldDebtAttemptIO} from './day-invoice-old-debt-attempt-flow';
 type Form=Awaited<ReturnType<typeof captureOldDebtForm>>;
 /** bindingKey change avec la liaison commerciale ou le serveur. */
-type Props={bindingKey:string;clientId:string;day:string;read:()=>Promise<Form>;attempts:OldDebtAttemptIO;onBack:()=>void;onSaved:()=>void};
+type Props={bindingKey:string;clientId:string;day:string;read:()=>Promise<Form>;attempts:OldDebtAttemptIO;onBack:()=>void;onSaved:()=>void;onAbandoned?:()=>void};
 const empty:OldDebtDraft={amount:'',mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''};
 const money=(value:number)=>`${(value/1000).toFixed(3)} DT`;
-export function DayInvoiceOldDebtScreen({bindingKey,clientId,day,read,attempts,onBack,onSaved}:Props){
+export function DayInvoiceOldDebtScreen({bindingKey,clientId,day,read,attempts,onBack,onSaved,onAbandoned}:Props){
  const [form,setForm]=useState<Form|null>(null),[draft,setDraft]=useState<OldDebtDraft>(empty),[error,setError]=useState(''),[busy,setBusy]=useState(false),[reload,setReload]=useState(0),[loaded,setLoaded]=useState(false),[stored,setStored]=useState<StoredOldDebtAttempt|null>(null);
  const generation=useRef(0),working=useRef(false),mounted=useRef(true);
  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;generation.current++;};},[]);
@@ -25,7 +25,7 @@ export function DayInvoiceOldDebtScreen({bindingKey,clientId,day,read,attempts,o
  };
  const resume=()=>{if(!stored||other||stored.result)return;void run(async current=>{const result=await resumeOldDebtAttempt(attempts,stored.attempt);if(current())setStored(result);});};
  const finish=()=>{if(!stored||other||!stored.result)return;void run(async current=>{await finishOldDebtAttempt(attempts,stored.attempt);if(current()){setStored(null);onSaved();}});};
- const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonOldDebtAttempt(attempts,stored.attempt);if(current())setReload(n=>n+1);});};
+ const cancel=()=>{if(!stored||other||stored.result)return;void run(async current=>{await abandonOldDebtAttempt(attempts,stored.attempt);if(current()){if(onAbandoned)onAbandoned();else setReload(n=>n+1);}});};
  const field=(name:keyof OldDebtDraft,value:string)=>setDraft(current=>({...current,[name]:value}));
  return <View style={styles.container}>
   <View style={styles.header}><TouchableOpacity accessibilityRole="button" accessibilityLabel="Retour" disabled={busy||!loaded} onPress={onBack}><Text style={styles.back}>‹</Text></TouchableOpacity><View><Text style={styles.title}>Règlement ancienne dette</Text><Text style={styles.subtitle}>{form?.clientName??stored?.attempt.event.event.settlement.clientName??''} · {day}</Text></View></View>
