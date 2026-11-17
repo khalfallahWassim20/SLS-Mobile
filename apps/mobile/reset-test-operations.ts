@@ -14,6 +14,9 @@ export async function resetLocalTestOperations(tx:Tx):Promise<void> {
  const compensation=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='day_invoice_compensation_local'");
  if(!compensation||![0,1].includes(compensation.n))throw Error('Migration compensation incohérente.');
  if(compensation.n===1)await tx.runAsync('DELETE FROM day_invoice_compensation_local');
+ const compensationSnapshots=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='day_invoice_compensation_snapshots'");
+ if(!compensationSnapshots||![0,1].includes(compensationSnapshots.n))throw Error('Migration photographie de compensation incohérente.');
+ if(compensationSnapshots.n===1)await tx.runAsync('DELETE FROM day_invoice_compensation_snapshots');
  const editAttempt=await tx.getFirstAsync<{n:number}>("SELECT count(*) AS n FROM sqlite_master WHERE type='table' AND name='day_invoice_sale_edit_attempt'");
  if(!editAttempt||![0,1].includes(editAttempt.n))throw Error('Migration tentative de modification incohérente.');
  if(editAttempt.n===1)await tx.runAsync('DELETE FROM day_invoice_sale_edit_attempt');

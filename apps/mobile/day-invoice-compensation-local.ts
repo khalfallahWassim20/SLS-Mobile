@@ -3,7 +3,7 @@
  * rester bloqués tant qu'ils ne savent pas projeter la compensation. Toutes
  * les fonctions exigent une transaction SQLite exclusive de l'appelant. */
 import {canonicalJson,calculateInvoice} from '@sls/domain';
-import {provePreCompensationSnapshot} from './day-invoice-compensation-snapshot';
+import {provePreCompensationSnapshot,freezeCompensationReference,readFrozenCompensationReference,dayInvoiceCompensationSnapshotSchema} from './day-invoice-compensation-snapshot';
 import {assessDayInvoiceSaleRevision} from '../../packages/domain/src/day-invoice';
 import {captureDayInvoiceSaleEdit} from './day-invoice-sale-edit';
 import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
@@ -23,7 +23,7 @@ const uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const dayInvoiceCompensationLocalSchema=`CREATE TABLE IF NOT EXISTS day_invoice_compensation_local (
  operation_id TEXT PRIMARY KEY, sale_id INTEGER NOT NULL, commercial_id TEXT NOT NULL, server_origin TEXT NOT NULL,
  input TEXT NOT NULL, payload TEXT NOT NULL, receipt TEXT
-);`;
+); ${dayInvoiceCompensationSnapshotSchema}`;
 async function bound(tx:Tx,identity:DeviceIdentity){const actual=await getDeviceIdentity(tx);if(!actual||actual.commercialId!==identity.commercialId||actual.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur incohérent.');}
 /** Relit et vérifie chaque copie avant toute reprise ou acquittement. */
 export async function readLocalCompensation(tx:Tx,identity:DeviceIdentity):Promise<{input:Input;payload:string;receipt:unknown|null}|null>{
@@ -77,6 +77,13 @@ export async function confirmLocalCompensation(tx:Tx,identity:DeviceIdentity,inp
  const updated={...previous,lines:current.lines,total,remaining:Math.max(0,total-previous.paid),syncVersion:previous.syncVersion!+1},{id:_id,...sale}=updated;
  const event={operationId:input.operationId,saleId:previous.syncSaleId,version:updated.syncVersion,recordedAt:input.recordedAt,sale,refund:0};
  const compensation={choice:input.choice,amount:current.assessment.excess,previousTotal:current.assessment.previousTotal,paid:current.assessment.paid},payload=JSON.stringify({event,compensation});
+ // Conserver la référence antérieure dans la même transaction que la vente
+ // et le choix : une interruption ne peut laisser une révision sans preuve.
+ await freezeCompensationReference(tx,identity,input.operationId,input.fingerprint);
+ const frozen=await readFrozenCompensationReference(tx,identity,input.operationId,input.fingerprint);
+ if(!frozen)throw Error('Photographie de compensation indisponible.');
+ const frozenProof=await provePreCompensationSnapshot(tx,identity,captured,previous.clientId,current.day,frozen);
+ if(frozenProof.total!==current.assessment.previousTotal||frozenProof.paid!==current.assessment.paid)throw Error('Photographie de compensation incohérente.');
  await tx.runAsync('UPDATE sales SET payload=? WHERE id=?',JSON.stringify(sale),input.saleId);
  await tx.runAsync('INSERT INTO sale_revisions(sale_id,created_at,previous_payload,new_payload,refund) VALUES(?,?,?,?,0)',input.saleId,input.recordedAt,JSON.stringify(previous),JSON.stringify(updated));
  await recordSaleEventTime(tx,input.operationId,input.recordedAt);await recordDeviceOperation(tx,identity,input.operationId,'sale',previous.syncSaleId!,input.recordedAt);

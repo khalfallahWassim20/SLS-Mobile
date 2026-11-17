@@ -14,6 +14,18 @@ Lorsqu'une compensation expérimentale existe, l'administration peut afficher au
 
 Avant toute migration réelle, conserver une sauvegarde vérifiée de la base et les données locales des téléphones. Une restauration, une base copiée ou un téléphone non synchronisé peut nécessiter un rapprochement. Cette préparation ne vaut pas autorisation d'activer le paiement unique, les compensations ou la clôture v6 en production ; les projections normales, les conflits et les tests sur téléphone restent à terminer.
 
+## Photographie du choix de trop-perçu (préparatoire, non validée)
+
+Pour les nouvelles compensations du banc isolé, le téléphone conserve désormais
+une copie de la référence antérieure dans la même transaction que la modification
+et le choix remboursement/crédit. La lecture de reprise vérifie cette copie et
+la compare à la photographie de la facture. Les anciennes compensations sans
+copie continuent d'utiliser le cache précédent, qui demeure protégé contre
+l'écrasement. La copie n'atteste ni la fraîcheur du serveur ni un remboursement
+physique. Elle ne lève aucune garde : choix réel, plusieurs compensations,
+actualisation du cache, soldes et reprise complète restent à intégrer. Aucun test
+n'a été effectué sur cette modification.
+
 ## Raccordement du paiement unique (non validé)
 
 Un accès « Passer à la facture du jour » est maintenant raccordé au journal
