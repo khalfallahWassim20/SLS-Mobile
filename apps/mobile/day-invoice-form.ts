@@ -15,6 +15,26 @@ import {guardDayInvoiceWrite} from './day-invoice-guards';
 import {validateDayInvoiceWrite,validateDayPayment,type DayInvoicePayment} from '../../packages/domain/src/day-invoice';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
+/** Les sources distantes n'exposent pas encore leurs dates de révision : le
+ * serveur effectue aussi ce contrôle avant écriture. */
+async function assertLocalPaymentChronology(tx:Tx,clientId:string,recordedAt:string,source:{sales:{id:string}[];preInvoice:{id:string}|null}){
+ const at=Date.parse(recordedAt);if(!Number.isFinite(at))throw Error('Date de paiement invalide.');
+ const check=(value:unknown,message:string)=>{if(typeof value!=='string'||!Number.isFinite(Date.parse(value)))throw Error('Date locale incohérente : rapprochement nécessaire.');if(Date.parse(value)>at)throw Error(message);};
+ const ids=new Set(source.sales.map(s=>s.id));
+ for(const row of await tx.getAllAsync<{id:number;payload:string}>('SELECT id,payload FROM sales WHERE client_id=?',clientId)){
+  let sale:any;try{sale=JSON.parse(row.payload);}catch{throw Error('Vente locale illisible.');}
+  if(!ids.has(sale?.syncSaleId))continue;
+  check(sale.createdAt,'Paiement antérieur à une vente.');
+  const revisions=await tx.getAllAsync<{createdAt:string}>('SELECT created_at AS createdAt FROM sale_revisions WHERE sale_id=?',row.id);
+  for(const revision of revisions)check(revision.createdAt,'Paiement antérieur à une modification de vente.');
+ }
+ if(source.preInvoice){
+  const row=await tx.getFirstAsync<{payload:string}>('SELECT payload FROM tour_pre_invoices WHERE id=? AND client_id=?',source.preInvoice.id,clientId);
+  if(row){let invoice:any;try{invoice=JSON.parse(row.payload);}catch{throw Error('Préétablie locale illisible.');}check(invoice.createdAt,'Paiement antérieur à la préétablie.');
+   for(const receipt of await tx.getAllAsync<{payload:string}>('SELECT payload FROM tour_journal_receipts WHERE pre_invoice_id=?',source.preInvoice.id)){let r:any;try{r=JSON.parse(receipt.payload);}catch{throw Error('Règlement local illisible.');}check(r.createdAt,'Paiement antérieur à un règlement de journal.');}
+  }
+ }
+}
 export async function captureDayInvoiceForm(tx:Tx,identity:DayInvoiceIdentity,clientId:string,day:string,digest?:(value:string)=>Promise<string>){
  await assertNoLocalDayCompensation(tx);
  const reference=await readDayInvoiceReferenceCache(tx,identity);
@@ -44,6 +64,8 @@ export async function confirmDayInvoiceForm(tx:Tx,identity:DayInvoiceIdentity,in
  }
  const current=await captureDayInvoiceForm(tx,identity,input.clientId,input.day,digest);
  if(typeof input.fingerprint!=='string'||input.fingerprint!==current.fingerprint)throw Error('La facture du jour a changé : vérifiez à nouveau le montant avant de confirmer.');
+ if(current.view.payments.some(p=>Date.parse(p.recordedAt)>Date.parse(input.recordedAt)))throw Error('Paiement antérieur à un règlement déjà enregistré.');
+ await assertLocalPaymentChronology(tx,input.clientId,input.recordedAt,current.source);
  const pre=current.source.preInvoice;
  const payment:DayInvoicePayment={operationId:input.operationId,clientId:input.clientId,day:input.day,recordedAt:input.recordedAt,amount:input.amount,mode:input.mode,chequeNumber:input.chequeNumber,chequeBank:input.chequeBank,chequeDue:input.chequeDue,preInvoice:pre?{id:pre.id,version:pre.version,total:pre.total,declare:!pre.declared}:null,sales:current.source.sales.map(s=>({id:s.id,version:s.version}))};
  validateDayInvoiceWrite(payment,{...current.source,dayPayments:current.view.payments.map(p=>({id:p.operationId,amount:p.amount,declaration:p.mode==='Crédit'}))});

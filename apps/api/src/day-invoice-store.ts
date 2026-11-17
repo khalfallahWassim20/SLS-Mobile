@@ -12,6 +12,7 @@ import {lockIdentifiedOperation,assertOperationUnambiguous} from './identified-o
 import {lockSyncMode,assertIdentifiedMode} from './tour-sync-mode.js';
 import {lockDayInvoiceClient} from './day-invoice-legacy-guard.js';
 import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
+import {assertDayPaymentChronology} from './day-invoice-payment-chronology.js';
 
 /** Schéma appliqué uniquement aux tests isolés jusqu'à intégration complète. */
 export const dayInvoiceServerSchema=`CREATE TABLE IF NOT EXISTS identified_day_invoice_payments (
@@ -78,7 +79,7 @@ export async function storeDayInvoicePayment(pool:Pool,input:unknown,session:Ses
   if(event.preInvoice)await assertInvoiceNotCredited(db,'preinvoice',event.preInvoice.id);
   for(const sale of event.sales)await assertInvoiceNotCredited(db,'sale',sale.id);
   const source=await readSource(db,event);
-  try {validateDayInvoiceWrite(event,source);}catch(error){throw new JournalConflict(error instanceof Error?error.message:'Facture du jour incohérente.');}
+  try {validateDayInvoiceWrite(event,source);await assertDayPaymentChronology(db,event);}catch(error){throw new JournalConflict(error instanceof Error?error.message:'Facture du jour incohérente.');}
   await db.query('INSERT INTO identified_day_invoice_payments(operation_id,client_id,commercial_id,invoice_day,event_day,payload,payload_hash) VALUES($1,$2,$3,$4::date,$5::date,$6::jsonb,$7)',[event.operationId,event.clientId,actor.id,event.day,tunisDay(event.recordedAt),JSON.stringify(event),hash]);
   await db.query('COMMIT');return 'received';
  } catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}

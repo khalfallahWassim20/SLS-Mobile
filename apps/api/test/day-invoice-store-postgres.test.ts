@@ -78,7 +78,7 @@ test('PostgreSQL isolé : écriture atomique, conflit, reprise et clôture des r
   const otherDb=await pool.connect();try{const cash=await readServerDayInvoiceCash(otherDb,otherId,'2026-01-02');assert.equal(compareDayInvoiceCash([later,declaration],cash,'2026-01-02').matches,true);}finally{otherDb.release();}
 
   let signal!:()=>void,release!:()=>void;const entered=new Promise<void>(r=>{signal=r;}),barrier=new Promise<void>(r=>{release=r;});
-  const third={...make(1000),preInvoice:{...first.preInvoice!,declare:false}};
+  const third={...make(1000),recordedAt:'2026-01-01T23:31:00.000Z',preInvoice:{...first.preInvoice!,declare:false}};
   const paying=storeDayInvoicePayment(pool,third,session,async(db,event)=>{const result=await source(db,event);signal();await barrier;return result;});
   await entered;
   const newSaleId=randomUUID(),newSale={...sale,syncSaleId:newSaleId};
