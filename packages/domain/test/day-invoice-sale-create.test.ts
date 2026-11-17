@@ -255,7 +255,7 @@ test('préétablie v6 après vente hors ligne : 600 + 250, règlement unique et 
  }finally{db.close();}
 });
 
-test('préétablie v6 : conflits, fermeture, date tunisienne et paiement antérieur bloquent',async()=>{
+test('préétablie v6 : conflits, fermeture et chronologie après paiement',async()=>{
  const {db,tx}=setup();try{
   const blank={...reference,journalStates:[],journalProofs:[]};await saveDayInvoiceReference(tx,identity,identity,blank);
   await assert.rejects(captureNewDayPreinvoice(tx,{...identity,serverOrigin:'https://other.test'},clientId,day,600000,digest),/Identité/);
@@ -268,7 +268,10 @@ test('préétablie v6 : conflits, fermeture, date tunisienne et paiement antéri
   db.prepare("INSERT INTO identified_local_operations VALUES(?,?,'sale',?,?)").run(operationId,identity.commercialId,saleId,at);await assert.rejects(confirmNewDayPreinvoice(tx,identity,input,digest),/différentes|illisible/);db.prepare('DELETE FROM identified_local_operations').run();
   const draft=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);await confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:draft.fingerprint,saleId,operationId,createdAt:at},digest);
   const invoice=await captureDayInvoiceForm(tx,identity,clientId,day,digest);await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:invoice.fingerprint,operationId:paymentId,recordedAt:at,amount:100000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);
-  await assert.rejects(captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest),/déjà réglée/);assert.equal(db.prepare('SELECT count(*) n FROM tour_pre_invoices').get()?.n,0);
+  const after=await captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest);assert.equal(after.invoiceTotal,850000);
+  const next={clientId,day,amount:600000,fingerprint:after.fingerprint,invoiceId,operationId:'55555555-5555-4555-8555-555555555555',createdAt:'2026-01-01T08:59:00.000Z'};
+  await assert.rejects(confirmNewDayPreinvoice(tx,identity,next,digest),/antérieure à un paiement/);assert.equal(db.prepare('SELECT count(*) n FROM tour_pre_invoices').get()?.n,0);
+  assert.equal((await confirmNewDayPreinvoice(tx,identity,{...next,createdAt:'2026-01-01T09:01:00.000Z'},digest)).status,'created');
  }finally{db.close();}
 });
 

@@ -123,7 +123,7 @@ test('PostgreSQL isolé : écriture atomique, conflit, reprise et clôture des r
   const edited={operationId:randomUUID(),saleId:s4,version:2,recordedAt:'2026-01-01T10:00:00.000Z',sale:{...sale4,syncVersion:2},refund:0};
   assert.equal(await storeIdentifiedSale(pool,edited,{...session,enforceMode:true,dayInvoiceAware:true}),'received');
   await assert.rejects(storeDayInvoicePayment(pool,{...p4,operationId:randomUUID()},session,source),/Ventes modifiées/);
-  const nextInvoice={...invoice,id:randomUUID(),clientId:c4,clientName:'Quatrième client',journalDate:day,createdAt:at};
+  const nextInvoice={...invoice,id:randomUUID(),clientId:c4,clientName:'Quatrième client',journalDate:day,createdAt:'2026-01-01T10:01:00.000Z'};
   const journalEvent={operationId:randomUUID(),version:1,invoice:nextInvoice,receipts:[]};
   await assert.rejects(storeJournalSnapshot(pool,journalEvent,'identified',{...session,enforceMode:true}),/Règlement unifié/);
   assert.equal(await storeJournalSnapshot(pool,journalEvent,'identified',{...session,enforceMode:true,dayInvoiceAware:true}),'received');
@@ -132,7 +132,7 @@ test('PostgreSQL isolé : écriture atomique, conflit, reprise et clôture des r
   const {buildMergedDayInvoiceView}=await import('../../mobile/day-invoice-merged-view.js');
   const merged4=buildMergedDayInvoiceView(validateDayInvoiceReference(ref4),{clientId:c4,day,preInvoice:null,sales:[],receiptProof:[],oldDebtPaid:0,dayPayments:[]},[]);
   assert.equal(merged4.total,1100000);assert.equal(merged4.paid,100000);assert.equal(merged4.remaining,1000000);assert.equal(merged4.declared,false);
-  const pay4={...p4,operationId:randomUUID(),amount:100000,preInvoice:{id:nextInvoice.id,version:1,total:600000,declare:true},sales:[{id:s4,version:2},{id:s5,version:1}].sort((a,b)=>a.id.localeCompare(b.id))};
+  const pay4={...p4,operationId:randomUUID(),recordedAt:'2026-01-01T10:02:00.000Z',amount:100000,preInvoice:{id:nextInvoice.id,version:1,total:600000,declare:true},sales:[{id:s4,version:2},{id:s5,version:1}].sort((a,b)=>a.id.localeCompare(b.id))};
   assert.equal(await storeDayInvoicePayment(pool,pay4,session,source),'received');assert.equal((await readDayInvoiceReference(pool)).clients.find(c=>c.id===c4)?.serverBalance,'900000');
 
   const actor={id:commercialId,role:'commercial' as const};await assert.rejects(changeTourClosure(pool,commercialId,day,'close',actor,0),/absents du calcul de clôture/);

@@ -26,7 +26,8 @@ export async function captureNewDayPreinvoice(tx:Tx,identity:DeviceIdentity,clie
  const clients=await readDayInvoiceClients(tx,identity,digest),client=clients.clients.find(c=>c.id===clientId);if(!client||client.conflict||client.balance===null)throw Error('Client ou solde indisponible.');
  const invoice=await captureDayInvoiceForm(tx,identity,clientId,day,digest);
  if(invoice.source.preInvoice)throw Error('Une préétablie existe déjà pour ce client et cette journée.');
- if(invoice.view.payments.length)throw Error('Facture déjà réglée : ajout de préétablie indisponible.');
+ // Les paiements antérieurs conservent leur propre photographie ; la
+ // préétablie ajoutée ensuite ne sera déclarée que par un règlement ultérieur.
  const total=BigInt(invoice.view.total)+BigInt(amount);if(total>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Facture trop élevée.');
  const fingerprint=canonicalJson({clientId,day,amount,clientName:client.name,sector:client.sector,balance:client.balance,invoice:invoice.fingerprint});
  // La préétablie non déclarée n'affecte pas encore le solde global.
@@ -49,6 +50,8 @@ export async function confirmNewDayPreinvoice(tx:Tx,identity:DeviceIdentity,inpu
  }
  assertDayInvoiceSyncIdle();await assertDayInvoiceAttemptsSettled(tx,identity,undefined,input);
  const current=await captureNewDayPreinvoice(tx,identity,input.clientId,input.day,input.amount,digest);if(current.fingerprint!==input.fingerprint)throw Error('Facture ou solde modifié : vérifiez à nouveau.');
+ const existingInvoice=await captureDayInvoiceForm(tx,identity,input.clientId,input.day,digest);
+ if(existingInvoice.view.payments.some(p=>Date.parse(p.recordedAt)>Date.parse(input.createdAt)))throw Error('Préétablie antérieure à un paiement déjà enregistré.');
  const collision=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM identified_local_operations WHERE lower(operation_id)=lower(?) OR lower(entity_id)=lower(?)) OR EXISTS(SELECT 1 FROM sales_outbox WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM journal_sync_outbox WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM day_invoice_payments WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM day_invoice_old_debt_local WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM offline_credit_prototype WHERE lower(operation_id)=lower(?)) OR EXISTS(SELECT 1 FROM tour_pre_invoices WHERE lower(id)=lower(?)) AS n`,input.operationId,input.invoiceId,input.operationId,input.operationId,input.operationId,input.operationId,input.operationId,input.invoiceId);
  const ref=await readDayInvoiceReferenceCache(tx,identity);if(!collision||collision.n||!ref||ref.journalStates?.some(j=>j.id.toLowerCase()===input.invoiceId.toLowerCase())||ref.dayPayments.some(p=>p.operationId.toLowerCase()===input.operationId.toLowerCase())||ref.settlementStates?.some(s=>s.operationId.toLowerCase()===input.operationId.toLowerCase()))throw Error('Identifiant de préétablie déjà utilisé.');
  const invoice:TourPreInvoice={id:input.invoiceId,journalDate:input.day,clientId:input.clientId,clientName:current.clientName,sector:current.sector,amount:input.amount,createdAt:input.createdAt};

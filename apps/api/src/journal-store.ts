@@ -8,6 +8,7 @@ import {assertLegacyClientDaySafe,lockDayInvoiceClient,assertDayInvoiceAwareJour
 import {lockIdentifiedOperation,assertOperationUnambiguous,IdentifiedOverlap} from './identified-overlap.js';
 import {assertCreditOperationAvailable,assertInvoiceNotCredited,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import { parseJournalSnapshot, journalSnapshotHash, validateJournalTransition,type JournalSnapshot } from './journal-protocol.js';
+import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 
 export class JournalConflict extends Error {}
 /** Uniquement après lecture verrouillée d’une journée effectivement clôturée. */
@@ -50,8 +51,14 @@ export async function storeJournalSnapshot(pool: Pool, input: unknown, namespace
       await db.query('COMMIT'); return 'duplicate';
     }
     if(namespace==='identified'){
-      if(session?.dayInvoiceAware)await assertDayInvoiceAwareJournalSafe(db,event.invoice.clientId,event.invoice.journalDate,event.version,event.receipts.length);
-      else await assertLegacyClientDaySafe(db,event.invoice.clientId,event.invoice.journalDate);
+      if(session?.dayInvoiceAware){
+        await assertDayInvoiceAwareJournalSafe(db,event.invoice.clientId,event.invoice.journalDate,event.version,event.receipts.length);
+        if(event.version===1){
+          const payments=await db.query(`SELECT operation_id,client_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash FROM identified_day_invoice_payments WHERE client_id=$1 AND invoice_day=$2::date`,[event.invoice.clientId,event.invoice.journalDate]);
+          try{if(payments.rows.some(row=>Date.parse(parseStoredDayInvoicePayment(row).recordedAt)>Date.parse(event.invoice.createdAt)))throw Error();}
+          catch{throw new JournalConflict('Préétablie antérieure à un paiement ou preuve incohérente : rapprochement nécessaire.');}
+        }
+      }else await assertLegacyClientDaySafe(db,event.invoice.clientId,event.invoice.journalDate);
     }
     if(legacyMode) assertLegacyMode(legacyMode);
     if(namespace==='identified' && session?.enforceMode && !session.creditAware)await assertOldCreditProtocolSafe(db);

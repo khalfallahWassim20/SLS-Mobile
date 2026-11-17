@@ -78,7 +78,7 @@ test('création vente v6 : SQLite, HTTP, réponse perdue, paiement unique et cl�
  }finally{phone?.close();if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await pool?.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}
 });
 
-test('préétablie et vente créées hors ligne : synchronisation, paiement unique et clôture',async()=>{
+test('vente, paiement, préétablie et nouveau paiement hors ligne : reprise et clôture',async()=>{
  const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL de test manquante');const schema='sls_create_sync_'+randomUUID().replaceAll('-',''),root=new pg.Pool({connectionString:url});let pool:pg.Pool|undefined,server:Server|undefined,phone:DatabaseSync|undefined;
  try{
   await root.query(`CREATE SCHEMA "${schema}"`);pool=new pg.Pool({connectionString:url,options:`-c search_path=${schema}`,max:6});await pool.query(schemaSql);await pool.query(dayInvoiceServerSchema);
@@ -104,27 +104,37 @@ test('préétablie et vente créées hors ligne : synchronisation, paiement uniq
   await transaction(t=>prepareDaySaleAttempt(t,identity,{clientId,day,lines:sale.lines,fingerprint:draft.fingerprint,saleId,operationId:saleOperation,createdAt:at},digest));
   assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'saved');
   assert.equal((await transaction(t=>confirmDaySaleAttempt(t,identity,saleOperation,digest))).status,'duplicate');await transaction(t=>acknowledgeDaySaleAttempt(t,identity,saleOperation));
+  const initialForm=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest)),firstPayment=randomUUID();
+  const firstInput={clientId,day,fingerprint:initialForm.fingerprint,operationId:firstPayment,recordedAt:'2026-01-01T09:01:00.000Z',amount:100000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};
+  await transaction(t=>prepareDayPaymentAttempt(t,identity,firstInput,digest));await transaction(t=>confirmDayPaymentAttempt(t,identity,firstPayment,digest));await transaction(t=>acknowledgeDayPaymentAttempt(t,identity,firstPayment));
   const pre=await transaction(t=>captureNewDayPreinvoice(t,identity,clientId,day,600000,digest));assert.equal(pre.invoiceTotal,850000);
-  const preInput={clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId:invoiceOperation,createdAt:at};
+  const preInput={clientId,day,amount:600000,fingerprint:pre.fingerprint,invoiceId,operationId:invoiceOperation,createdAt:'2026-01-01T09:02:00.000Z'};
+  await assert.rejects(transaction(t=>confirmNewDayPreinvoice(t,identity,{...preInput,createdAt:at},digest)),/antérieure à un paiement/);
   await transaction(t=>preparePreinvoiceAttempt(t,identity,preInput,digest));
   assert.equal((await transaction(t=>confirmPreinvoiceAttempt(t,identity,invoiceOperation,digest))).status,'created');
   assert.equal((await transaction(t=>confirmPreinvoiceAttempt(t,identity,invoiceOperation,digest))).status,'duplicate');await transaction(t=>acknowledgePreinvoiceAttempt(t,identity,invoiceOperation));
+  assert.equal((await transaction(t=>readDayInvoiceClients(t,identity,digest))).clients.find(c=>c.id===clientId)?.balance,150000);
+  const journalPayload=JSON.parse(db.prepare('SELECT payload FROM journal_sync_outbox WHERE operation_id=?').get(invoiceOperation)?.payload as string);
   const offline=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(offline.view.total,850000);
   const secondPayment=randomUUID(),secondInput={clientId,day,fingerprint:offline.fingerprint,operationId:secondPayment,recordedAt:'2026-01-01T10:01:00.000Z',amount:200000,mode:'Espèces' as const,chequeNumber:'',chequeBank:'',chequeDue:''};await transaction(t=>prepareDayPaymentAttempt(t,identity,secondInput,digest));await transaction(t=>confirmDayPaymentAttempt(t,identity,secondPayment,digest));
-  assert.equal((await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest))).view.remaining,650000);
-  assert.equal((await transaction(t=>readDayInvoiceClients(t,identity,digest))).clients.find(c=>c.id===clientId)?.balance,650000);
-  let lost=true,lostPayment=true,requests=0,paymentRequests=0;const post=(path:string,payload:string)=>fetch(`${base}/test/${path}`,{method:'POST',headers,body:payload});const lineage=(await pool.query('SELECT lineage_id FROM server_lineage_identity WHERE id=1')).rows[0].lineage_id;
+  assert.equal((await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest))).view.remaining,550000);
+  assert.equal((await transaction(t=>readDayInvoiceClients(t,identity,digest))).clients.find(c=>c.id===clientId)?.balance,550000);
+  let lost=true,lostPayment=true,requests=0,paymentRequests=0;const trace:string[]=[];const post=(path:string,payload:string)=>fetch(`${base}/test/${path}`,{method:'POST',headers,body:payload});const lineage=(await pool.query('SELECT lineage_id FROM server_lineage_identity WHERE id=1')).rows[0].lineage_id;
   const io={transaction,digest,check:()=>{},verifyServer:async()=>{const r=await fetch(`${base}/test/server-lineage`,{headers});const v=await r.json() as {commercialId:string;lineageId:string};if(!r.ok||v.commercialId!==commercialId||v.lineageId!==lineage)throw Error('Lignée incohérente');},fetchReference,
-   sendSource:async(path:string,payload:string)=>{requests++;const r=await post(path==='settlements'?path:`day-invoice-sources/${path}`,payload);if(lost){lost=false;throw Error('Réponse perdue');}return r;},sendPayment:async(payload:string)=>{paymentRequests++;const response=await post('day-invoice-payments',payload);if(lostPayment){lostPayment=false;throw Error('Réponse de paiement perdue');}return response;},sendOldDebt:async(payload:string)=>post('day-invoice-old-debt',payload)};
+   sendSource:async(path:string,payload:string)=>{requests++;trace.push(JSON.parse(payload).operationId);const r=await post(path==='settlements'?path:`day-invoice-sources/${path}`,payload);if(lost){lost=false;throw Error('Réponse perdue');}return r;},sendPayment:async(payload:string)=>{paymentRequests++;trace.push(JSON.parse(payload).operationId);const response=await post('day-invoice-payments',payload);if(lostPayment){lostPayment=false;throw Error('Réponse de paiement perdue');}return response;},sendOldDebt:async(payload:string)=>post('day-invoice-old-debt',payload)};
   await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,1);
-  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse de paiement perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,1);
-  assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:0,payments:1,remainingSources:0,remainingPayments:0});assert.equal(requests,3);assert.equal(paymentRequests,2);
+  await assert.rejects(synchronizeDayInvoicePrototype(identity,identity,io),/Réponse de paiement perdue/);assert.equal(db.prepare('SELECT count(*) n FROM sales_outbox').get()?.n,0);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_payment_outbox').get()?.n,2);
+  assert.deepEqual(await synchronizeDayInvoicePrototype(identity,identity,io),{sources:1,payments:2,remainingSources:0,remainingPayments:0});assert.equal(requests,3);assert.equal(paymentRequests,3);
+  assert.deepEqual(trace,[saleOperation,saleOperation,firstPayment,firstPayment,invoiceOperation,secondPayment]);
+  const badId=randomUUID(),badOperation=randomUUID(),backdated={...journalPayload,operationId:badOperation,invoice:{...journalPayload.invoice,id:badId,createdAt:at}};
+  const rejected=await post('day-invoice-sources/journal',JSON.stringify(backdated));assert.equal(rejected.status,409);assert.match(await rejected.text(),/Préétablie antérieure à un paiement/);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM identified_journal_events WHERE operation_id=$1',[badOperation])).rows[0].n,0);
   assert.equal((await transaction(t=>confirmDayPaymentAttempt(t,identity,secondPayment,digest))).status,'duplicate');await transaction(t=>acknowledgeDayPaymentAttempt(t,identity,secondPayment));
   assert.equal((await transaction(t=>confirmDayInvoiceForm(t,identity,secondInput,digest))).status,'duplicate');
   assert.equal((await transaction(t=>confirmNewDayPreinvoice(t,identity,preInput,digest))).status,'duplicate');
-  const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,850000);assert.equal(form.view.remaining,650000);
-  const clients=await transaction(t=>readDayInvoiceClients(t,identity,digest));assert.equal(clients.clients.find(c=>c.id===clientId)?.balance,650000);
-  assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE client_id=$1',[clientId])).rows[0].n,1);
+  const form=await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest));assert.equal(form.view.total,850000);assert.equal(form.view.remaining,550000);
+  const clients=await transaction(t=>readDayInvoiceClients(t,identity,digest));assert.equal(clients.clients.find(c=>c.id===clientId)?.balance,550000);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);assert.equal((await pool.query('SELECT count(*)::int n FROM identified_day_invoice_payments WHERE client_id=$1',[clientId])).rows[0].n,2);
   // Même montant et même version ne suffisent pas si le détail local change.
   const originalSale=db.prepare('SELECT payload FROM sales').get()?.payload as string,alteredSale=JSON.parse(originalSale);alteredSale.lines[0].name='Produit altéré';
   db.prepare('UPDATE sales SET payload=?').run(JSON.stringify(alteredSale));
