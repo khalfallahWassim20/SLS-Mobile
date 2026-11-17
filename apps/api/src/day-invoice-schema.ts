@@ -11,4 +11,9 @@ export const dayInvoiceServerSchema=`CREATE TABLE IF NOT EXISTS identified_day_i
  operation_id UUID PRIMARY KEY REFERENCES identified_sale_events(operation_id),
  client_id UUID NOT NULL REFERENCES clients(id), commercial_id UUID NOT NULL REFERENCES commercials(id),
  invoice_day DATE NOT NULL, event_day DATE NOT NULL, payload JSONB NOT NULL, payload_hash TEXT NOT NULL
+ );
+ ALTER TABLE identified_day_invoice_compensations ADD COLUMN IF NOT EXISTS receipt_required BOOLEAN NOT NULL DEFAULT FALSE;
+ CREATE TABLE IF NOT EXISTS identified_day_invoice_compensation_receipts (
+ operation_id UUID PRIMARY KEY REFERENCES identified_day_invoice_compensations(operation_id) ON DELETE CASCADE,
+ commercial_id UUID NOT NULL REFERENCES commercials(id), projection JSONB NOT NULL, projection_hash TEXT NOT NULL
  );`;

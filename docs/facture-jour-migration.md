@@ -117,3 +117,15 @@ locale avec la lecture authentifiée serveur : il revérifie la lignée, refuse
 les dépenses en attente et détecte un changement local pendant la lecture.
 Il ne modifie aucune donnée, n'est pas encore exposé dans l'interface et ne
 constitue ni une clôture ni une garantie sur les autres appareils.
+
+## Reçu historique de compensation
+
+Pour les nouveaux choix expérimentaux, le serveur fige désormais la projection
+au moment de l'écriture, dans la même transaction que la révision et le choix.
+La reprise relit ce reçu, vérifie les identités, les montants et les empreintes,
+et refuse un reçu requis absent ou incohérent. Son solde est celui de la
+transaction initiale, pas nécessairement le solde actuel ; il ne prouve pas la
+remise physique du remboursement. Les anciennes compensations sans reçu figé
+continuent d'utiliser leur lecture antérieure, sans migration destructive.
+Cette évolution ne retire aucun garde, n'autorise pas plusieurs compensations
+pour un même client et ne raccorde pas le choix au parcours normal. Non testé.

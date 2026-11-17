@@ -12,6 +12,7 @@ import {readIndependentCompensationProjectionsInTransaction,readCompensatedDayIn
 import {saleEventSchema} from './identified-operations.js';
 import {readCompensatedJournalDayInTransaction} from './identified-journal-day.js';
 import {compensationSchema} from './day-invoice-compensation.js';
+import {readFrozenCompensationReceipt} from './day-invoice-frozen-receipt.js';
 
 /** Lecture test-only du client concerné, sans exposer la référence complète.
  * Session, propriétaire, sources et solde partagent le même instantané. */
@@ -72,6 +73,11 @@ export async function readCompensationReceipt(pool:Pool,operationId:string,sessi
   const owner=await db.query('SELECT commercial_id FROM identified_day_invoice_compensations WHERE operation_id=$1',[operationId]);
   if(owner.rows.length!==1||owner.rows[0].commercial_id!==actor.id)throw new JournalConflict('Reçu indisponible pour ce commercial.');
   await assertOldCreditProtocolSafe(db);
+  // Les nouveaux reçus représentent l'instant de l'écriture et ne doivent
+  // pas être recalculés à partir d'un solde qui a pu évoluer depuis.
+  const frozen=await readFrozenCompensationReceipt(db,operationId,actor.id);
+  if(frozen){await db.query('COMMIT');return frozen;}
+  // Compatibilité conservatrice avec les compensations antérieures à la migration.
   const projections=await readIndependentCompensationProjectionsInTransaction(db),projection=projections.find(p=>p.operationId===operationId);
   if(!projection)throw new JournalConflict('Reçu incohérent.');
   const rows=await db.query(`SELECT s.payload AS event,c.payload AS compensation FROM identified_day_invoice_compensations c JOIN identified_sale_events s ON s.operation_id=c.operation_id WHERE c.operation_id=$1`,[operationId]);

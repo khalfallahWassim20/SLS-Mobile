@@ -13,6 +13,7 @@ import {readServerDayInvoiceSource,readSourceForNewIndependentCompensation} from
 import {readIndependentCompensationProjectionsInTransaction,readCompensatedDayInvoiceSnapshotInTransaction} from './day-invoice-reference.js';
 import {readCompensatedJournalDayInTransaction} from './identified-journal-day.js';
 import {compensationSchema,compensationHash,compensationRegistryExists} from './day-invoice-compensation.js';
+import {freezeCompensationReceipt,readFrozenCompensationReceipt} from './day-invoice-frozen-receipt.js';
 import {assessDayInvoiceSaleRevision,type DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
 import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 import {assertDayPaymentChronology} from './day-invoice-payment-chronology.js';
@@ -67,7 +68,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(same.rows[0].payload_hash!==hash || same.rows[0].commercial_id!==actor.id) throw new JournalConflict('Identifiant d’opération déjà utilisé.');
    const existing=hasCompensationRegistry?await db.query('SELECT client_id,commercial_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash FROM identified_day_invoice_compensations WHERE operation_id=$1',[event.operationId]):{rows:[]};
    if((existing.rows.length===1)!==!!compensation)throw new JournalConflict('Reprise de compensation incohérente.');
-   if(compensation){const row=existing.rows[0];let valid=false;try{valid=digest(JSON.stringify(saleEventSchema.parse(same.rows[0].payload)))===hash&&row.client_id===sale.clientId&&row.commercial_id===actor.id&&row.invoice_day===day&&row.event_day===operationDay&&compensationHash(compensationSchema.parse(row.payload))===row.payload_hash&&row.payload_hash===compensationHash(compensation);}catch{}if(!valid)throw new JournalConflict('Preuve de compensation incohérente.');}
+   if(compensation){const row=existing.rows[0];let valid=false;try{valid=digest(JSON.stringify(saleEventSchema.parse(same.rows[0].payload)))===hash&&row.client_id===sale.clientId&&row.commercial_id===actor.id&&row.invoice_day===day&&row.event_day===operationDay&&compensationHash(compensationSchema.parse(row.payload))===row.payload_hash&&row.payload_hash===compensationHash(compensation);}catch{}if(!valid)throw new JournalConflict('Preuve de compensation incohérente.');await readFrozenCompensationReceipt(db,event.operationId,actor.id);}
    await db.query('COMMIT');return 'duplicate';
   }
   if(session.enforceMode&&!session.creditAware)await assertOldCreditProtocolSafe(db);
@@ -134,7 +135,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   await clientExists(db,sale.clientId);
   await db.query('INSERT INTO identified_sale_events(operation_id,sale_id,version,client_id,commercial_id,journal_date,event_date,payload,payload_hash) VALUES($1,$2,$3,$4,$5,$6::date,$7::date,$8::jsonb,$9)',[event.operationId,event.saleId,event.version,sale.clientId,actor.id,day,operationDay,payload,hash]);
   if(compensation){
-   await db.query('INSERT INTO identified_day_invoice_compensations(operation_id,client_id,commercial_id,invoice_day,event_day,payload,payload_hash) VALUES($1,$2,$3,$4::date,$5::date,$6::jsonb,$7)',[event.operationId,sale.clientId,actor.id,day,operationDay,JSON.stringify(compensation),compensationHash(compensation)]);
+   await db.query('INSERT INTO identified_day_invoice_compensations(operation_id,client_id,commercial_id,invoice_day,event_day,payload,payload_hash,receipt_required) VALUES($1,$2,$3,$4::date,$5::date,$6::jsonb,$7,true)',[event.operationId,sale.clientId,actor.id,day,operationDay,JSON.stringify(compensation),compensationHash(compensation)]);
    // Ne jamais valider une écriture que les lecteurs de reprise ne peuvent
    // pas prouver. En particulier une ancienne version issue du registre démo
    // ou une preuve historique altérée doit annuler les deux insertions.
@@ -143,6 +144,9 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
     const journal=await readCompensatedJournalDayInTransaction(db,actor.id,operationDay,event.operationId);
     const row=journal.rows.filter(r=>r.clientId===sale.clientId);
     if(snapshot.compensation.commercialId!==actor.id||row.length!==1||row[0].compensationRefund!==snapshot.compensation.refund||row[0].compensationCredit!==snapshot.compensation.credit)throw Error('Journal de compensation incohérent.');
+    // Le reçu fige le solde de cet instant, pas le solde futur. La révision,
+    // le choix et le reçu sont confirmés ou annulés ensemble.
+    await freezeCompensationReceipt(db,event,compensation,actor.id,snapshot.compensation);
    }catch{throw new JournalConflict('Preuve de compensation non vérifiable : opération annulée, rapprochement nécessaire.');}
   }
   await db.query('COMMIT');return 'received';
