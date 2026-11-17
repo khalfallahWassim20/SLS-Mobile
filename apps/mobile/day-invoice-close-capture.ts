@@ -5,6 +5,7 @@
  * téléphone restent détectables lors de la comparaison serveur. */
 import {canonicalJson} from '@sls/domain';
 import {dayInvoiceCashClosureCanonical} from '../../packages/domain/src/day-invoice-cash';
+import {dayInvoiceCashWithExpensesCanonical} from '../../packages/domain/src/day-invoice-complete-cash';
 import {getDeviceIdentity,type DeviceIdentity} from './identified-device';
 import {assertDayInvoiceAttemptsSettled} from './day-invoice-attempt-guard';
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
@@ -81,4 +82,14 @@ export async function captureDayInvoiceClose(tx:Tx,identity:DeviceIdentity,day:s
  // protocole de clôture actuel, dont le garde serveur reste obligatoire.
  const expenses=await readLocalExpenseClosureProof(tx,identity,day);
  return {sales,journal,dayPayments,ownerDeclarations,cashProof,expenses};
+}
+
+/** Ne remplace pas les tentatives v6 existantes : une future version du
+ * protocole devra conserver l'ancien format pour les réponses perdues. */
+export async function captureCompleteDayInvoiceClose(tx:Tx,identity:DeviceIdentity,day:string,digest:(text:string)=>Promise<string>){
+ const capture=await captureDayInvoiceClose(tx,identity,day,digest);
+ const canonical=dayInvoiceCashWithExpensesCanonical(capture.sales,capture.journal,capture.dayPayments,identity.commercialId,day,capture.ownerDeclarations,capture.expenses.snapshot);
+ const completeCashProof=await digest(canonical);
+ if(!/^[0-9a-f]{64}$/.test(completeCashProof))throw Error('Empreinte de caisse avec dépenses invalide.');
+ return {...capture,completeCashProof};
 }

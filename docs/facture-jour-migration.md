@@ -101,3 +101,19 @@ comparaison n'est pas encore incluse dans la demande de clôture : **la garde
 serveur reste en place**. La photographie ne démontre ni l'absence d'opérations
 sur d'autres téléphones ni le paiement physique, et le lecteur serveur ne
 recalcule pas les empreintes d'origine des écritures. Aucun test n'a été exécuté.
+
+Une deuxième empreinte expérimentale combine maintenant les événements de
+caisse v6 et la photographie des dépenses, en refusant les identifiants de
+mouvement réutilisés entre les deux. Le mobile peut la calculer à partir de sa
+capture transactionnelle ; le serveur peut la recalculer sous les verrous de
+mode et de journée, tout en refusant les compensations non projetées. Ce format
+est distinct de l'ancienne preuve afin de ne pas changer la reprise des demandes
+existantes. Il n'est pas encore transmis ni comparé pendant une clôture ; le
+serveur continue de refuser les nouvelles clôtures v6. Il ne couvre pas encore
+les compensations ou les appareils hors ligne. Aucun test n'a été exécuté.
+
+Un rapprochement consultatif des dépenses peut aussi comparer la photographie
+locale avec la lecture authentifiée serveur : il revérifie la lignée, refuse
+les dépenses en attente et détecte un changement local pendant la lecture.
+Il ne modifie aucune donnée, n'est pas encore exposé dans l'interface et ne
+constitue ni une clôture ni une garantie sur les autres appareils.

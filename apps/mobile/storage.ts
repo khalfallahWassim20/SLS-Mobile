@@ -8,6 +8,7 @@ import {isolatedDayInvoiceSetupSchema,readIsolatedDayInvoiceSetup,initializeIsol
 import {dayInvoiceSaleEditAttemptSchema,readSaleEditAttempt,prepareSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt,type SaleEditAttempt} from './day-invoice-sale-edit-attempt';
 import {captureWorkspaceState} from './day-invoice-workspace-state';
 import {closeDayInvoicePrototype} from './day-invoice-close-flow';
+import {compareDayInvoiceExpenses} from './day-invoice-expense-reconcile';
 import {captureDayInvoiceTimeline} from './day-invoice-timeline';
 import {dayInvoicePreinvoiceAttemptSchema,readPreinvoiceAttempt,preparePreinvoiceAttempt,confirmPreinvoiceAttempt,acknowledgePreinvoiceAttempt,cancelPreinvoiceAttempt} from './day-invoice-preinvoice-attempt';
 import {captureNewDayPreinvoice,confirmNewDayPreinvoice,type NewDayPreinvoice} from './day-invoice-preinvoice-create';
@@ -874,6 +875,13 @@ export async function getDayInvoiceDetailPrototype(identity:DeviceIdentity,clien
 export async function getDayInvoiceJournalExportPrototype(identity:DeviceIdentity,day:string,commercial:string){
  const database=await db();let result!:Awaited<ReturnType<typeof captureDayInvoiceJournalExport>>;
  await database.withExclusiveTransactionAsync(async tx=>{result=await captureDayInvoiceJournalExport(tx,identity,day,commercial,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
+}
+
+/** Comparaison indicative, sans changer les dépenses ou l'état de clôture. */
+export async function compareDayInvoiceExpensesStoragePrototype(identity:DeviceIdentity,day:string,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,allowPrivateHttp=false){
+ const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
+ const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>):Promise<T>=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
+ return compareDayInvoiceExpenses(identity,identity,day,{...transport,transaction});
 }
 
 /** Clôture v6 expérimentale : le transport vérifie session et lignée ; les

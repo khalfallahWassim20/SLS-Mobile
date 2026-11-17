@@ -40,6 +40,7 @@ export function createDayInvoiceTransportPrototype(session:CommercialSession,ide
   readCompensatedJournal:(operationId:string)=>{verified();if(!uuid(operationId))throw Error('Identifiant de compensation invalide.');return request(`day-invoice-compensated-sale/${operationId}/journal`,'GET');},
   sendClose:(payload:string)=>{verified();return request('day-invoice-close','POST',payload);},
   abandonClose:(payload:string)=>{verified();return request('day-invoice-close/abandon','POST',payload);},
-  readDay:async(day:string)=>{verified();const date=new Date(`${day}T00:00:00.000Z`);if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==day)throw Error('Date de journée invalide.');return request(`day/${day}`,'GET');}
+  readDay:async(day:string)=>{verified();const date=new Date(`${day}T00:00:00.000Z`);if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==day)throw Error('Date de journée invalide.');return request(`day/${day}`,'GET');},
+  readExpenseSnapshot:async(day:string)=>{verified();const date=new Date(`${day}T00:00:00.000Z`);if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==day)throw Error('Date de journée invalide.');return request(`expense-snapshot/${day}`,'GET');}
  };
 }
