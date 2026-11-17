@@ -13,3 +13,24 @@ Cet aperçu n'autorise jamais une migration : il ne contrôle pas les autres té
 Lorsqu'une compensation expérimentale existe, l'administration peut afficher automatiquement une synthèse vérifiée en lecture seule par commercial et par jour. Elle distingue préétablie, ventes, paiement unique et choix remboursement/crédit. Le total après remboursements est théorique : les choix n'attestent ni remise physique ni mode de paiement. Les anciens exports et la clôture ne sont pas activés par cette lecture ; les opérations hors ligne ne sont pas visibles.
 
 Avant toute migration réelle, conserver une sauvegarde vérifiée de la base et les données locales des téléphones. Une restauration, une base copiée ou un téléphone non synchronisé peut nécessiter un rapprochement. Cette préparation ne vaut pas autorisation d'activer le paiement unique, les compensations ou la clôture v6 en production ; les projections normales, les conflits et les tests sur téléphone restent à terminer.
+
+## Raccordement du paiement unique (non validé)
+
+Un accès « Passer à la facture du jour » est maintenant raccordé au journal
+mobile individuel. Le passage écrit la référence v6 et la lignée serveur dans
+une transaction locale, sans supprimer les données précédentes. Il refuse les
+files en attente, les clients en conflit, les dépenses locales et une clôture
+sans réponse. L'espace affiche un paiement portant sur le total préétablie et
+ventes sans ventilation ; l'ancienne dette reste séparée. Au redémarrage, la
+liaison conservée ouvre le même espace ; la saisie locale reste possible hors
+ligne et la synchronisation demande une session et la même lignée.
+
+Le serveur ne monte ces routes que si `SLS_DAY_INVOICE_ENABLED=1` est configuré
+explicitement ; cette option est désactivée par défaut. **Ce raccordement n'a
+pas été testé et ne doit pas être activé sur les données réelles avant les
+vérifications convenues.** La transition suppose une première confiance dans
+l'adresse déjà liée, ne vérifie pas les opérations hors ligne d'autres
+appareils et n'intègre pas les dépenses locales existantes. Le trop-perçu et
+son choix remboursement/crédit, les lectures ordinaires d'administration, la
+clôture et les exports complets restent à raccorder. Aucun retour automatique à
+l'ancien parcours n'est prévu : conserver les données et une sauvegarde.

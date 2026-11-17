@@ -7,6 +7,9 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as SecureStore from 'expo-secure-store';
 import { createSecureSessionStore, validSession } from './secure-commercial-session';
 import {CreditMobileWorkspacePrototype} from './credit-mobile-workspace-prototype';
+import {DayInvoiceWorkspace} from './day-invoice-workspace';
+import {getDayInvoiceBinding,activateDayInvoiceForCommercial,synchronizeDayInvoiceStoragePrototype} from './storage';
+import {fetchServerLineage} from './server-lineage-proof';
 import {creditBridgeAvailable} from './credit-server-capabilities';
 import {AddressRecoveryTest} from './address-recovery-test';
 import {isCreditTransportBusy} from './credit-note-transport-prototype';
@@ -206,6 +209,9 @@ export default function App() {
   const [expenseRefreshDay,setExpenseRefreshDay]=useState(()=>tunisDay(new Date()));
   const [v5Login,setV5Login]=useState(false);
   const [v5Ready,setV5Ready]=useState(false);
+  const [dayBinding,setDayBinding]=useState<Awaited<ReturnType<typeof getDayInvoiceBinding>>>(null);
+  const [dayLogin,setDayLogin]=useState(false);
+  const [dayActivating,setDayActivating]=useState(false);
   const [v5BridgeBusy,setV5BridgeBusy]=useState(false);
   const [v5BridgeBlocked,setV5BridgeBlocked]=useState(false);
   const [v5UpgradeRequired,setV5UpgradeRequired]=useState(false);
@@ -229,7 +235,9 @@ export default function App() {
     void (async()=>{
       try {
         const {identity,ready,quarantined}=await getCreditStartupState(true);
-        if(!alive)return;setBoundCommercial(!!identity);setV5Identity(identity);if(identity)setServerUrl(identity.serverOrigin);
+        const binding=await getDayInvoiceBinding();
+        if(binding&&(ready||quarantined))throw Error('Protocoles incompatibles sur ce téléphone.');
+        if(!alive)return;setDayBinding(binding);setBoundCommercial(!!identity);setV5Identity(identity);if(identity)setServerUrl(identity.serverOrigin);
         setV5UpgradeRequired(quarantined);setV5Ready(ready);setV5StartupChecking(false);
         try {
           const session=await secureSessions.restore(identity);
@@ -298,7 +306,11 @@ export default function App() {
       if(!validSession(session,{commercialId:session.id,serverOrigin:session.serverOrigin}))throw Error('Vérifiez la date et l’heure du téléphone : session expirée ou invalide.');
       const identity={commercialId:session.id,serverOrigin:session.serverOrigin};
       let state:{status:string};
-      if(v5Mode){
+      if(dayBinding){
+        const pin=await fetchServerLineage(session,fetch,true);
+        if(pin.commercialId!==dayBinding.pin.commercialId||pin.serverOrigin!==dayBinding.pin.serverOrigin||pin.lineageId!==dayBinding.pin.lineageId)throw Error('Lignée serveur différente : aucune opération envoyée.');
+        setV5Identity(identity);setBoundCommercial(true);state={status:'unknown'};setDayLogin(false);
+      }else if(v5Mode){
         const transport=createExperimentalCreditMobileTransport(session,identity,()=>invalidateIndividual(session));
         await transport.connect();setV5Identity(identity);setV5Ready(true);setBoundCommercial(true);
         state=await transport.refreshDay(journalDate);
@@ -317,9 +329,19 @@ export default function App() {
       }
       if(!validSession(session,{commercialId:session.id,serverOrigin:session.serverOrigin}))throw Error('Session expirée : reconnectez-vous.');
       let notice='';try{await secureSessions.save(session);}catch{notice='Session active mais non sauvegardée : reconnectez-vous après fermeture de l’application.';}
-      setSessionNotice(state.status==='unknown'?'Avoirs reçus depuis un autre appareil : effectuez le rapprochement avant toute opération. '+notice:notice);setClosureLabel(state.status==='closed'?'Journée clôturée':state.status==='open'?'Journée ouverte':'État à actualiser');setIndividual(session);setCommercialResult(session.name);setV5Login(false);setScreen('journal');
+      setSessionNotice(state.status==='unknown'&&!dayBinding?'Avoirs reçus depuis un autre appareil : effectuez le rapprochement avant toute opération. '+notice:notice);setClosureLabel(state.status==='closed'?'Journée clôturée':state.status==='open'?'Journée ouverte':'État à actualiser');setIndividual(session);setCommercialResult(session.name);setV5Login(false);setScreen('journal');
     } catch(error){setCommercialError(error instanceof Error?error.message:'Connexion impossible.');}
     finally{commercialBusyRef.current=false;setCommercialBusy(false);}
+  };
+  const activateDayInvoice=async()=>{
+    const session=individual,identity=v5Identity;
+    if(!session||!identity||dayBinding||v5Mode||commercialBusyRef.current||syncRef.current||savingRef.current||loading||journalLoading||storageError||journalError)return;
+    if(!validSession(session,identity)){Alert.alert('Session indisponible','Reconnectez le commercial avant le passage.');return;}
+    commercialBusyRef.current=true;syncRef.current=true;savingRef.current=true;setDayActivating(true);
+    const current=()=>{const live=liveIndividual.current;return !!live&&live.token===session.token&&live.id===identity.commercialId&&live.serverOrigin===identity.serverOrigin&&live.expiresAt===session.expiresAt;};
+    try{const binding=await activateDayInvoiceForCommercial(identity,session,current,()=>invalidateIndividual(session));setDayBinding(binding);setDrawerOpen(false);}
+    catch(error){Alert.alert('Passage impossible',error instanceof Error?error.message:'Aucune donnée supprimée.');}
+    finally{commercialBusyRef.current=false;syncRef.current=false;savingRef.current=false;setDayActivating(false);}
   };
   // Passage expérimental depuis l'interface v4 : réservé aux données fictives.
   // Un échec laisse les caches, opérations et l'ancien écran intacts.
@@ -881,7 +903,29 @@ export default function App() {
   const showFab = false; // L'action est intégrée dans le journal.
   const bottomSpace = (showTabs ? 96 : 0) + (bar ? (bar.info ? 120 : 100) : 0) + (showFab ? 72 : 0) + 36;
   if(v5BridgeBlocked)return <SafeAreaView style={styles.safe}><View style={styles.content}><Text accessibilityRole="alert" style={styles.warning}>État de transition impossible à vérifier. N’effacez aucune donnée et contactez l’administrateur avant de continuer.</Text></View></SafeAreaView>;
-  if(v5StartupChecking)return <SafeAreaView style={styles.safe}><View style={styles.content}><Text style={styles.warning}>Vérification de l’état des avoirs sur ce téléphone…</Text></View></SafeAreaView>;
+  if(v5StartupChecking||dayActivating)return <SafeAreaView style={styles.safe}><View style={styles.content}><Text style={styles.warning}>Vérification du téléphone et de la facture du jour…</Text></View></SafeAreaView>;
+  if(dayBinding){
+    if(dayLogin)return <SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <Header title="Connexion commercial" detail="Facture du jour" />
+      <Text style={styles.muted}>Serveur lié : {dayBinding.identity.serverOrigin}</Text>
+      <TextInput accessibilityLabel="Identifiant commercial" placeholder="Identifiant commercial" autoCapitalize="none" value={commercialLogin} onChangeText={setCommercialLogin} style={styles.search}/>
+      <TextInput accessibilityLabel="Mot de passe commercial" placeholder="Mot de passe" secureTextEntry value={commercialPassword} onChangeText={setCommercialPassword} style={styles.search}/>
+      {!!commercialError&&<Text accessibilityRole="alert" style={styles.warning}>{commercialError}</Text>}
+      <Button label={commercialBusy?'Connexion…':'Se connecter'} disabled={commercialBusy} onPress={()=>{void connectIndividual();}}/>
+      <Button secondary label="Continuer hors ligne" disabled={commercialBusy} onPress={()=>setDayLogin(false)}/>
+    </ScrollView></SafeAreaView>;
+    const synchronizeDay=async()=>{
+      const session=liveIndividual.current;if(!session||!validSession(session,dayBinding.identity))throw Error('Reconnectez-vous pour synchroniser ; les opérations restent sur le téléphone.');
+      const current=()=>{const live=liveIndividual.current;return !!live&&live.token===session.token&&live.id===session.id&&live.serverOrigin===session.serverOrigin&&live.expiresAt===session.expiresAt;};
+      await synchronizeDayInvoiceStoragePrototype(dayBinding.identity,session,dayBinding.pin,current,()=>invalidateIndividual(session),true);
+    };
+    return <SafeAreaView style={styles.safe}><View style={styles.content}>
+      <Text style={styles.muted}>{dayBinding.name} · {individual?'session active':'hors ligne'}</Text>
+      {!!sessionNotice&&<Text style={styles.warning}>{sessionNotice}</Text>}
+      {!individual&&<Button secondary label="Se reconnecter pour synchroniser" onPress={()=>setDayLogin(true)}/>}
+      <Button secondary label="Journée d’aujourd’hui" onPress={()=>setJournalDate(tunisDay(new Date()))}/>
+    </View><DayInvoiceWorkspace identity={dayBinding.identity} day={journalDate} commercial={dayBinding.name} onSynchronize={synchronizeDay}/></SafeAreaView>;
+  }
   if(!v5Mode&&addressRecovery&&v5Identity)return <SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled"><AddressRecoveryTest allowPrivateHttp old={v5Identity} onBack={()=>{setAddressRecovery(false);setScreen('commercialLogin');}} onMigrated={identity=>{setV5Identity(identity);setBoundCommercial(true);setServerUrl(identity.serverOrigin);setAddressRecovery(false);setScreen('commercialLogin');setReference(null);setCommercialError('');setSessionNotice('Adresse modifiée. Reconnectez-vous pour vérifier ; aucune opération n’a été envoyée.');}} /></ScrollView></SafeAreaView>;
   if(v5BridgeBusy)return <SafeAreaView style={styles.safe}><View style={styles.content}><Text style={styles.warning}>Vérification du passage aux avoirs en cours. Ne fermez pas l’application.</Text></View></SafeAreaView>;
   if(v5Mode){
@@ -923,6 +967,7 @@ export default function App() {
   const journalNotices = ['Les données affichées sont locales. Les opérations des autres téléphones hors ligne ne sont pas visibles. Une clôture faite ailleurs peut être inconnue.'];
   const expensesHint = expenses.some(e => e.day === journalDate) ? formatMillimes(expenses.filter(e => e.day === journalDate && !e.cancelled).reduce((total, e) => total + BigInt(e.amount), 0n).toString()) : undefined;
   const drawerItems: DrawerItem[] = [
+    ...(individual && v5Identity && !v5Mode && !dayBinding ? [{key:'day-invoice',label:'Passer à la facture du jour',disabled:syncBusy||commercialBusy||dayActivating,onPress:()=>Alert.alert('Passer à la facture du jour ?', 'Ce passage conserve les données locales mais remplace les anciens écrans sur ce téléphone. Synchronisez tous les téléphones et conservez une sauvegarde avant de continuer. Le serveur doit être configuré ; les dépenses existantes bloquent le passage. La première liaison fait confiance à cette adresse serveur.', [{text:'Annuler',style:'cancel' as const},{text:'Continuer',onPress:()=>{void activateDayInvoice();}}])}] : []),
     ...(individual && (V5_BRIDGE_TEST_ONLY || v5ServerAvailable) && !V5_TEST_ONLY ? [{ key: 'bridge', label: 'Passer aux avoirs · essai fictif', disabled: syncBusy || commercialBusy, onPress: () => Alert.alert('Activer les avoirs pour cet essai ?', 'Base et téléphone fictifs isolés uniquement. Les anciennes écritures seront bloquées après la transition. Aucun retour automatique n’est prévu.', [{ text: 'Annuler', style: 'cancel' as const }, { text: 'Vérifier et activer', onPress: () => { void activateV5Bridge(); } }]) }] : []),
     ...(individual ? [{ key: 'refresh', label: 'Actualiser l’état de la journée', disabled: syncBusy, onPress: () => { void updateIndividualDay(individual).catch(e => Alert.alert('Actualisation impossible', e.message)); } }] : []),
     ...(v5Identity ? [{ key: 'expenses', label: 'Dépenses de tournée', hint: expensesHint, onPress: () => setScreen('expenses') }] : []),

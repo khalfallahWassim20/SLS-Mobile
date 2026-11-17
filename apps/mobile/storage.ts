@@ -1,4 +1,7 @@
 import {readEditableDaySale} from './day-invoice-sale-edit-read';
+import {dayInvoiceBindingSchema,readDayInvoiceBinding,activateDayInvoiceBinding} from './day-invoice-activation';
+import {fetchServerLineage} from './server-lineage-proof';
+import {acquireDayInvoiceSync,releaseDayInvoiceSync} from './day-invoice-sync-lock';
 import {previewDayInvoiceMigrationOnline} from './day-invoice-migration-preview';
 import {ISOLATED_DAY_INVOICE_TEST} from './day-invoice-isolated-mode';
 import {isolatedDayInvoiceSetupSchema,readIsolatedDayInvoiceSetup,initializeIsolatedDayInvoice} from './day-invoice-isolated-setup';
@@ -112,7 +115,7 @@ async function db() {
       payload TEXT NOT NULL, UNIQUE(journal_date, client_id)
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
-    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoiceSaleEditAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema} ${dayInvoicePreinvoiceAttemptSchema} ${dayInvoiceCompensationLocalSchema}`);
+    ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceBindingSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoiceSaleEditAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema} ${dayInvoicePreinvoiceAttemptSchema} ${dayInvoiceCompensationLocalSchema}`);
     if(ISOLATED_DAY_INVOICE_TEST)await instance.execAsync(isolatedDayInvoiceSetupSchema);
     return instance;
   }).catch(error => { database = undefined; throw error; });
@@ -865,4 +868,24 @@ export async function closeDayInvoiceStoragePrototype(identity:DeviceIdentity,da
  const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
  const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>):Promise<T>=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
  return closeDayInvoicePrototype(identity,day,{...transport,transaction,uuid:randomUUID,digest:text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)});
+}
+
+/** Passage explicite et non destructif depuis le téléphone individuel lié.
+ * Une transaction conserve la référence et sa lignée ensemble ou ni l'une ni
+ * l'autre. La confiance initiale en l'adresse reste une décision humaine. */
+export async function getDayInvoiceBinding(){
+ const database=await db();let value!:Awaited<ReturnType<typeof readDayInvoiceBinding>>;
+ await database.withExclusiveTransactionAsync(async tx=>{value=await readDayInvoiceBinding(tx);});return value;
+}
+export async function activateDayInvoiceForCommercial(identity:DeviceIdentity,session:CommercialSession,isCurrentSession:()=>boolean,onUnauthorized:()=>void){
+ acquireDayInvoiceSync();
+ try{
+  const check=()=>{if(!isCurrentSession()||session.id!==identity.commercialId||session.serverOrigin!==identity.serverOrigin||Date.parse(session.expiresAt)<=Date.now())throw Error('Session expirée ou liaison modifiée.');};
+  check();const pin=await fetchServerLineage(session,fetch,true);check();
+  const transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp:true});
+  await transport.verifyServer(identity,check);check();const reference=await transport.fetchReference();check();
+  const database=await db();let result!:Awaited<ReturnType<typeof activateDayInvoiceBinding>>;
+  await database.withExclusiveTransactionAsync(async tx=>{check();result=await activateDayInvoiceBinding(tx,identity,pin,session.name,reference,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text),check);check();});
+  return result;
+ }finally{releaseDayInvoiceSync();}
 }

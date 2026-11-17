@@ -187,7 +187,10 @@ if(addressTestOnly||addressPrivateHttp||transport.addressHttps){
  app.use('/api/address-approvals',addressApprovalAdminRoutes(pool,auth,username,addressPrivateHttp));
 }
 
-app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly}));
+// Activation explicite : ne pas mélanger les écritures v6 avec les anciennes
+// lectures tant que les téléphones et l'administration n'ont pas été préparés.
+const dayInvoiceEnabled=process.env.SLS_DAY_INVOICE_ENABLED==='1';
+app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly,dayInvoiceTestOnly:dayInvoiceEnabled}));
 app.use('/api', auth);
 app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username,{allowCreditProtocol:creditV5TestOnly}));
 app.get('/api/credit-capabilities',async(_req,res,next)=>{try{res.set('Cache-Control','no-store').json({version:1,creditBridgeTestOnly:creditV5TestOnly&&(await readSyncMode(pool))==='identified'});}catch(error){next(error);}});
