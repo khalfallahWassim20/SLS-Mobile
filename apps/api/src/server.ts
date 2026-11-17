@@ -22,6 +22,7 @@ import { saleHistoryRoutes } from './sale-history.js';
 import {identifiedCommercialRoutes,identifiedAdminRoutes} from './identified-tour-routes.js';
 import {lockSyncMode,assertLegacyMode,LegacySyncDisabled,readSyncMode} from './tour-sync-mode.js';
 import {readIdentifiedReference,ReferenceOverlap} from './identified-reference.js';
+import {readAdminDayInvoiceBalances} from './day-invoice-reference.js';
 import {activateIdentifiedTours,TourActivationConflict} from './tour-activation.js';
 import {CreditProtocolUpgradeRequired,assertOldCreditProtocolSafe} from './credit-note-active-guards.js';
 import {deleteClientPermanently,ClientHasOperations} from './client-delete.js';
@@ -245,8 +246,10 @@ async function changeWithAudit(entity: 'clients' | 'articles', action: 'créatio
   finally { db.release(); }
 }
 app.get('/api/demo-balances', async (_req,res) => {
- const reference=await readSyncMode(pool)==='identified'?await readIdentifiedReference(pool,true):await readJournalReference(pool,true);
- res.json(reference.clients.map(c=>({id:c.id,name:c.name,openingBalance:c.openingBalance,creditLimit:c.creditLimit,balance:c.serverBalance})));
+ const mode=await readSyncMode(pool);
+ if(mode==='identified'&&dayInvoiceEnabled){res.set('Cache-Control','no-store').json(await readAdminDayInvoiceBalances(pool));return;}
+ const reference=mode==='identified'?await readIdentifiedReference(pool,true):await readJournalReference(pool,true);
+ res.set('Cache-Control','no-store').json(reference.clients.map(c=>({id:c.id,name:c.name,openingBalance:c.openingBalance,creditLimit:c.creditLimit,balance:c.serverBalance})));
 });
 app.get('/api/demo-tour-journal/:date', async (req,res) => {
  const mode=await readSyncMode(pool);

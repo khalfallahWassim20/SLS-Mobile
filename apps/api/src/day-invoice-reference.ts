@@ -181,6 +181,19 @@ export async function readCompensatedDayInvoiceSnapshot(pool:Pool,operationId:st
 export async function readDayInvoiceCompensationProjection(pool:Pool,operationId:string){
  const db=await pool.connect();try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);const projections=await readIndependentCompensationProjectionsInTransaction(db),projection=projections.find(p=>p.operationId===operationId);if(!projection)throw Error('Compensation introuvable.');await db.query('COMMIT');return projection;}catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
+/** Soldes administrateur des opérations reçues, avec remboursement choisi
+ * projeté. Ne fournit ni référence mobile ni garantie sur les appareils hors
+ * ligne. Une incohérence dans une compensation bloque l'ensemble de la vue. */
+export async function readAdminDayInvoiceBalances(pool:Pool){
+ const db=await pool.connect();
+ try{
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);
+  const first=await db.query('SELECT operation_id FROM identified_day_invoice_compensations ORDER BY operation_id LIMIT 1');
+  const reference=first.rows.length?(await readCompensatedDayInvoiceSnapshotInTransaction(db,first.rows[0].operation_id)).reference:await readDayInvoiceReferenceInTransaction(db,true);
+  const result=reference.clients.map(c=>({id:c.id,name:c.name,openingBalance:c.openingBalance,creditLimit:c.creditLimit,balance:c.serverBalance}));
+  await db.query('COMMIT');return result;
+ }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+}
 export async function readDayInvoiceReference(pool:Pool,includeInactive=false) {
  const db=await pool.connect();try{await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));await assertOldCreditProtocolSafe(db);const result=await readDayInvoiceReferenceInTransaction(db,includeInactive);await db.query('COMMIT');return result;}catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }

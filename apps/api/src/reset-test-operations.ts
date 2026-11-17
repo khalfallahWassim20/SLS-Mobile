@@ -24,6 +24,12 @@ export async function resetTestOperations(pool:Pool):Promise<void> {
   if(typeof debts.rows[0]?.present!=='boolean')throw Error('État ancienne dette indisponible.');
   if(debts.rows[0].present)await db.query('DELETE FROM identified_day_invoice_old_debt');
   if(unified.rows[0].present)await db.query('DELETE FROM identified_day_invoice_payments');
+  // Nettoyage fictif uniquement : les reçus figés dépendent des compensations,
+  // elles-mêmes liées aux événements de vente qu'on efface ensuite.
+  const compensation=await db.query("SELECT to_regclass('identified_day_invoice_compensations') IS NOT NULL AS present, to_regclass('identified_day_invoice_compensation_receipts') IS NOT NULL AS receipts");
+  if(typeof compensation.rows[0]?.present!=='boolean'||typeof compensation.rows[0]?.receipts!=='boolean'||(!compensation.rows[0].present&&compensation.rows[0].receipts))throw Error('Migration de compensation incomplète : nettoyage refusé.');
+  if(compensation.rows[0].receipts)await db.query('DELETE FROM identified_day_invoice_compensation_receipts');
+  if(compensation.rows[0].present)await db.query('DELETE FROM identified_day_invoice_compensations');
   for(const table of [
    'tour_close_abandoned_requests','tour_closure_requests','tour_closure_events','tour_closures',
    'identified_journal_events','identified_journal_receipt_ids','identified_journal_invoices',

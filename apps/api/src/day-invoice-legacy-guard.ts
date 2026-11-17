@@ -2,7 +2,7 @@
  * calculer un paiement unifié. La table n'existe pas sur le serveur normal. */
 import type {PoolClient} from 'pg';
 import {JournalConflict} from './journal-store.js';
-import {assertNoUnprojectedCompensation} from './day-invoice-compensation.js';
+import {assertNoUnprojectedCompensation,compensationRegistryExists} from './day-invoice-compensation.js';
 import {parseStoredOldDebt} from './settlement-protocol.js';
 async function hasDayInvoiceTable(db:PoolClient):Promise<boolean> {
  const result=await db.query("SELECT to_regclass('identified_day_invoice_payments') IS NOT NULL AS present");
@@ -16,6 +16,15 @@ export async function lockDayInvoiceClient(db:PoolClient,clientId:string):Promis
 }
 /** L'appelant conserve impérativement les verrous client/jour et client global jusqu'au commit. */
 export async function assertLegacyClientDaySafe(db:PoolClient,clientId:string,day:string):Promise<void> {
+ // Une compensation peut provenir d'un paiement historique sans règlement
+ // unifié. Les anciennes écritures ne savent pas en tenir compte, même dans
+ // ce cas ; contrôler le client sous le verrou global avant toute écriture.
+ if(await compensationRegistryExists(db)){
+  const compensation=await db.query(`SELECT EXISTS(SELECT 1 FROM identified_day_invoice_compensations c
+   LEFT JOIN identified_sale_events s ON s.operation_id=c.operation_id
+   WHERE c.client_id=$1 OR s.client_id=$1 OR s.payload->'sale'->>'clientId'=$1::text) AS present`,[clientId]);
+  if(compensation.rows[0]?.present!==false)throw new JournalConflict('Client avec compensation : ancien traitement refusé, rapprochement nécessaire.');
+ }
  if(!await hasDayInvoiceTable(db))return;
  const result=await db.query('SELECT EXISTS(SELECT 1 FROM identified_day_invoice_payments WHERE client_id=$1) AS present',[clientId]);
  if(result.rows[0]?.present!==false)throw new JournalConflict('Règlement unifié déjà enregistré pour ce client : ancien traitement refusé.');
@@ -85,6 +94,9 @@ export async function assertDayInvoiceCloseRegistry(db:PoolClient):Promise<void>
  * À appeler dans le même instantané que la lecture, sous verrou de mode si la
  * référence peut servir ensuite à une écriture. */
 export async function assertLegacyDayInvoiceReferenceSafe(db:PoolClient):Promise<void>{
+ // Le choix peut aussi provenir d'un paiement historique : son existence ne
+ // peut pas être déduite de la seule table des paiements unifiés.
+ await assertNoUnprojectedCompensation(db);
  if(!await hasDayInvoiceTable(db))return;
  const result=await db.query('SELECT EXISTS(SELECT 1 FROM identified_day_invoice_payments) AS present');
  if(result.rows[0]?.present!==false)throw new JournalConflict('Règlements de facture du jour présents : ancienne référence de solde indisponible, mise à jour nécessaire.');

@@ -129,3 +129,16 @@ remise physique du remboursement. Les anciennes compensations sans reçu figé
 continuent d'utiliser leur lecture antérieure, sans migration destructive.
 Cette évolution ne retire aucun garde, n'autorise pas plusieurs compensations
 pour un même client et ne raccorde pas le choix au parcours normal. Non testé.
+
+## Soldes administrateur et protection historique
+
+Quand le protocole facture du jour est explicitement activé, la vue des soldes
+administrateur utilise une lecture transactionnelle des règlements v6 et des
+compensations indépendantes vérifiées. Un remboursement choisi est ajouté au
+solde ; un crédit reste dans le solde négatif, sans compter deux fois le
+paiement. Les opérations non reçues restent invisibles et un choix ne prouve
+pas un paiement physique. Une preuve incohérente bloque la lecture entière.
+Les anciennes références et écritures sur un client compensé sont aussi
+refusées même lorsque le trop-perçu provient d'un paiement historique sans
+règlement unifié. Aucun test n'a été réalisé ; les autres gardes restent actifs
+et cela ne rend pas le parcours normal complet ni prêt pour des données réelles.
