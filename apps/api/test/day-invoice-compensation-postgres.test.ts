@@ -2,6 +2,8 @@
 import express from 'express';
 import {createServer,type Server} from 'node:http';
 import {identifiedCommercialRoutes} from '../src/identified-tour-routes.js';
+import {identifiedAdminReadRoutes} from '../src/identified-admin-read.js';
+import {validateCompensatedSummary} from '../../admin/src/day-invoice-compensated-summary.jsx';
 import {saleHistoryRoutes} from '../src/sale-history.js';
 import {uploadCompensatedSale} from '../../mobile/day-invoice-compensation-upload.js';
 import {readCompensationReceipt} from '../src/day-invoice-compensation-receipt.js';
@@ -68,6 +70,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   assert.equal((await pool.query('SELECT count(*)::int AS n FROM identified_sale_events WHERE sale_id=$1',[saleId])).rows[0].n,1);
   await pool.query('ALTER TABLE identified_day_invoice_compensations DROP CONSTRAINT reject_test');
   const app=express();app.use(express.json());app.use('/normal',identifiedCommercialRoutes(pool,secret));app.use('/test',identifiedCommercialRoutes(pool,secret,{dayInvoiceTestOnly:true}));app.use('/admin-sales',saleHistoryRoutes(pool));
+  app.use('/admin-day',(req,res,next)=>{if(req.get('Authorization')!=='Bearer admin-fictif'){res.status(401).json({error:'Admin requis'});return;}next();},identifiedAdminReadRoutes(pool));
   server=createServer(app);await new Promise<void>((resolve,reject)=>server!.listen(0,'127.0.0.1',()=>resolve()).once('error',reject));const address=server.address();assert.ok(address&&typeof address!=='string');const base=`http://127.0.0.1:${address.port}`;
   const historyUrl=`${base}/admin-sales/${saleId}/history`,historyBefore=await fetch(historyUrl);assert.equal(historyBefore.status,200);
   const beforeBody=await historyBefore.json() as {versions:Record<string,unknown>[]};assert.equal(beforeBody.versions.length,1);assert.ok(!('dayInvoiceCompensation' in beforeBody.versions[0]));
@@ -123,6 +126,15 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const nextDay=await readCompensatedJournalDay(pool,actorId,'2026-01-02',edit.operationId);
   assert.equal(nextDay.totalCollected,0);assert.equal(nextDay.collectedAfterCompensationRefund,choice==='refund'?-50000:0);assert.equal(nextDay.compensationRefundTotal,choice==='refund'?50000:0);assert.equal(nextDay.compensationCreditTotal,0);
   if(choice==='refund'){const nextRow=nextDay.rows.find(r=>r.clientId===clientId);assert.ok(nextRow);assert.equal(nextRow.totalClient,0);assert.equal(nextRow.afterCompensationRefund,-50000);assert.equal(nextRow.compensationRefund,50000);}
+  const adminHeaders={Authorization:'Bearer admin-fictif'},adminPath=`${base}/admin-day/${actorId}/${eventDay}`;
+  assert.equal((await fetch(`${adminPath}/compensated-summary`)).status,401);
+  const blocked=await fetch(adminPath,{headers:adminHeaders});assert.equal(blocked.status,409);assert.equal((await blocked.json() as {code:string}).code,'DAY_INVOICE_COMPENSATION_REQUIRED');
+  const adminResponse=await fetch(`${adminPath}/compensated-summary`,{headers:adminHeaders});assert.equal(adminResponse.status,200);assert.match(adminResponse.headers.get('cache-control')??'',/no-store/);
+  const admin=await adminResponse.json() as {version:number;day:string;commercial:{id:string};totalBilled:number;totalCollected:number;refund:number;credit:number;theoreticalNet:number;rows:{clientId:string;preInvoiceTotal:number;salesTotal:number;totalClient:number;refund:number;credit:number;theoreticalNet:number}[]};
+  assert.doesNotThrow(()=>validateCompensatedSummary(admin,actorId,eventDay));
+  assert.equal(admin.version,1);assert.equal(admin.day,eventDay);assert.equal(admin.commercial.id,actorId);assert.equal(admin.refund,choice==='refund'?50000:0);assert.equal(admin.credit,choice==='credit'?50000:0);assert.equal(admin.theoreticalNet,choice==='refund'?-50000:800000);
+  const adminRow=admin.rows.find(r=>r.clientId===clientId);assert.ok(adminRow);assert.equal(adminRow.refund,admin.refund);assert.equal(adminRow.credit,admin.credit);
+  if(choice==='credit'){assert.equal(adminRow.preInvoiceTotal,600000);assert.equal(adminRow.salesTotal,150000);assert.equal(adminRow.totalClient,750000);}
   const otherCommercial=randomUUID();await pool.query('INSERT INTO commercials(id,name) VALUES($1,$2)',[otherCommercial,'Autre commercial']);
   const otherJournal=await readCompensatedJournalDay(pool,otherCommercial,eventDay,edit.operationId);assert.equal(otherJournal.compensationEvents.length,0);assert.equal(otherJournal.compensationRefundTotal,0);assert.equal(otherJournal.compensationCreditTotal,0);
 
@@ -137,6 +149,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   await assert.rejects(readCompensatedJournalDay(pool,actorId,eventDay,edit.operationId),/Preuve de compensation incohérente/);
   await assert.rejects(readCompensationReceipt(pool,edit.operationId,editSession),/Preuve de compensation incohérente/);
   assert.equal((await fetch(historyUrl)).status,500,'historique refuse une preuve altérée');
+  assert.equal((await fetch(`${adminPath}/compensated-summary`,{headers:adminHeaders})).status,500,'synthèse refuse une preuve altérée');
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',[originalHash,edit.operationId]);
   assert.equal((await fetch(historyUrl)).status,200);
   const previousHash=(await pool.query('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[creationId])).rows[0].payload_hash;

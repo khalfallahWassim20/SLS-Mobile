@@ -10,6 +10,8 @@ import {storeJournalSnapshot} from '../src/journal-store.js';
 import {readServerDayInvoiceSource} from '../src/day-invoice-source.js';
 import {readDayInvoiceCompensationProjection,readCompensatedDayInvoiceSnapshot,readDayInvoiceReference} from '../src/day-invoice-reference.js';
 import {readCompensatedJournalDay,readIdentifiedJournalDay} from '../src/identified-journal-day.js';
+import {readAdminCompensatedDay} from '../src/day-invoice-admin-summary.js';
+import {validateCompensatedSummary} from '../../admin/src/day-invoice-compensated-summary.jsx';
 import {readAuthenticatedCompensatedInvoice,readCompensationReceipt} from '../src/day-invoice-compensation-receipt.js';
 import {setCommercialCredentials} from '../src/commercials.js';
 import {loginCommercial} from '../src/commercial-session.js';
@@ -76,6 +78,8 @@ test('deux compensations concurrentes sur des clients indépendants restent vér
   assert.equal(snapshot.reference.clients.find(c=>c.id===cases[1].event.sale.clientId)?.serverBalance,'-50000');
   const journal=await readCompensatedJournalDay(pool,commercialId,'2026-01-03',cases[0].event.operationId);
   assert.equal(journal.compensationEvents.length,2);assert.equal(journal.compensationRefundTotal,50000);assert.equal(journal.compensationCreditTotal,50000);assert.equal(journal.collectedAfterCompensationRefund,-50000);
+  const admin=validateCompensatedSummary(await readAdminCompensatedDay(pool,commercialId,'2026-01-03'),commercialId,'2026-01-03');
+  assert.equal(admin.rows.length,2);assert.equal(admin.refund,50000);assert.equal(admin.credit,50000);assert.equal(admin.theoreticalNet,-50000);
   assert.equal(journal.rows.find(r=>r.clientId===cases[0].event.sale.clientId)?.compensationRefund,50000);
   assert.equal(journal.rows.find(r=>r.clientId===cases[1].event.sale.clientId)?.compensationCredit,50000);
   const clientView=await readAuthenticatedCompensatedInvoice(pool,cases[0].event.operationId,session);
@@ -87,6 +91,7 @@ test('deux compensations concurrentes sur des clients indépendants restent vér
   await pool.query('UPDATE identified_day_invoice_compensations SET payload_hash=$1 WHERE operation_id=$2',['0'.repeat(64),cases[1].event.operationId]);
   await assert.rejects(readCompensatedDayInvoiceSnapshot(pool,cases[0].event.operationId),/incohérente/);
   await assert.rejects(readCompensatedJournalDay(pool,commercialId,'2026-01-03',cases[0].event.operationId),/incohérente/);
+  await assert.rejects(readAdminCompensatedDay(pool,commercialId,'2026-01-03'),/incohérente/);
   await assert.rejects(storeDayInvoiceCompensatedSale(pool,cases[2].event,cases[2].choice,session),/précédentes incohérentes/);
   assert.equal((await pool.query('SELECT count(*)::int n FROM identified_sale_events WHERE operation_id=$1',[cases[2].event.operationId])).rows[0].n,0);
   await pool.query('UPDATE identified_day_invoice_compensations SET payload_hash=$1 WHERE operation_id=$2',[original,cases[1].event.operationId]);
