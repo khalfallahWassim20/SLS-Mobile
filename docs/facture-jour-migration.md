@@ -77,3 +77,15 @@ reste récupérable par son identifiant de demande. Cette garde ne remplace pas
 l'intégration des dépenses dans les preuves, les exports et la clôture. Aucun
 retour automatique à l'ancien parcours n'est prévu : conserver les données et
 une sauvegarde.
+
+## Synthèse administrative compensée (non validée)
+
+La lecture distincte fournit les règlements v6 et les dépenses reçues pour
+permettre un export CSV ou une impression PDF de synthèse. L'export recharge
+une photographie serveur et refuse les détails absents ou incohérents ; il
+ne remplace pas le journal complet, la preuve de clôture ou la caisse physique.
+Les dépenses affichées ne sont pas déduites des encaissements et les opérations
+hors ligne, les modes des règlements historiques non détaillés et le mode de
+remboursement ne sont pas certifiés. Cette fonctionnalité n'a pas été testée.
+Elle ne rend pas disponibles les compensations dans le parcours normal et ne
+justifie pas l'activation de v6 sur des données réelles.

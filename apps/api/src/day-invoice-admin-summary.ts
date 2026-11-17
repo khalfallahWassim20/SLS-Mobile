@@ -17,6 +17,9 @@ export async function readAdminCompensatedDay(pool:Pool,commercialId:string,day:
   const j=await readCompensatedJournalDayInTransaction(db,commercialId,day,first.rows[0].operation_id);
   const result={version:1 as const,day:j.day,commercial:{id:j.commercial.id,name:j.commercial.name},closure:{status:j.closure.status,version:j.closure.version},
    totalBilled:j.totalBilled,totalCollected:j.totalCollected,refund:j.compensationRefundTotal,credit:j.compensationCreditTotal,theoreticalNet:j.collectedAfterCompensationRefund,
+   detailsVersion:1 as const,expenseTotal:j.expenseTotal,expenses:j.expenses,
+   dayInvoicePayments:j.dayInvoicePayments.map(({operationId,clientId,recordedAt,amount,mode,chequeNumber,chequeBank,chequeDue})=>({operationId,clientId,recordedAt,amount,mode,chequeNumber,chequeBank,chequeDue})),
+   oldDebtPayments:j.dayInvoiceOldDebtPayments.map(({operationId,clientId,recordedAt,amount,mode,chequeNumber,chequeBank,chequeDue})=>({operationId,clientId,recordedAt,amount,mode,chequeNumber,chequeBank,chequeDue})),
    rows:j.rows.map(r=>({clientId:r.clientId,clientName:r.clientName,sector:r.sector,preInvoiceTotal:r.preInvoiceTotal,salesTotal:r.tourTotal,totalClient:r.totalClient,dayInvoicePaid:r.dayInvoicePaid,oldDebtPaid:r.oldDebtPaid,totalCollected:r.totalCollected,refund:r.compensationRefund,credit:r.compensationCredit,theoreticalNet:r.afterCompensationRefund}))};
   await db.query('COMMIT');return result;
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}

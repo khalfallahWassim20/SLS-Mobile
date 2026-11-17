@@ -5,7 +5,7 @@
 import {createHash} from 'node:crypto';
 import type {PoolClient} from 'pg';
 import type {DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
-import {saleEventSchema,saleSchema} from './identified-operations.js';
+import {saleEventSchema,saleSchema} from './identified-sale-protocol.js';
 import {parseJournalSnapshot,journalSnapshotHash} from './journal-protocol.js';
 import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 

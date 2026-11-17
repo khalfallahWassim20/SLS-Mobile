@@ -1,7 +1,6 @@
 /** Prototype isolé, non exposé et non inclus dans les soldes. */
 import {createHash} from 'node:crypto';
 import type {Pool,PoolClient} from 'pg';
-import {z} from 'zod';
 import {assertTourWritable,calculateInvoice} from '@sls/domain';
 import {verifyCommercialSession} from './commercial-session.js';
 import {lockTourClosure} from './tour-closure-store.js';
@@ -18,11 +17,8 @@ import {assessDayInvoiceSaleRevision,type DayInvoicePayment} from '../../../pack
 import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 import {assertDayPaymentChronology} from './day-invoice-payment-chronology.js';
 
-const uuid=z.string().uuid(), money=z.number().int().safe().nonnegative();
-export const saleSchema=z.object({createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().min(1).max(200),syncSaleId:uuid,syncVersion:z.number().int().min(1).max(1000000),
- lines:z.array(z.object({name:z.string().min(1).max(200),code:z.string().min(1).max(100),quantity:z.number().int().min(1).max(1000000),unitPrice:money,discount:z.number().int().min(0).max(10000),vat:z.number().int().min(0).max(10000)}).strict()).min(1).max(200),
- total:money,paid:money,remaining:money,paymentMode:z.enum(['Espèces','Chèque','Virement','Crédit']),chequeNumber:z.string().max(100),chequeBank:z.string().max(100),chequeDue:z.string().max(100)}).strict();
-export const saleEventSchema=z.object({operationId:uuid,saleId:uuid,version:z.number().int().min(1).max(1000000),recordedAt:z.string().datetime(),sale:saleSchema,refund:money}).strict();
+import {saleSchema,saleEventSchema} from './identified-sale-protocol.js';
+export {saleSchema,saleEventSchema} from './identified-sale-protocol.js';
 export {settlementSchema} from './settlement-protocol.js';
 import {settlementSchema} from './settlement-protocol.js';
 type Session={token:string;secret:string;enforceMode?:boolean;creditAware?:boolean;dayInvoiceAware?:boolean};
