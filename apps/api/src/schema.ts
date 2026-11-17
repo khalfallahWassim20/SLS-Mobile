@@ -1,4 +1,5 @@
 // Migration relançable du prototype ; toutes les valeurs monétaires sont en millimes.
+import {dayInvoiceServerSchema} from './day-invoice-schema.js';
 export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
     -- Identifiant stable dans cette base, conservé par sauvegarde/restauration.
     -- Il identifie une lignée, pas un serveur authentifié ni une copie unique.
@@ -224,4 +225,6 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       operation_id uuid NOT NULL REFERENCES pre_invoice_credit_prototype_events(operation_id),
       kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')), balance_delta bigint NOT NULL,
       PRIMARY KEY(operation_id,kind)
-    );`;
+    );
+    -- Préparation uniquement : ne rend pas le protocole accessible.
+    ${dayInvoiceServerSchema}`;
