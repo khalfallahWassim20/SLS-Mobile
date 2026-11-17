@@ -2,7 +2,7 @@
  * et routes PostgreSQL v6 uniquement dans un schéma éphémère. */
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {createServer,type Server} from 'node:http';
 import express from 'express';
@@ -16,6 +16,11 @@ import {creditReferencePrototypeSchema} from '../../mobile/credit-note-reference
 import {dayInvoiceReferenceCacheSchema,readDayInvoiceReferenceCache} from '../../mobile/day-invoice-reference-cache.js';
 import {isolatedDayInvoiceSetupSchema,readIsolatedDayInvoiceSetup,initializeIsolatedDayInvoice} from '../../mobile/day-invoice-isolated-setup.js';
 import {connectIsolatedDayInvoice} from '../../mobile/day-invoice-isolated-connect.js';
+import {dayInvoiceQueueSchema} from '../../mobile/day-invoice-queue.js';
+import {offlineCreditPrototypeSchema} from '../../mobile/credit-note-offline-prototype.js';
+import {createDayInvoiceTransportPrototype} from '../../mobile/day-invoice-transport.js';
+import {previewDayInvoiceMigrationOnline} from '../../mobile/day-invoice-migration-preview.js';
+import {assertLegacyMobileDayInvoiceSafe} from '../../mobile/day-invoice-legacy-guard.js';
 
 test('connexion de l’espace isolé : HTTP authentifié, référence réelle, liaison SQLite et refus de lignée modifiée',async()=>{
  const url=process.env.DATABASE_URL;if(!url)throw Error('DATABASE_URL fictive requise');
@@ -45,7 +50,24 @@ test('connexion de l’espace isolé : HTTP authentifié, référence réelle, l
   assert.equal(linked.setup.identity.commercialId,commercialId);const cached=await readDayInvoiceReferenceCache(tx,linked.setup.identity);assert.ok(cached);assert.equal(cached.clients[0].id,clientId);assert.equal(cached.articles[0].id,articleId);
   const stored=db.prepare('SELECT payload FROM day_invoice_reference_cache').get() as {payload:string};assert.doesNotMatch(stored.payload,/purchase|achat/i);
   assert.deepEqual((await connectIsolatedDayInvoice(origin,'sls.test','mot de passe fictif',io)).setup,linked.setup);
-  await pool.query('UPDATE server_lineage_identity SET lineage_id=$1 WHERE id=1',[randomUUID()]);
+  // Second téléphone fictif, avec référence v4 et aucune écriture v6.
+  const legacy=new DatabaseSync(':memory:');try{
+   legacy.exec(`${identifiedDeviceSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}
+    CREATE TABLE sales(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);CREATE TABLE settlements(id INTEGER PRIMARY KEY,client_id TEXT,payload TEXT);
+    CREATE TABLE sales_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,sale_id TEXT,payload TEXT);CREATE TABLE journal_sync_outbox(sequence INTEGER PRIMARY KEY,operation_id TEXT,invoice_id TEXT,payload TEXT);
+    CREATE TABLE tour_pre_invoices(id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE tour_journal_receipts(id TEXT,pre_invoice_id TEXT,client_id TEXT,journal_date TEXT,payload TEXT);CREATE TABLE journal_sync_state(invoice_id TEXT,version INTEGER,payload TEXT);`);
+   const old=await io.request(`${origin}/api/mobile/identified/reference`,{method:'GET',headers:{Authorization:`Bearer ${linked.session.token}`}});assert.equal(old.status,200);const oldPayload=JSON.stringify(await old.json());
+   legacy.prepare('INSERT INTO identified_device VALUES(1,?,?)').run(commercialId,origin);legacy.prepare('INSERT INTO identified_reference_cache VALUES(1,?,?,?)').run(commercialId,origin,oldPayload);
+   const legacyTx={getFirstAsync:async<T>(sql:string,...args:(string|number|null)[])=>legacy.prepare(sql).get(...args) as T||null,getAllAsync:async<T>(sql:string,...args:(string|number|null)[])=>legacy.prepare(sql).all(...args) as T[],runAsync:async(sql:string,...args:(string|number|null)[])=>{legacy.prepare(sql).run(...args);}};
+   const transport=createDayInvoiceTransportPrototype(linked.session,linked.setup.identity,linked.setup.pin,{request:io.request,isCurrentSession:()=>true,allowPrivateHttp:true});
+   const migrationIO={verifyServer:transport.verifyServer,fetchReference:transport.fetchReference,check:transport.check,digest:async(text:string)=>createHash('sha256').update(text).digest('hex'),transaction:async<T>(work:(t:typeof legacyTx)=>Promise<T>)=>{legacy.exec('BEGIN EXCLUSIVE');try{const value=await work(legacyTx);legacy.exec('COMMIT');return value;}catch(e){legacy.exec('ROLLBACK');throw e;}}};
+   const report=await previewDayInvoiceMigrationOnline(linked.setup.identity,linked.setup.identity,migrationIO);assert.equal(report.clientCount,1);assert.equal(report.migrationAuthorized,false);assert.equal(report.pendingOperations,0);
+   assert.equal(legacy.prepare('SELECT count(*) AS n FROM day_invoice_reference_cache').get()?.n,0);assert.equal((legacy.prepare('SELECT payload FROM identified_reference_cache').get() as {payload:string}).payload,oldPayload);await assertLegacyMobileDayInvoiceSafe(legacyTx);
+   await pool.query('UPDATE server_lineage_identity SET lineage_id=$1 WHERE id=1',[randomUUID()]);
+   await assert.rejects(previewDayInvoiceMigrationOnline(linked.setup.identity,linked.setup.identity,migrationIO),/Lignée serveur incohérente/);
+   assert.equal(legacy.prepare('SELECT count(*) AS n FROM day_invoice_reference_cache').get()?.n,0);
+  }finally{legacy.close();}
+
   await assert.rejects(connectIsolatedDayInvoice(origin,'sls.test','mot de passe fictif',io),/Lignée serveur différente/);
   assert.deepEqual(await readIsolatedDayInvoiceSetup(tx),linked.setup);assert.equal((db.prepare('SELECT payload FROM day_invoice_reference_cache').get() as {payload:string}).payload,stored.payload);
  }finally{phone?.close();if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));if(pool)await pool.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}

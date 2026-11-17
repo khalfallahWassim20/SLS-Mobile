@@ -1,4 +1,5 @@
 import {readEditableDaySale} from './day-invoice-sale-edit-read';
+import {previewDayInvoiceMigrationOnline} from './day-invoice-migration-preview';
 import {ISOLATED_DAY_INVOICE_TEST} from './day-invoice-isolated-mode';
 import {isolatedDayInvoiceSetupSchema,readIsolatedDayInvoiceSetup,initializeIsolatedDayInvoice} from './day-invoice-isolated-setup';
 import {dayInvoiceSaleEditAttemptSchema,readSaleEditAttempt,prepareSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt,type SaleEditAttempt} from './day-invoice-sale-edit-attempt';
@@ -661,6 +662,15 @@ export async function runAddressRecoveryPrivate(old:DeviceIdentity,session:Comme
 /** Adaptateurs transactionnels v6 préparés pour les futurs écrans. L'API
  * normale ne les active pas et le pin doit provenir d'une liaison préalable
  * vérifiée ; le jeton n'est jamais conservé dans SQLite. */
+/** Aperçu v4→v6 fictif uniquement, jamais une activation ni un épinglage initial. */
+export async function previewDayInvoiceMigrationStorageTestPrototype(identity:DeviceIdentity,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,ack:'DONNEES_FICTIVES_ISOLEES',allowPrivateHttp=false){
+ if(!ISOLATED_DAY_INVOICE_TEST||ack!=='DONNEES_FICTIVES_ISOLEES')throw Error('Aperçu réservé aux données fictives isolées.');
+ const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
+ return previewDayInvoiceMigrationOnline(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{
+  transaction:async work=>{let result!:Awaited<ReturnType<typeof work>>;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;},
+  verifyServer:transport.verifyServer,fetchReference:transport.fetchReference,check:transport.check,digest:text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text)
+ });
+}
 export async function readIsolatedDayInvoiceSetupStorage(){
  if(!ISOLATED_DAY_INVOICE_TEST)throw Error('Banc de données fictives désactivé.');
  const database=await db();let result!:Awaited<ReturnType<typeof readIsolatedDayInvoiceSetup>>;
