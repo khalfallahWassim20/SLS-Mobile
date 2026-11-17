@@ -142,3 +142,10 @@ Les anciennes références et écritures sur un client compensé sont aussi
 refusées même lorsque le trop-perçu provient d'un paiement historique sans
 règlement unifié. Aucun test n'a été réalisé ; les autres gardes restent actifs
 et cela ne rend pas le parcours normal complet ni prêt pour des données réelles.
+
+La reprise d'un règlement d'ancienne dette déjà reçu reste désormais possible
+même si une compensation a été enregistrée ensuite : le serveur vérifie le
+contenu et le propriétaire avant de renvoyer le doublon, sans nouvelle
+écriture. Les écritures nouvelles restent soumises aux gardes. Les synthèses
+compensées mobile et admin refusent aussi une somme d'encaissements clients
+différente du total. Ces modifications ne sont pas testées.

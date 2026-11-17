@@ -25,12 +25,14 @@ export async function storeDayInvoiceOldDebt(pool:Pool,input:unknown,session:{to
  const payload=JSON.stringify(event),hash=createHash('sha256').update(payload).digest('hex'),db=await pool.connect();
  try{
   await db.query('BEGIN');assertIdentifiedMode(await lockSyncMode(db));const actor=await verifyCommercialSession(db,session.secret,session.token,true);if(!actor)throw new JournalAuthenticationError('Session commerciale invalide ou expirée.');
-  await lockIdentifiedOperation(db,event.operationId);await assertCreditOperationAvailable(db,event.operationId);await assertOperationUnambiguous(db,event.operationId,'settlement');await assertDayInvoiceCloseRegistry(db);
+  await lockIdentifiedOperation(db,event.operationId);await assertCreditOperationAvailable(db,event.operationId);await assertOperationUnambiguous(db,event.operationId,'settlement');
   const closure=await lockTourClosure(db,actor.id,invoiceDay);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['identified-settlement',event.operationId]);
   const same=await db.query('SELECT s.operation_id,s.client_id,s.journal_date::text AS journal_day,s.payload,s.payload_hash,s.commercial_id,m.invoice_day::text AS invoice_day FROM identified_settlements s LEFT JOIN identified_day_invoice_old_debt m ON m.operation_id=s.operation_id WHERE s.operation_id=$1',[event.operationId]);
   if(same.rows.length){if(same.rows[0].payload_hash!==hash||same.rows[0].commercial_id!==actor.id||same.rows[0].invoice_day!==invoiceDay)throw new JournalConflict('Identifiant de règlement déjà utilisé.');try{parseStoredOldDebt(same.rows[0]);}catch{throw new JournalConflict('Règlement ancienne dette enregistré incohérent : rapprochement requis.');}await db.query('COMMIT');return 'duplicate';}
-  await assertOldCreditProtocolSafe(db);if(closure.status==='closed')throw new TourDayClosed(invoiceDay,actor.id);assertTourWritable(closure);
+  // Une réponse perdue doit pouvoir être redemandée après une compensation
+  // ou une clôture. Les gardes s'appliquent aux écritures nouvelles seulement.
+  await assertDayInvoiceCloseRegistry(db);await assertOldCreditProtocolSafe(db);if(closure.status==='closed')throw new TourDayClosed(invoiceDay,actor.id);assertTourWritable(closure);
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',['journal-client-day',`${p.clientId}:${invoiceDay}`]);await lockDayInvoiceClient(db,p.clientId);
   const client=await db.query('SELECT id FROM clients WHERE id=$1 AND deleted_at IS NULL FOR SHARE',[p.clientId]);if(!client.rows.length)throw new JournalConflict('Client introuvable.');
   const source=await readServerDayInvoiceSource(db,{clientId:p.clientId,day:invoiceDay} as DayInvoicePayment);

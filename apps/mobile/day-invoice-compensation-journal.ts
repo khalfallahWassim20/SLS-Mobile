@@ -16,12 +16,12 @@ const nonnegative=(x:unknown):x is number=>Number.isSafeInteger(x)&&Number(x)>=0
 export function validateCompensatedJournal(value:unknown,expected:{operationId:string;commercialId:string;clientId:string;day:string;refund:number;credit:number}):CompensatedJournal{
  if(!obj(value)||Object.keys(value).sort().join(',')!=='clientId,commercialId,credit,day,operationId,refund,rows,theoreticalNet,totalBilled,totalCollected,version'||value.version!==1||value.operationId!==expected.operationId||value.commercialId!==expected.commercialId||value.clientId!==expected.clientId||value.day!==expected.day||!uuid(value.operationId)||!uuid(value.commercialId)||!uuid(value.clientId)||!Array.isArray(value.rows)||value.rows.length>10000)throw Error('Journal serveur incohérent.');
  if(![value.totalBilled,value.totalCollected,value.refund,value.credit].every(nonnegative)||!Number.isSafeInteger(value.theoreticalNet)||BigInt(value.totalCollected)-BigInt(value.refund)!==BigInt(value.theoreticalNet))throw Error('Totaux du journal incohérents.');
- const ids=new Set<string>();let billed=0n,refund=0n,credit=0n;let own:CompensatedJournalRow|undefined;
+ const ids=new Set<string>();let billed=0n,collected=0n,refund=0n,credit=0n;let own:CompensatedJournalRow|undefined;
  for(const row of value.rows){
   if(!obj(row)||Object.keys(row).sort().join(',')!=='clientId,clientName,credit,dayInvoicePaid,oldDebtPaid,preInvoiceTotal,refund,salesTotal,sector,theoreticalNet,totalClient,totalCollected'||!uuid(row.clientId)||ids.has(row.clientId.toLowerCase())||typeof row.clientName!=='string'||!row.clientName.trim()||row.clientName.length>200||typeof row.sector!=='string'||row.sector.length>200||![row.preInvoiceTotal,row.salesTotal,row.totalClient,row.dayInvoicePaid,row.oldDebtPaid,row.totalCollected,row.refund,row.credit].every(nonnegative)||!Number.isSafeInteger(row.theoreticalNet)||BigInt(row.preInvoiceTotal)+BigInt(row.salesTotal)!==BigInt(row.totalClient)||BigInt(row.totalCollected)-BigInt(row.refund)!==BigInt(row.theoreticalNet))throw Error('Ligne du journal incohérente.');
-  ids.add(row.clientId.toLowerCase());billed+=BigInt(row.totalClient);refund+=BigInt(row.refund);credit+=BigInt(row.credit);if(row.clientId===expected.clientId)own=row as CompensatedJournalRow;
+  ids.add(row.clientId.toLowerCase());billed+=BigInt(row.totalClient);collected+=BigInt(row.totalCollected);refund+=BigInt(row.refund);credit+=BigInt(row.credit);if(row.clientId===expected.clientId)own=row as CompensatedJournalRow;
  }
- if(billed!==BigInt(value.totalBilled)||refund!==BigInt(value.refund)||credit!==BigInt(value.credit)||!own||own.refund!==expected.refund||own.credit!==expected.credit)throw Error('Compensation du journal incohérente.');
+ if(billed!==BigInt(value.totalBilled)||collected!==BigInt(value.totalCollected)||refund!==BigInt(value.refund)||credit!==BigInt(value.credit)||!own||own.refund!==expected.refund||own.credit!==expected.credit)throw Error('Compensation du journal incohérente.');
  return value as CompensatedJournal;
 }
 export async function readVerifiedCompensatedJournal(identity:DeviceIdentity,verified:DeviceIdentity,io:IO,operationId?:string){

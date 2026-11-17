@@ -7,12 +7,12 @@ const money=n=>{const value=BigInt(n),abs=value<0n?-value:value;return `${value<
 export function validateCompensatedSummary(data,commercialId,day){
  if(!data||data.version!==1||data.day!==day||data.commercial?.id!==commercialId||typeof data.commercial?.name!=='string'||!['open','closed'].includes(data.closure?.status)||!nonnegative(data.closure?.version)||!Array.isArray(data.rows))throw Error('Synthèse de compensation incohérente.');
  if(![data.totalBilled,data.totalCollected,data.refund,data.credit].every(nonnegative)||!integer(data.theoreticalNet)||BigInt(data.totalCollected)-BigInt(data.refund)!==BigInt(data.theoreticalNet))throw Error('Totaux de compensation incohérents.');
- const ids=new Set();let billed=0n,refund=0n,credit=0n;
+ const ids=new Set();let billed=0n,collected=0n,refund=0n,credit=0n;
  for(const r of data.rows){
   if(!r||typeof r.clientId!=='string'||!r.clientId||ids.has(r.clientId)||typeof r.clientName!=='string'||typeof r.sector!=='string'||![r.preInvoiceTotal,r.salesTotal,r.totalClient,r.dayInvoicePaid,r.oldDebtPaid,r.totalCollected,r.refund,r.credit].every(nonnegative)||!integer(r.theoreticalNet)||BigInt(r.preInvoiceTotal)+BigInt(r.salesTotal)!==BigInt(r.totalClient)||BigInt(r.totalCollected)-BigInt(r.refund)!==BigInt(r.theoreticalNet))throw Error('Ligne de compensation incohérente.');
-  ids.add(r.clientId);billed+=BigInt(r.totalClient);refund+=BigInt(r.refund);credit+=BigInt(r.credit);
+  ids.add(r.clientId);billed+=BigInt(r.totalClient);collected+=BigInt(r.totalCollected);refund+=BigInt(r.refund);credit+=BigInt(r.credit);
  }
- if(billed!==BigInt(data.totalBilled)||refund!==BigInt(data.refund)||credit!==BigInt(data.credit))throw Error('Totaux clients incohérents.');
+ if(billed!==BigInt(data.totalBilled)||collected!==BigInt(data.totalCollected)||refund!==BigInt(data.refund)||credit!==BigInt(data.credit))throw Error('Totaux clients incohérents.');
  return data;
 }
 export function DayInvoiceCompensatedSummary({summary,onExport,busy=false}){
