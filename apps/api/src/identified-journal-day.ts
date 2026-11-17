@@ -89,7 +89,39 @@ export async function readCompensatedJournalDayInTransaction(db:PoolClient,comme
  const safe=(n:bigint)=>{if(n>BigInt(Number.MAX_SAFE_INTEGER)||n<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Total encaissé trop élevé.');return Number(n);};
  const refund=safe(own.reduce((n,p)=>n+BigInt(p.refund),0n)),credit=safe(own.reduce((n,p)=>n+BigInt(p.credit),0n));
  const net=safe(BigInt(journal.totalCollected)-BigInt(refund)),byClient=new Map(own.map(p=>[p.clientId,p]));
- const rows=journal.rows.map(row=>{const p=byClient.get(row.clientId),ref=p?.refund??0;return {...row,compensationRefund:ref,compensationCredit:p?.credit??0,afterCompensationRefund:safe(BigInt(row.totalCollected)-BigInt(ref))};});
+ // Les règlements globaux et les reçus de factures héritées sont déjà dans
+ // le total de caisse, mais pas dans les lignes de la vue historique. Les
+ // attribuer ici au client sans attribuer la facture à ce commercial. Les
+ // règlements v6 d'ancienne dette sont déjà présents dans les lignes : les
+ // déduire du complément pour ne pas les compter deux fois.
+ const settlements=await db.query(`SELECT s.client_id AS "clientId",c.name,c.sector,sum((s.payload->'settlement'->>'amount')::bigint)::text AS amount
+  FROM identified_settlements s JOIN clients c ON c.id=s.client_id
+  WHERE s.commercial_id=$1 AND s.journal_date=$2::date GROUP BY s.client_id,c.name,c.sector`,[commercialId,day]);
+ const additions=new Map<string,{clientName:string;sector:string;collected:bigint;oldDebt:bigint}>(),markedDebt=new Map<string,bigint>();
+ for(const p of journal.dayInvoiceOldDebtPayments)markedDebt.set(p.clientId,(markedDebt.get(p.clientId)??0n)+BigInt(p.amount));
+ for(const s of settlements.rows){
+  const amount=BigInt(s.amount),already=markedDebt.get(s.clientId)??0n;markedDebt.delete(s.clientId);
+  if(typeof s.clientId!=='string'||typeof s.name!=='string'||typeof s.sector!=='string'||amount<already)throw Error('Règlements du journal incohérents.');
+  additions.set(s.clientId,{clientName:s.name,sector:s.sector,collected:amount-already,oldDebt:0n});
+ }
+ if(markedDebt.size)throw Error('Règlement ancienne dette sans règlement global : rapprochement nécessaire.');
+ const inheritedIds=journal.inheritedJournalPayments.filter(p=>!additions.has(p.clientId)).map(p=>p.clientId);
+ if(inheritedIds.length){
+  const clients=await db.query('SELECT id,name,sector FROM clients WHERE id=ANY($1::uuid[])',[inheritedIds]);
+  if(clients.rows.length!==inheritedIds.length)throw Error('Clients des paiements hérités indisponibles.');
+  for(const client of clients.rows){if(typeof client.id!=='string'||typeof client.name!=='string'||typeof client.sector!=='string')throw Error('Client du paiement hérité incohérent.');additions.set(client.id,{clientName:client.name,sector:client.sector,collected:0n,oldDebt:0n});}
+ }
+ for(const p of journal.inheritedJournalPayments){
+  const item=additions.get(p.clientId);if(!item)throw Error('Client du paiement hérité indisponible.');
+  item.collected+=BigInt(p.prePaid)+BigInt(p.oldDebtPaid);item.oldDebt+=BigInt(p.oldDebtPaid);
+ }
+ const rows=journal.rows.map(row=>{const p=byClient.get(row.clientId),ref=p?.refund??0,extra=additions.get(row.clientId);additions.delete(row.clientId);
+  const collected=safe(BigInt(row.totalCollected)+(extra?.collected??0n));
+  return {...row,oldDebtPaid:safe(BigInt(row.oldDebtPaid)+(extra?.oldDebt??0n)),totalCollected:collected,compensationRefund:ref,compensationCredit:p?.credit??0,afterCompensationRefund:safe(BigInt(collected)-BigInt(ref))};});
+ for(const [clientId,extra] of additions){const p=byClient.get(clientId),ref=p?.refund??0,collected=safe(extra.collected);
+  rows.push({clientId,clientName:extra.clientName,sector:extra.sector,preInvoiceId:null,preInvoiceTotal:0,preInvoicePaid:0,oldDebtPaid:safe(extra.oldDebt),preInvoiceRemaining:0,declared:false,tourTotal:0,tourPaid:0,saleCount:0,totalClient:0,totalCollected:collected,dayInvoicePaid:0,dayInvoiceOldDebtPaid:0,compensationRefund:ref,compensationCredit:p?.credit??0,afterCompensationRefund:safe(BigInt(collected)-BigInt(ref))});
+ }
+ if(rows.reduce((n,row)=>n+BigInt(row.totalCollected),0n)!==BigInt(journal.totalCollected))throw Error('Encaissements clients incomplets : rapprochement nécessaire.');
  for(const projection of own)if(!rows.some(row=>row.clientId===projection.clientId)){
   const result=await db.query('SELECT name,sector FROM clients WHERE id=$1 AND deleted_at IS NULL',[projection.clientId]);const client=result.rows[0];if(!client||typeof client.name!=='string'||typeof client.sector!=='string')throw Error('Client de compensation indisponible.');
   rows.push({clientId:projection.clientId,clientName:client.name,sector:client.sector,preInvoiceId:null,preInvoiceTotal:0,preInvoicePaid:0,oldDebtPaid:0,preInvoiceRemaining:0,declared:false,tourTotal:0,tourPaid:0,saleCount:0,totalClient:0,totalCollected:0,dayInvoicePaid:0,dayInvoiceOldDebtPaid:0,compensationRefund:projection.refund,compensationCredit:projection.credit,afterCompensationRefund:safe(-BigInt(projection.refund))});
