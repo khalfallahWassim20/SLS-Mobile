@@ -1,4 +1,6 @@
 import {readEditableDaySale} from './day-invoice-sale-edit-read';
+import {ISOLATED_DAY_INVOICE_TEST} from './day-invoice-isolated-mode';
+import {isolatedDayInvoiceSetupSchema,readIsolatedDayInvoiceSetup,initializeIsolatedDayInvoice} from './day-invoice-isolated-setup';
 import {dayInvoiceSaleEditAttemptSchema,readSaleEditAttempt,prepareSaleEditAttempt,confirmSaleEditAttempt,acknowledgeSaleEditAttempt,cancelSaleEditAttempt,type SaleEditAttempt} from './day-invoice-sale-edit-attempt';
 import {captureWorkspaceState} from './day-invoice-workspace-state';
 import {closeDayInvoicePrototype} from './day-invoice-close-flow';
@@ -90,7 +92,7 @@ export type SavedSale = {
 };
 let database: Promise<SQLite.SQLiteDatabase> | undefined;
 async function db() {
-  if (!database) database = SQLite.openDatabaseAsync('sls-demo.db').then(async instance => {
+  if (!database) database = SQLite.openDatabaseAsync(ISOLATED_DAY_INVOICE_TEST?'sls-v6-isolated-test.db':'sls-demo.db').then(async instance => {
     await instance.execAsync(`PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS sales (
       id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
       client_id TEXT NOT NULL, payload TEXT NOT NULL
@@ -109,6 +111,7 @@ async function db() {
     ); CREATE TABLE IF NOT EXISTS tour_journal_receipts (
       id TEXT PRIMARY KEY, pre_invoice_id TEXT NOT NULL, client_id TEXT NOT NULL, journal_date TEXT NOT NULL, payload TEXT NOT NULL
     ); CREATE TABLE IF NOT EXISTS reference_snapshot (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL); ${journalQueueSchema} ${saleEventTimeSchema} ${tourCloseQueueSchema} ${identifiedDeviceSchema} ${offlineCreditPrototypeSchema} ${creditReferencePrototypeSchema} ${creditSourcesPrototypeSchema} ${tourExpenseSchema} ${dayInvoiceQueueSchema} ${dayInvoiceReferenceCacheSchema} ${dayInvoiceCloseAttemptSchema} ${dayInvoiceSaleAttemptSchema} ${dayInvoiceSaleEditAttemptSchema} ${dayInvoicePaymentAttemptSchema} ${dayInvoiceOldDebtAttemptSchema} ${dayInvoicePreinvoiceAttemptSchema} ${dayInvoiceCompensationLocalSchema}`);
+    if(ISOLATED_DAY_INVOICE_TEST)await instance.execAsync(isolatedDayInvoiceSetupSchema);
     return instance;
   }).catch(error => { database = undefined; throw error; });
   return database;
@@ -658,6 +661,16 @@ export async function runAddressRecoveryPrivate(old:DeviceIdentity,session:Comme
 /** Adaptateurs transactionnels v6 préparés pour les futurs écrans. L'API
  * normale ne les active pas et le pin doit provenir d'une liaison préalable
  * vérifiée ; le jeton n'est jamais conservé dans SQLite. */
+export async function readIsolatedDayInvoiceSetupStorage(){
+ if(!ISOLATED_DAY_INVOICE_TEST)throw Error('Banc de données fictives désactivé.');
+ const database=await db();let result!:Awaited<ReturnType<typeof readIsolatedDayInvoiceSetup>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readIsolatedDayInvoiceSetup(tx);});return result;
+}
+export async function initializeIsolatedDayInvoiceStorage(identity:DeviceIdentity,pin:LineagePin,name:string,reference:unknown,check:()=>void){
+ if(!ISOLATED_DAY_INVOICE_TEST)throw Error('Banc de données fictives désactivé.');
+ const database=await db();let result!:Awaited<ReturnType<typeof initializeIsolatedDayInvoice>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await initializeIsolatedDayInvoice(tx,{identity,pin,name},reference,check);});return result;
+}
 export async function readDayInvoiceClientsPrototype(identity:DeviceIdentity){
  const database=await db();let result!:Awaited<ReturnType<typeof readDayInvoiceClients>>;
  await database.withExclusiveTransactionAsync(async tx=>{result=await readDayInvoiceClients(tx,identity,text=>digestStringAsync(CryptoDigestAlgorithm.SHA256,text));});return result;
