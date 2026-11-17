@@ -13,6 +13,8 @@ import {dayInvoiceQueueSchema} from '../../../apps/mobile/day-invoice-queue.js';
 import {assertLegacyMobileDayInvoiceSafe} from '../../../apps/mobile/day-invoice-legacy-guard.js';
 import {previewDayInvoiceMigration,previewDayInvoiceMigrationOnline} from '../../../apps/mobile/day-invoice-migration-preview.js';
 import {assertDayInvoiceSyncIdle} from '../../../apps/mobile/day-invoice-sync-lock.js';
+import {tourExpenseSchema} from '../../../apps/mobile/tour-expenses.js';
+import {tourCloseQueueSchema} from '../../../apps/mobile/tour-close-queue.js';
 const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',saleId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',invoiceId='cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const identity={commercialId:clientId,serverOrigin:'https://example.test'},day='2026-01-01',at='2026-01-01T09:00:00.000Z';
 const saleOperation='11111111-1111-4111-8111-111111111111',journalOperation='22222222-2222-4222-8222-222222222222';
@@ -54,8 +56,8 @@ test('aperçu migration : interruption ou données locales altérées ne laissen
  }finally{db.close();}});
 test('aperçu migration : cache temporaire jamais visible depuis une autre connexion WAL',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'sls-preview-')),path=join(dir,'phone.db'),{db,preview}=setup(path),reader=new DatabaseSync(path);try{
- let checks=0;await preview(reference,()=>{if(++checks===3){assert.equal(db.prepare('SELECT count(*) AS n FROM day_invoice_reference_cache').get()?.n,1);assert.equal(reader.prepare('SELECT count(*) AS n FROM day_invoice_reference_cache').get()?.n,0);}});
- assert.equal(reader.prepare('SELECT count(*) AS n FROM day_invoice_reference_cache').get()?.n,0);assert.equal(reader.prepare('SELECT count(*) AS n FROM identified_reference_cache').get()?.n,1);
+ let sawTemporary=false;await preview(reference,()=>{if(db.prepare('SELECT count(*) AS n FROM day_invoice_reference_cache').get()?.n===1){sawTemporary=true;assert.equal(reader.prepare('SELECT count(*) AS n FROM day_invoice_reference_cache').get()?.n,0);}});
+ assert.equal(sawTemporary,true);assert.equal(reader.prepare('SELECT count(*) AS n FROM day_invoice_reference_cache').get()?.n,0);assert.equal(reader.prepare('SELECT count(*) AS n FROM identified_reference_cache').get()?.n,1);
  }finally{reader.close();db.close();rmSync(dir,{recursive:true,force:true});}});
 test('aperçu migration : une erreur de rollback impose l’annulation de la transaction entière',async()=>{const {db,tx}=setup();try{
  const broken={...tx,runAsync:async(sql:string,...args:(string|number|null)[])=>{if(sql.startsWith('ROLLBACK TO'))throw Error('rollback indisponible');return tx.runAsync(sql,...args);}};
@@ -79,4 +81,19 @@ test('aperçu en ligne : ordre vérification puis lecture, verrou libéré aprè
 test('aperçu migration : ne contourne ni v5 ni les tentatives v6',async()=>{const {db,preview}=setup();try{
  db.prepare('INSERT INTO credit_reference_prototype_cache VALUES(1,?,?,?)').run(identity.commercialId,identity.serverOrigin,'{}');await assert.rejects(preview(),/Cache v5/);assert.equal(db.prepare('SELECT count(*) AS n FROM credit_reference_prototype_cache').get()?.n,1);
  db.exec('DELETE FROM credit_reference_prototype_cache;CREATE TABLE day_invoice_payment_attempt(id INTEGER);INSERT INTO day_invoice_payment_attempt VALUES(1)');await assert.rejects(preview(),/Tentative/);assert.equal(db.prepare('SELECT count(*) AS n FROM day_invoice_payment_attempt').get()?.n,1);
+ }finally{db.close();}});
+
+test('inventaire migration : dépenses et clôtures locales sans acquittement ni preuve serveur',async()=>{const {db,preview}=setup();try{
+ const unavailable=await preview();assert.deepEqual(unavailable.localInventory,{expenses:{available:false},closures:{available:false}});
+ db.exec(tourExpenseSchema+tourCloseQueueSchema);
+ const expense='33333333-3333-4333-8333-333333333333',revision='44444444-4444-4444-8444-444444444444',cancel='55555555-5555-4555-8555-555555555555',request='66666666-6666-4666-8666-666666666666';
+ db.prepare('INSERT INTO tour_expenses VALUES(?,?,?,?,?,?,?,?)').run(expense,clientId,identity.serverOrigin,day,at,'Carburant',10000,0);
+ db.prepare('INSERT INTO tour_expense_revisions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(revision,expense,clientId,identity.serverOrigin,2,'2026-01-01T10:00:00.000Z','Carburant',10000,'Carburant',12000,1);
+ db.prepare('INSERT INTO tour_expense_cancellations VALUES(?,?,?,?,?,?,?,?,?,?)').run(cancel,expense,clientId,identity.serverOrigin,2,'2026-01-01T11:00:00.000Z','Carburant',12000,'Erreur',1);
+ db.prepare('INSERT INTO tour_close_attempts VALUES(?,?,?,?,?,?)').run(clientId,day,request,2,'closing',null);
+ db.prepare('INSERT INTO tour_known_server_states VALUES(?,?,?,?)').run(clientId,day,'open',2);
+ const report=await preview();assert.deepEqual(report.localInventory,{expenses:{available:true,originals:1,revisions:1,cancellations:1,pendingOperations:2},closures:{available:true,closing:1,closed:0,knownOpen:1,knownClosed:0}});
+ assert.equal(report.migrationAuthorized,false);assert.equal(db.prepare('SELECT pending FROM tour_expense_revisions').get()?.pending,1);assert.equal(db.prepare('SELECT status FROM tour_close_attempts').get()?.status,'closing');assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_reference_cache').get()?.n,0);
+ db.prepare('UPDATE tour_expense_revisions SET previous_amount=999').run();await assert.rejects(preview(),/Historique des dépenses incohérent/);assert.equal(db.prepare('SELECT count(*) n FROM day_invoice_reference_cache').get()?.n,0);
+ db.prepare('UPDATE tour_expense_revisions SET previous_amount=10000').run();db.prepare('UPDATE tour_known_server_states SET commercial_id=?').run(saleId);await assert.rejects(preview(),/État local de clôture incohérent/);
  }finally{db.close();}});

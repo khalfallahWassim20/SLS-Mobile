@@ -9,6 +9,7 @@ import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
 import {saveDayInvoiceReference} from './day-invoice-reference-cache';
 import {readDayInvoiceClients} from './day-invoice-clients';
 import {acquireDayInvoiceSync,releaseDayInvoiceSync} from './day-invoice-sync-lock';
+import {readMigrationLocalInventory} from './day-invoice-migration-inventory';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
 /** Le cache v6 est installé temporairement dans un savepoint SQLite, afin de
@@ -19,13 +20,14 @@ export async function previewDayInvoiceMigration(tx:Tx,identity:DeviceIdentity,v
  check();await assertLegacyMobileDayInvoiceSafe(tx);await assertDayInvoiceAttemptExclusive(tx,identity);check();
  const base=await tx.getFirstAsync<{commercialId:string;serverOrigin:string}>('SELECT commercial_id AS commercialId,server_origin AS serverOrigin FROM identified_reference_cache WHERE id=1');
  if(!base||base.commercialId!==identity.commercialId||base.serverOrigin!==identity.serverOrigin)throw Error('Référence individuelle antérieure indisponible : rapprochement nécessaire.');
+ const localInventory=await readMigrationLocalInventory(tx,identity,check);
  await tx.runAsync('SAVEPOINT day_invoice_migration_preview');
  try{
   await saveDayInvoiceReference(tx,identity,verified,reference);check();
   const snapshot=await readDayInvoiceClients(tx,identity,digest);check();
   const conflicts=snapshot.clients.filter(client=>client.conflict).map(client=>client.id);
-  return {version:1 as const,clientCount:snapshot.clients.length,conflictingClientIds:conflicts,pendingOperations:snapshot.pendingOperations,
-   migrationAuthorized:false as const,limitations:['autres téléphones non vérifiés','état serveur susceptible de changer','dépenses et clôtures non vérifiées','lignée et transition non autorisées par cet aperçu']};
+  return {version:1 as const,clientCount:snapshot.clients.length,conflictingClientIds:conflicts,pendingOperations:snapshot.pendingOperations,localInventory,
+   migrationAuthorized:false as const,limitations:['autres téléphones non vérifiés','état serveur susceptible de changer','dépenses et clôtures non rapprochées avec le serveur','lignée et transition non autorisées par cet aperçu']};
  }finally{
   // Si le retour en arrière échoue, propager l'erreur : la transaction
   // extérieure doit alors être annulée et non validée.
