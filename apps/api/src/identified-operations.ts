@@ -96,8 +96,11 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(existing.length>=1000)throw new JournalConflict('Trop de compensations : rapprochement requis.');
   }
   let settledDay=false;
-  if(session.dayInvoiceAware)settledDay=await assertDayInvoiceAwareSaleSafe(db,sale.clientId,day,event.version,!!compensation);
-  else await assertLegacyClientDaySafe(db,sale.clientId,day);
+  if(session.dayInvoiceAware){
+   settledDay=await assertDayInvoiceAwareSaleSafe(db,sale.clientId,day,event.version,event.recordedAt,!!compensation);
+   // Le remboursement historique n'est pas le choix de trop-perçu v6.
+   if(event.version>1&&event.refund!==0)throw new JournalConflict('Remboursement historique incompatible avec une modification v6.');
+  } else await assertLegacyClientDaySafe(db,sale.clientId,day);
   if(session.dayInvoiceAware&&event.version===1){
    // Une vente ajoutée après un règlement doit réellement lui être
    // postérieure. Sinon le paiement a photographié une facture incomplète.
@@ -112,15 +115,17 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(!old || (last.rows.length && (typeof previous.payload.recordedAt!=='string' || recordedMs<Date.parse(previous.payload.recordedAt)))) throw new JournalConflict('Date ou historique de modification incohérent.');
    if((last.rows.length && previous.journal_date!==day) || old.clientId!==sale.clientId || old.createdAt!==sale.createdAt || sale.paid!==old.paid-event.refund || event.refund>Math.max(0,old.paid-sale.total)) throw new JournalConflict('Modification ou attribution incohérente.');
   }
-  if(settledDay){
-   // Le champ historique refund ne peut pas exprimer un paiement unifié.
-   // Un choix dédié est admis uniquement par l'appel interne préparatoire.
-   if(event.refund!==0)throw new JournalConflict('Remboursement d’une facture du jour réglée : rapprochement requis.');
+  if(session.dayInvoiceAware&&event.version>1){
+   // Vérifier toute la facture, même quand elle n'a pas de paiement unifié :
+   // un paiement initial historique peut lui aussi entraîner un trop-perçu.
+   // La compensation reste réservée au protocole préparatoire existant.
+   if(compensation&&!settledDay)throw new JournalConflict('Aucun règlement unifié ne justifie cette compensation.');
    const source=await (compensation?readSourceForNewIndependentCompensation:readServerDayInvoiceSource)(db,{clientId:sale.clientId,day} as DayInvoicePayment);
-   if(compensation){
-    const paymentTimes=await db.query('SELECT payload FROM identified_day_invoice_payments WHERE client_id=$1 AND invoice_day=$2::date',[sale.clientId,day]);
-    if(paymentTimes.rows.some(r=>typeof r.payload?.recordedAt!=='string'||!Number.isFinite(Date.parse(r.payload.recordedAt))||Date.parse(r.payload.recordedAt)>recordedMs))throw new JournalConflict('Modification antérieure à un paiement : rapprochement requis.');
-   }
+   const paymentTimes=await db.query(`SELECT operation_id,client_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash
+    FROM identified_day_invoice_payments WHERE client_id=$1 OR payload->>'clientId'=$1::text LIMIT 20001`,[sale.clientId]);
+   if(paymentTimes.rows.length>20000)throw new JournalConflict('Historique des paiements incomplet : rapprochement requis.');
+   try{for(const row of paymentTimes.rows){const p=parseStoredDayInvoicePayment(row);if(p.clientId!==sale.clientId||p.day===day&&Date.parse(p.recordedAt)>recordedMs)throw Error();}}
+   catch{throw new JournalConflict('Modification antérieure à un paiement ou preuve incohérente : rapprochement requis.');}
    const before=source.sales.find(s=>s.id===event.saleId);
    if(!before||before.version!==event.version-1||before.total!==previous?.payload?.sale?.total||before.paid!==previous?.payload?.sale?.paid)throw new JournalConflict('Vente ou facture du jour modifiée : actualisation nécessaire.');
    try{

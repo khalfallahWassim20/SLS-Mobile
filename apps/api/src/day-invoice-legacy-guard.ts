@@ -3,6 +3,7 @@
 import type {PoolClient} from 'pg';
 import {JournalConflict} from './journal-store.js';
 import {assertNoUnprojectedCompensation} from './day-invoice-compensation.js';
+import {parseStoredOldDebt} from './settlement-protocol.js';
 async function hasDayInvoiceTable(db:PoolClient):Promise<boolean> {
  const result=await db.query("SELECT to_regclass('identified_day_invoice_payments') IS NOT NULL AS present");
  if(typeof result.rows[0]?.present!=='boolean')throw Error('État du registre facture du jour indisponible.');
@@ -25,11 +26,21 @@ export async function assertLegacyClientDaySafe(db:PoolClient,clientId:string,da
 /** Protocoles v6 uniquement : identifie une vente déjà réglée. L'appelant
  * doit recalculer la facture entière sous les verrous et refuser tout
  * trop-perçu ou remboursement sans protocole explicite. */
-export async function assertDayInvoiceAwareSaleSafe(db:PoolClient,clientId:string,day:string,version:number,independentCompensation=false):Promise<boolean>{
+export async function assertDayInvoiceAwareSaleSafe(db:PoolClient,clientId:string,day:string,version:number,recordedAt:string,independentCompensation=false):Promise<boolean>{
  if(independentCompensation)await assertDayInvoiceRegistriesPresent(db);
  else await assertDayInvoiceCloseRegistry(db);
- const debt=await db.query('SELECT EXISTS(SELECT 1 FROM identified_day_invoice_old_debt m JOIN identified_settlements s ON s.operation_id=m.operation_id WHERE s.client_id=$1 AND ($2::int>1 OR m.invoice_day>$3::date)) AS present',[clientId,version,day]);
- if(debt.rows[0]?.present!==false)throw new JournalConflict('Modification antérieure à un règlement de dette : rapprochement requis.');
+ const at=Date.parse(recordedAt);if(!Number.isFinite(at))throw new JournalConflict('Date de vente incohérente.');
+ // Une dette ancienne réglée le même jour n'empêche pas une modification
+ // ultérieure ; contrôler toutes les preuves et refuser une écriture qui
+ // remonterait avant ce règlement, ou avant une journée ultérieure.
+ const debt=await db.query(`SELECT s.operation_id,s.client_id,s.journal_date::text AS journal_day,m.invoice_day::text AS invoice_day,s.payload,s.payload_hash
+  FROM identified_day_invoice_old_debt m JOIN identified_settlements s ON s.operation_id=m.operation_id
+  WHERE s.client_id=$1 OR s.payload->'settlement'->>'clientId'=$1::text LIMIT 20001`,[clientId]);
+ if(debt.rows.length>20000)throw new JournalConflict('Historique ancienne dette incomplet : rapprochement requis.');
+ for(const row of debt.rows){
+  let event:ReturnType<typeof parseStoredOldDebt>;try{event=parseStoredOldDebt(row);if(event.settlement.clientId!==clientId)throw Error();}catch{throw new JournalConflict('Preuve ancienne dette incohérente : rapprochement requis.');}
+  if(row.invoice_day>day||(row.invoice_day===day&&Date.parse(event.settlement.createdAt)>at))throw new JournalConflict('Vente antérieure à un règlement de dette déjà reçu : rapprochement requis.');
+ }
  if(version===1)return false;
  const result=await db.query('SELECT EXISTS(SELECT 1 FROM identified_day_invoice_payments WHERE client_id=$1 AND invoice_day=$2::date) AS present',[clientId,day]);
  if(typeof result.rows[0]?.present!=='boolean')throw new JournalConflict('État des règlements indisponible.');

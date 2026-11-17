@@ -5,7 +5,7 @@
 import {canonicalJson,calculateInvoice} from '@sls/domain';
 import {provePreCompensationSnapshot,freezeCompensationReference,readFrozenCompensationReference,dayInvoiceCompensationSnapshotSchema} from './day-invoice-compensation-snapshot';
 import {assessDayInvoiceSaleRevision} from '../../packages/domain/src/day-invoice';
-import {captureDayInvoiceSaleEdit} from './day-invoice-sale-edit';
+import {captureDayInvoiceSaleEdit,assertSaleEditChronology} from './day-invoice-sale-edit';
 import {assertDayInvoiceAttemptExclusive} from './day-invoice-attempt-guard';
 import {assertDayInvoiceSyncIdle} from './day-invoice-sync-lock';
 import {getDeviceIdentity,assertDeviceWritable,recordDeviceOperation,type DeviceIdentity} from './identified-device';
@@ -95,6 +95,7 @@ export async function confirmLocalCompensation(tx:Tx,identity:DeviceIdentity,inp
  if(current.fingerprint!==input.fingerprint)throw Error('Facture ou solde modifié : vérifiez à nouveau.');
  if(!current.assessment.requiresChoice||!current.excessPlan||!current.excessPlan.options.some(o=>o.choice===input.choice))throw Error('Compensation non justifiée.');
  if(Date.parse(input.recordedAt)<=Date.parse(previous.createdAt))throw Error('Date de révision invalide.');
+ await assertSaleEditChronology(tx,identity,previous.clientId,current.day,input.recordedAt);
  const captured=JSON.parse(input.fingerprint),invoice=JSON.parse(captured.invoice);
  // Ne jamais enregistrer un choix dont la photographie ne sera pas lisible
  // ensuite. Cette vérification est faite avant toute modification locale.

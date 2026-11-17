@@ -9,8 +9,8 @@ import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype'
 import {assertNoLocalCreditNote,assertNoRemoteCreditNote} from './credit-note-local-guard';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readIdentifiedOutbox} from './identified-outbox';
-import {readDayInvoiceOutbox} from './day-invoice-queue';
-import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
+import {readDayInvoiceOutbox,readDayInvoicePayments} from './day-invoice-queue';
+import {readOldDebtOutbox,validateOldDebtEvent,type OldDebtEvent} from './day-invoice-old-debt-queue';
 import {captureDayInvoiceForm} from './day-invoice-form';
 import {readDayInvoiceClients} from './day-invoice-clients';
 import {readLocalSaleCashLedger} from './credit-sale-refund-journal-prototype';
@@ -60,6 +60,22 @@ async function ensureClientIdle(tx:Tx,identity:DeviceIdentity,clientId:string,da
  }
  for(const entry of debts){register(entry.operationId);different(JSON.parse(entry.payload).event.settlement.clientId);}
 }
+/** Une révision doit suivre tous les paiements locaux connus de sa facture
+ * et les règlements de dette du même jour. Le serveur refait le contrôle avec
+ * ses propres événements, notamment ceux d'autres téléphones. */
+export async function assertSaleEditChronology(tx:Tx,identity:DeviceIdentity,clientId:string,day:string,recordedAt:string){
+ const at=Date.parse(recordedAt);if(!Number.isFinite(at))throw Error('Date de révision invalide.');
+ const reference=await readDayInvoiceReferenceCache(tx,identity);if(!reference)throw Error('Référence facture du jour indisponible.');
+ const local=await readDayInvoicePayments(tx,identity,clientId,day);
+ for(const payment of [...local,...reference.dayPayments.filter(p=>p.clientId===clientId&&p.day===day)])if(Date.parse(payment.recordedAt)>at)throw Error('Modification antérieure à un paiement : vérifiez l’horloge.');
+ const debts=await tx.getAllAsync<{operationId:string;clientId:string;day:string;payload:string;commercialId:string;serverOrigin:string}>(`SELECT operation_id AS operationId,client_id AS clientId,invoice_day AS day,payload,commercial_id AS commercialId,server_origin AS serverOrigin FROM day_invoice_old_debt_local WHERE client_id=? LIMIT 20001`,clientId);
+ if(debts.length>20000)throw Error('Historique ancienne dette incomplet : rapprochement nécessaire.');
+ for(const row of debts){
+  let event:OldDebtEvent;try{const raw:unknown=JSON.parse(row.payload);validateOldDebtEvent(raw);event=raw;}catch{throw Error('Règlement ancienne dette local incohérent.');}
+  if(event.event.operationId!==row.operationId||event.event.settlement.clientId!==row.clientId||row.clientId!==clientId||event.invoiceDay!==row.day||row.commercialId!==identity.commercialId||row.serverOrigin!==identity.serverOrigin)throw Error('Règlement ancienne dette local incohérent.');
+  if(row.day>day||(row.day===day&&Date.parse(event.event.settlement.createdAt)>at))throw Error('Modification antérieure à un règlement de dette : rapprochement nécessaire.');
+ }
+}
 /** L'aperçu est reproductible et fige la source, le solde et les lignes. */
 export async function captureDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,saleId:number,lines:Line[],digest:(text:string)=>Promise<string>){
  if(!Number.isSafeInteger(saleId)||saleId<1)throw Error('Vente invalide.');
@@ -82,9 +98,9 @@ export async function captureDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,sa
   const proof=reference.saleProofs.find(p=>p.saleId===previous.syncSaleId);
   if(!proof||proof.version!==previous.syncVersion||proof.hash!==await digest(canonicalJson(raw)))throw Error('Preuve de vente préalable indisponible : synchronisez avant modification.');
  }
- if(reference.oldDebtMarkers.some(m=>reference.settlementStates?.some(s=>s.operationId===m.operationId&&s.clientId===previous.clientId)))throw Error('Règlement de dette enregistré : rapprochement requis avant modification.');
- const localDebt=await tx.getFirstAsync<{n:number}>('SELECT EXISTS(SELECT 1 FROM day_invoice_old_debt_local WHERE client_id=?) AS n',previous.clientId);
- if(!localDebt||localDebt.n)throw Error('Règlement de dette enregistré : rapprochement requis avant modification.');
+ // Les dettes déjà réglées ne bloquent pas toutes les modifications. Les
+ // preuves et journées sont contrôlées par les lecteurs ci-dessous ; les
+ // paiements en attente du client restent bloquants dans ensureClientIdle.
  const state=reference.saleStates?.find(s=>s.saleId===previous.syncSaleId);
  if(!state||state.clientId!==previous.clientId||state.version!==previous.syncVersion||state.total!==String(previous.total)||state.paid!==String(previous.paid))throw Error('Vente locale et serveur incohérentes.');
  const clients=await readDayInvoiceClients(tx,identity,digest),client=clients.clients.find(c=>c.id===previous.clientId);
@@ -121,6 +137,7 @@ export async function confirmDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,in
  if(input.fingerprint!==current.fingerprint)throw Error('La facture ou le solde a changé : vérifiez à nouveau.');
  if(current.assessment.requiresChoice)throw Error('Total inférieur au montant payé : remboursement ou crédit requis.');
  if(Date.parse(input.recordedAt)<=Date.parse(previous.createdAt))throw Error('Date de révision invalide.');
+ await assertSaleEditChronology(tx,identity,previous.clientId,current.day,input.recordedAt);
  const payments=await readDayInvoiceOutbox(tx,identity);
  if(payments.some(p=>{const payment=JSON.parse(p.payload);return payment.clientId===previous.clientId&&Date.parse(payment.recordedAt)>Date.parse(input.recordedAt);}))throw Error('Modification antérieure à un paiement en attente.');
  await assertDeviceWritable(tx,identity,[current.day,tunisDay(new Date(input.recordedAt))]);

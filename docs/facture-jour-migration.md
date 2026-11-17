@@ -14,6 +14,20 @@ Lorsqu'une compensation expérimentale existe, l'administration peut afficher au
 
 Avant toute migration réelle, conserver une sauvegarde vérifiée de la base et les données locales des téléphones. Une restauration, une base copiée ou un téléphone non synchronisé peut nécessiter un rapprochement. Cette préparation ne vaut pas autorisation d'activer le paiement unique, les compensations ou la clôture v6 en production ; les projections normales, les conflits et les tests sur téléphone restent à terminer.
 
+## Modification après règlement (non validée)
+
+Une modification v6 sans trop-perçu n'est plus automatiquement refusée parce
+qu'un règlement d'ancienne dette existe pour ce client. Les paiements de dette
+locaux déjà synchronisés sont contrôlés, les opérations de dette en attente du
+client restent bloquantes, et une dette sur une journée ultérieure exige un
+rapprochement. La date de la modification doit suivre les paiements connus et
+les règlements de dette locaux du même jour ; le serveur vérifie ses propres
+preuves et dates sous verrou, y compris celles reçues d'autres téléphones.
+Le serveur recalcule aussi le trop-perçu même en l'absence de paiement unifié,
+car un paiement initial historique peut exister. Tout choix de remboursement ou
+crédit reste expérimental et les gardes existantes restent actives. Modification
+non testée : ne pas activer le protocole sur des données réelles avant validation.
+
 ## Photographie du choix de trop-perçu (préparatoire, non validée)
 
 Pour les nouvelles compensations du banc isolé, le téléphone conserve désormais
