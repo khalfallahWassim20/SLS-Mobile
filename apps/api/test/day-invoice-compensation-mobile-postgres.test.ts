@@ -9,6 +9,7 @@ import {startPaymentAttempt,resumePaymentAttempt,finishPaymentAttempt} from '../
 import {captureDayInvoiceForm} from '../../mobile/day-invoice-form.js';import {makeDayPaymentAttempt} from '../../mobile/day-invoice-payment-input.js';import {synchronizeDayInvoicePrototype} from '../../mobile/day-invoice-sync.js';
 import {identifiedDeviceSchema} from '../../mobile/identified-device.js';import {tourCloseQueueSchema} from '../../mobile/tour-close-queue.js';import {creditReferencePrototypeSchema} from '../../mobile/credit-note-reference-cache-prototype.js';import {offlineCreditPrototypeSchema} from '../../mobile/credit-note-offline-prototype.js';import {dayInvoiceReferenceCacheSchema,saveDayInvoiceReference} from '../../mobile/day-invoice-reference-cache.js';import {dayInvoiceQueueSchema} from '../../mobile/day-invoice-queue.js';import {saleEventTimeSchema} from '../../mobile/sale-event-time.js';
 import {createDayInvoiceTransportPrototype} from '../../mobile/day-invoice-transport.js';import {captureWorkspaceState} from '../../mobile/day-invoice-workspace-state.js';
+import {readVerifiedCompensatedJournal} from '../../mobile/day-invoice-compensation-journal.js';
 import {captureDayInvoiceSaleEdit} from '../../mobile/day-invoice-sale-edit.js';import {dayInvoiceCompensationLocalSchema,confirmLocalCompensation,readLocalCompensation} from '../../mobile/day-invoice-compensation-local.js';import {readLocalCompensationView,readLocalCompensationCollectionImpact} from '../../mobile/day-invoice-compensation-view.js';import {synchronizeLocalCompensation} from '../../mobile/day-invoice-compensation-sync.js';import {reconcileCompensatedInvoice} from '../../mobile/day-invoice-compensation-reconcile.js';import {assertDayInvoiceAttemptsSettled} from '../../mobile/day-invoice-attempt-guard.js';
 
 for(const choice of ['refund','credit'] as const)test(`compensation mobile ${choice} : SQLite, réponse HTTP perdue et reçu serveur`,async()=>{
@@ -69,6 +70,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   const input={saleId:1,lines,fingerprint:draft.fingerprint,operationId:randomUUID(),recordedAt:'2026-01-01T10:00:00.000Z',choice};
   const saved=await transaction(t=>confirmLocalCompensation(t,identity,input,digest));assert.equal(saved.status,'created');
   await assert.rejects(reconcileCompensatedInvoice(identity,identity,reconciliation),/Reçu de compensation indisponible/);
+  await assert.rejects(readVerifiedCompensatedJournal(identity,identity,{transaction,check:transport.check,verifyServer:transport.verifyServer,read:transport.readCompensatedJournal}),/Reçu de compensation indisponible/);
   const workspace=await transaction(t=>captureWorkspaceState({compensation:()=>readLocalCompensationView(t,identity),preinvoice:async()=>null,sale:async()=>null,saleEdit:async()=>null,payment:async()=>null,oldDebt:async()=>null,clients:async()=>{throw Error('Clients non autorisés');}}));
   assert.deepEqual(workspace,{pending:{kind:'compensation',clientId,day},clients:null});
   await assert.rejects(synchronizeLocalCompensation(identity,{...identity,serverOrigin:'https://autre.test'},io),/différent/);assert.equal(sends,0);
@@ -103,6 +105,15 @@ for(const choice of ['refund','credit'] as const)test(`compensation mobile ${cho
   assert.equal(both.total,750000);assert.equal(both.balance,view.localBalanceAfter);assert.equal(both.journal.gross,1600000);
   assert.equal(both.journal.refund,50000);assert.equal(both.journal.credit,50000);assert.equal(both.journal.theoreticalNet,1550000);
   assert.equal(both.journal.ownRefund,choice==='refund'?50000:0);assert.equal(both.journal.ownCredit,choice==='credit'?50000:0);
+  const journalIO={transaction,check:transport.check,verifyServer:transport.verifyServer,read:transport.readCompensatedJournal};
+  const report=await readVerifiedCompensatedJournal(identity,identity,journalIO);assert.equal(report.day,day);assert.equal(report.rows.length,2);assert.equal(report.totalBilled,1500000);assert.equal(report.refund,50000);assert.equal(report.credit,50000);assert.equal(report.theoreticalNet,1550000);
+  const ownRow=report.rows.find(r=>r.clientId===clientId);assert.ok(ownRow);assert.equal(ownRow.totalClient,750000);assert.equal(ownRow.dayInvoicePaid,800000);assert.equal(ownRow.refund,choice==='refund'?50000:0);assert.equal(ownRow.credit,choice==='credit'?50000:0);
+  await assert.rejects(readVerifiedCompensatedJournal(identity,identity,{...journalIO,read:async()=>fakeResponse({...report,rows:report.rows.map(r=>r.clientId===clientId?{...r,refund:r.refund+1}:r)})}),/incohérente/);
+  await assert.rejects(readVerifiedCompensatedJournal(identity,identity,{...journalIO,read:async()=>({ok:false,status:404,json:async()=>({})})}),/indisponible \(404\)/);
+  await assert.rejects(readVerifiedCompensatedJournal(identity,{...identity,serverOrigin:'https://autre.test'},journalIO),/différent/);
+  let journalExpired=false;await assert.rejects(readVerifiedCompensatedJournal(identity,identity,{...journalIO,check:()=>{if(journalExpired)throw Error('Session expirée');},read:async()=>{journalExpired=true;return fakeResponse(report);}}),/Session expirée/);
+  await assert.rejects(readVerifiedCompensatedJournal(identity,identity,{...journalIO,read:async()=>{db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(JSON.stringify(altered));return fakeResponse(report);}}),/incohérente|rapprochement/);
+  db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(localInput);
   assert.equal((await transaction(t=>readLocalCompensation(t,identity)))?.receipt!==null,true);
   const impact=await transaction(t=>readLocalCompensationCollectionImpact(t,identity,commercialId,day));assert.equal(impact.refund,choice==='refund'?50000:0);assert.equal(impact.credit,choice==='credit'?50000:0);
   assert.deepEqual(await synchronizeLocalCompensation(identity,identity,io),{status:'already-proven',operationId:input.operationId});assert.equal(sends,2);

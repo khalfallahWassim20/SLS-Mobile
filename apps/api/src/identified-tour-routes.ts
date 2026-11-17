@@ -16,7 +16,7 @@ import {abandonRemoteSalePrototype} from './remote-sale-abandon-prototype.js';
 import {abandonCreditNotePrototype} from './credit-note-abandon-prototype.js';
 import {storeIdentifiedSale,storeIdentifiedSettlement,storeDayInvoiceCompensatedSale,saleEventSchema} from './identified-operations.js';
 import {compensationSchema} from './day-invoice-compensation.js';
-import {readCompensationReceipt,readAuthenticatedCompensatedInvoice} from './day-invoice-compensation-receipt.js';
+import {readCompensationReceipt,readAuthenticatedCompensatedInvoice,readAuthenticatedCompensatedJournal} from './day-invoice-compensation-receipt.js';
 import {storeTourExpense} from './tour-expenses.js';
 import {storeExpenseRevision} from './tour-expense-revisions.js';
 import {storeExpenseCancellation} from './tour-expense-cancellations.js';
@@ -152,6 +152,9 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  }catch(e){errorHandler(e,res,next);}});
  if(options.dayInvoiceTestOnly===true)r.get('/day-invoice-compensated-sale/:operationId/invoice',async(req,res,next)=>{try{
   res.json(await readAuthenticatedCompensatedInvoice(pool,req.params.operationId,{secret,token:bearer(req.get('Authorization'))}));
+ }catch(e){errorHandler(e,res,next);}});
+ if(options.dayInvoiceTestOnly===true)r.get('/day-invoice-compensated-sale/:operationId/journal',async(req,res,next)=>{try{
+  res.json(await readAuthenticatedCompensatedJournal(pool,req.params.operationId,{secret,token:bearer(req.get('Authorization'))}));
  }catch(e){errorHandler(e,res,next);}});
  // Sources v6 : chemins distincts, uniquement pour les essais isolés. Les
  // anciennes routes ne peuvent jamais s'auto-déclarer compatibles par en-tête.

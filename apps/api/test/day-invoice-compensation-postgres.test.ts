@@ -104,6 +104,13 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   const invoiceBody=await invoiceResponse.json() as {version:number;invoice:{payments:unknown[];total:number};compensation:{commercialId:string};journal:{day:string;gross:number;refund:number;credit:number;theoreticalNet:number;clientGross:number;clientTheoreticalNet:number}};
   assert.deepEqual(Object.keys(invoiceBody).sort(),['compensation','invoice','journal','version']);assert.equal(invoiceBody.version,3);assert.equal(invoiceBody.compensation.commercialId,actorId);assert.equal(invoiceBody.invoice.total,750000);assert.deepEqual(invoiceBody.invoice.payments,[payment,cheque]);
   assert.deepEqual(invoiceBody.journal,{commercialId:actorId,day:eventDay,clientId,gross:choice==='refund'?0:800000,refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0,ownRefund:choice==='refund'?50000:0,ownCredit:choice==='credit'?50000:0,theoreticalNet:choice==='refund'?-50000:800000,clientGross:choice==='refund'?0:800000,clientTheoreticalNet:choice==='refund'?-50000:800000});
+  const journalPath=`day-invoice-compensated-sale/${edit.operationId}/journal`;
+  assert.equal((await fetch(`${base}/normal/${journalPath}`,{headers:{Authorization:`Bearer ${editSession.token}`}})).status,404);
+  assert.equal((await fetch(`${base}/test/${journalPath}`)).status,401);
+  if(actorId!==commercialId)assert.equal((await fetch(`${base}/test/${journalPath}`,{headers:{Authorization:`Bearer ${session.token}`}})).status,409);
+  const journalResponse=await fetch(`${base}/test/${journalPath}`,{headers:{Authorization:`Bearer ${editSession.token}`}});assert.equal(journalResponse.status,200);assert.match(journalResponse.headers.get('cache-control')??'',/no-store/);
+  const journalBody=await journalResponse.json() as {operationId:string;commercialId:string;clientId:string;day:string;refund:number;credit:number;theoreticalNet:number;rows:{clientId:string;refund:number;credit:number}[]};
+  assert.equal(journalBody.operationId,edit.operationId);assert.equal(journalBody.commercialId,actorId);assert.equal(journalBody.clientId,clientId);assert.equal(journalBody.day,eventDay);assert.equal(journalBody.refund,choice==='refund'?50000:0);assert.equal(journalBody.credit,choice==='credit'?50000:0);assert.equal(journalBody.theoreticalNet,choice==='refund'?-50000:800000);assert.equal(journalBody.rows.find(r=>r.clientId===clientId)?.refund,journalBody.refund);
   // Reprise après réponse perdue : l'acquittement attend le reçu vérifié.
   const identity={commercialId:actorId,serverOrigin:base},payload=JSON.stringify({event:edit,compensation});let acknowledged=0;
   await uploadCompensatedSale(payload,identity,identity,{check:()=>{},send:async p=>send('test',JSON.parse(p)),receipt:async id=>fetch(`${base}/test/day-invoice-compensated-sale/${id}/receipt`,{headers:{Authorization:`Bearer ${editSession.token}`}}),acknowledge:async p=>{assert.equal(p,payload);acknowledged++;}});
@@ -150,6 +157,7 @@ for(const choice of ['refund','credit'] as const)test(`compensation ${choice} : 
   await assert.rejects(readCompensationReceipt(pool,edit.operationId,editSession),/Preuve de compensation incohérente/);
   assert.equal((await fetch(historyUrl)).status,500,'historique refuse une preuve altérée');
   assert.equal((await fetch(`${adminPath}/compensated-summary`,{headers:adminHeaders})).status,500,'synthèse refuse une preuve altérée');
+  assert.equal((await fetch(`${base}/test/${journalPath}`,{headers:{Authorization:`Bearer ${editSession.token}`}})).status,500,'journal mobile refuse une preuve altérée');
   await pool.query('UPDATE identified_sale_events SET payload_hash=$1 WHERE operation_id=$2',[originalHash,edit.operationId]);
   assert.equal((await fetch(historyUrl)).status,200);
   const previousHash=(await pool.query('SELECT payload_hash FROM identified_sale_events WHERE operation_id=$1',[creationId])).rows[0].payload_hash;

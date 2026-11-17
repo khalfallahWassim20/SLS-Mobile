@@ -24,6 +24,7 @@ import {dayInvoiceCompensationLocalSchema,confirmLocalCompensation,type LocalCom
 import {readLocalCompensationView} from './day-invoice-compensation-view';
 import {synchronizeLocalCompensation} from './day-invoice-compensation-sync';
 import {reconcileCompensatedInvoice} from './day-invoice-compensation-reconcile';
+import {readVerifiedCompensatedJournal} from './day-invoice-compensation-journal';
 import {createDayInvoiceTransportPrototype} from './day-invoice-transport';
 import {prepareDayInvoiceCloseAttempt,abandonDayInvoiceCloseAttempt,applyDayInvoiceReopenedState,acknowledgeDayInvoiceCloseAttempt} from './day-invoice-close-attempt';
 import type {LineagePin} from './server-lineage-proof';
@@ -751,6 +752,13 @@ export async function reconcileCompensatedInvoiceTestPrototype(identity:DeviceId
  const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
  const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
  return reconcileCompensatedInvoice(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{transaction,check:transport.check,verifyServer:transport.verifyServer,read:transport.readCompensatedInvoice});
+}
+
+export async function readCompensatedJournalTestPrototype(identity:DeviceIdentity,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,testOnly:string,allowPrivateHttp=false){
+ if(testOnly!=='DONNEES_FICTIVES_ISOLEES')throw Error('Essai de compensation isolé désactivé.');
+ const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
+ const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
+ return readVerifiedCompensatedJournal(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{transaction,check:transport.check,verifyServer:transport.verifyServer,read:transport.readCompensatedJournal});
 }
 
 export async function captureDayInvoiceSaleEditPrototype(identity:DeviceIdentity,saleId:number,lines:SavedSale['lines']){

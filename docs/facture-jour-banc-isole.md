@@ -10,4 +10,6 @@ Le jeton reste en mémoire, le mot de passe n'est pas enregistré ; après expir
 
 Un test automatisé raccorde cette connexion à un serveur HTTP fictif authentifié et à PostgreSQL dans un schéma éphémère, puis vérifie le cache SQLite, l'absence du prix d'achat et le refus d'une lignée modifiée. Ce test ne simule pas l'interface Expo sur un téléphone.
 
+Après une compensation locale synchronisée et prouvée, l'écran fictif peut lire le journal serveur du commercial pour le jour du choix. La route est réservée au serveur de test, à la session du propriétaire de cette compensation, et recalcule les projections dans un même instantané. Le téléphone vérifie les totaux, les clients et le choix local avant affichage. Il s'agit d'une photographie en lecture seule : les opérations hors ligne manquent, les encaissements globaux peuvent ne pas être ventilés par client, le remboursement n'est pas une preuve de remise physique et la clôture reste bloquée. La lecture n'actualise aucun cache ni solde et n'autorise pas de nouvelle opération.
+
 Avant utilisation commerciale il faut concevoir et tester la migration réelle, l'établissement fiable de la lignée, les projections et lecteurs compatibles après compensation, les conflits et la clôture, puis tester l'ensemble sur téléphone. Un bundle Android exporté n'est pas un test fonctionnel sur appareil.

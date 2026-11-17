@@ -39,6 +39,27 @@ export async function readAuthenticatedCompensatedInvoice(pool:Pool,operationId:
  }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
 }
 
+/** Journal du commercial après choix, lecture fictive uniquement. Aucun solde
+ * client, aucun mode de remboursement ni preuve de versement n'est déduit. */
+export async function readAuthenticatedCompensatedJournal(pool:Pool,operationId:string,session:{secret:string;token:string}){
+ z.string().uuid().parse(operationId);const db=await pool.connect();
+ try{
+  await db.query('BEGIN ISOLATION LEVEL REPEATABLE READ');assertIdentifiedMode(await lockSyncMode(db));
+  const actor=await verifyCommercialSession(db,session.secret,session.token,true);if(!actor)throw new JournalAuthenticationError('Session invalide.');
+  const owner=await db.query('SELECT commercial_id FROM identified_day_invoice_compensations WHERE operation_id=$1',[operationId]);
+  if(owner.rows.length!==1||owner.rows[0].commercial_id!==actor.id)throw new JournalConflict('Journal indisponible pour ce commercial.');
+  await assertOldCreditProtocolSafe(db);
+  const snapshot=await readCompensatedDayInvoiceSnapshotInTransaction(db,operationId),p=snapshot.compensation;
+  if(p.commercialId!==actor.id)throw new JournalConflict('Compensation incohérente.');
+  const day=await readCompensatedJournalDayInTransaction(db,actor.id,p.eventDay,operationId);
+  if(!day.compensationEvents.some(e=>e.operationId===operationId&&e.clientId===p.clientId))throw new JournalConflict('Compensation absente du journal.');
+  const result={version:1 as const,operationId,commercialId:actor.id,day:p.eventDay,clientId:p.clientId,
+   totalBilled:day.totalBilled,totalCollected:day.totalCollected,refund:day.compensationRefundTotal,credit:day.compensationCreditTotal,theoreticalNet:day.collectedAfterCompensationRefund,
+   rows:day.rows.map(r=>({clientId:r.clientId,clientName:r.clientName,sector:r.sector,preInvoiceTotal:r.preInvoiceTotal,salesTotal:r.tourTotal,totalClient:r.totalClient,dayInvoicePaid:r.dayInvoicePaid,oldDebtPaid:r.oldDebtPaid,totalCollected:r.totalCollected,refund:r.compensationRefund,credit:r.compensationCredit,theoreticalNet:r.afterCompensationRefund}))};
+  await db.query('COMMIT');return result;
+ }catch(error){await db.query('ROLLBACK');throw error;}finally{db.release();}
+}
+
 export async function readCompensationReceipt(pool:Pool,operationId:string,session:{secret:string;token:string}){
  z.string().uuid().parse(operationId);
  const db=await pool.connect();
