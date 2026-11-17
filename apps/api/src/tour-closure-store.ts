@@ -100,8 +100,13 @@ export async function requestTourTransition(pool:Pool, input:{requestId:string;d
   if(enforceMode&&!creditAware)await assertOldCreditProtocolSafe(db);
   const state=await lockTourClosure(db,commercialId,day);
   if(action==='close'){
-   if(dayInvoiceTestOnly){await assertOldCreditProtocolSafe(db);await assertDayInvoiceCloseRegistry(db);}
-   else await assertLegacyDayCloseSafe(db,commercialId,day);
+   if(dayInvoiceTestOnly){
+    await assertOldCreditProtocolSafe(db);await assertDayInvoiceCloseRegistry(db);
+    // La preuve v6 ne couvre pas encore les dépenses et leurs corrections.
+    // Refuser une nouvelle clôture même si la caisse sans dépenses concorde.
+    // Le retour idempotent d'une clôture déjà reçue reste traité plus haut.
+    throw new ClosureConflict('Clôture facture du jour indisponible : les dépenses ne sont pas encore incluses dans la preuve de caisse.');
+   } else await assertLegacyDayCloseSafe(db,commercialId,day);
   }
   // Les écritures de vente prennent ce même verrou avant insertion ; une
   // clôture ne peut donc pas dépasser un remboursement reçu simultanément.

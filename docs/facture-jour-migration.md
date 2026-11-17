@@ -32,5 +32,10 @@ pas été testé et ne doit pas être activé sur les données réelles avant le
 vérifications convenues.** La transition suppose une première confiance dans
 l'adresse déjà liée et ne vérifie pas les opérations hors ligne d'autres
 appareils. Le trop-perçu et son choix remboursement/crédit, les lectures ordinaires d'administration, la
-clôture et les exports complets restent à raccorder. Aucun retour automatique à
-l'ancien parcours n'est prévu : conserver les données et une sauvegarde.
+clôture et les exports complets restent à raccorder. Le serveur refuse désormais
+toute nouvelle clôture v6, même si sa preuve de caisse correspond : cette preuve
+ne couvre pas encore les dépenses et leurs corrections. Une réponse déjà reçue
+reste récupérable par son identifiant de demande. Cette garde ne remplace pas
+l'intégration des dépenses dans les preuves, les exports et la clôture. Aucun
+retour automatique à l'ancien parcours n'est prévu : conserver les données et
+une sauvegarde.
