@@ -85,6 +85,11 @@ test('création vente v6 : SQLite, HTTP, réponse perdue, paiement unique et cl�
   const attempt=await transaction(t=>prepareDayInvoiceCloseAttempt(t,identity,day,0,randomUUID,digest));assert.equal(attempt.cashProof,proof.cashProof);
   const close=await post('day-invoice-close',JSON.stringify({requestId:attempt.requestId,day,expectedVersion:0,cashProof:attempt.cashProof}));assert.equal(close.status,201);
   const repeated=await post('day-invoice-close',JSON.stringify({requestId:attempt.requestId,day,expectedVersion:0,cashProof:attempt.cashProof}));assert.equal(repeated.status,200);
+  await pool.query('UPDATE clients SET active=false WHERE id=$1',[clientId]);
+  const inactive=await fetchReference();assert.deepEqual(inactive.clientStatuses.find((s:any)=>s.clientId===clientId),{clientId,active:false,statusRevision:'2'});assert.ok(inactive.clients.some((c:any)=>c.id===clientId));
+  await transaction(t=>saveDayInvoiceReference(t,identity,identity,inactive));
+  await assert.rejects(transaction(t=>captureNewDayInvoiceSale(t,identity,clientId,'2026-01-02',sale.lines,digest)),/désactivé/);
+  assert.equal((await transaction(t=>captureDayInvoiceForm(t,identity,clientId,day,digest))).view.remaining,800000);
 
  }finally{phone?.close();if(server)await new Promise<void>(resolve=>server!.close(()=>resolve()));await pool?.end();await root.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await root.end();}
 });

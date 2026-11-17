@@ -25,6 +25,9 @@ export async function captureNewDayInvoiceSale(tx:Tx,identity:DeviceIdentity,cli
  const date=new Date(`${day}T00:00:00.000Z`);if(!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==day)throw Error('Journée invalide.');
  await assertLegacyMobileCreditSafe(tx,identity);await assertDeviceWritable(tx,identity,[day]);
  const ref=await readDayInvoiceReferenceCache(tx,identity);if(!ref)throw Error('Référence facture du jour indisponible.');
+ const status=ref.clientStatuses.find(s=>s.clientId===clientId);
+ if(!ref.hasClientStatuses||!status)throw Error('Statut client indisponible : actualisez la référence avant une vente.');
+ if(!status.active)throw Error('Client désactivé : nouvelle vente interdite.');
  // L'ordre de synchronisation conserve la photographie de chaque paiement :
  // une nouvelle vente peut suivre un règlement local de la même journée.
  for(const entry of await readOldDebtOutbox(tx,identity)){const p=JSON.parse(entry.payload);if(p.event.settlement.clientId.toLowerCase()===clientId.toLowerCase())throw Error('Règlement de dette en attente : synchronisez avant d’ajouter une vente.');}
@@ -43,7 +46,7 @@ export async function captureNewDayInvoiceSale(tx:Tx,identity:DeviceIdentity,cli
  const balance=BigInt(client.balance)+BigInt(total);if(balance>BigInt(Number.MAX_SAFE_INTEGER)||balance<BigInt(Number.MIN_SAFE_INTEGER))throw Error('Solde trop élevé.');
  const invoice=await captureDayInvoiceForm(tx,identity,clientId,day,digest),invoiceTotal=BigInt(invoice.view.total)+BigInt(total);
  if(invoiceTotal>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Facture trop élevée.');
- const fingerprint=canonicalJson({clientId,day,clientName:client.name,balance:client.balance,creditLimit:client.creditLimit,invoice:invoice.fingerprint,lines:clean});
+ const fingerprint=canonicalJson({clientId,day,clientStatusRevision:status.statusRevision,clientName:client.name,balance:client.balance,creditLimit:client.creditLimit,invoice:invoice.fingerprint,lines:clean});
  return {clientId,clientName:client.name,day,lines:clean,total,balanceBefore:client.balance,balanceAfter:Number(balance),invoiceTotal:Number(invoiceTotal),fingerprint};
 }
 export async function confirmNewDayInvoiceSale(tx:Tx,identity:DeviceIdentity,input:{clientId:string;day:string;lines:Line[];fingerprint:string;saleId:string;operationId:string;createdAt:string},digest:(text:string)=>Promise<string>){

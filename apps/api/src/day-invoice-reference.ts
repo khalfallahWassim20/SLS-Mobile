@@ -27,6 +27,12 @@ export async function readDayInvoiceReferenceInTransaction(db:PoolClient,include
 async function readUnprojectedDayInvoiceReference(db:PoolClient,includeInactive=false) {
  const base=await readIdentifiedReferenceInTransaction(db,includeInactive);
  const active=includeInactive?'':' AND c.active';
+ const clientStatusRows=await db.query(`SELECT c.id AS "clientId",c.active,c.status_revision::text AS "statusRevision" FROM clients c WHERE c.deleted_at IS NULL${active}`);
+ const clientStatuses=clientStatusRows.rows.map(s=>{
+  if(typeof s.clientId!=='string'||typeof s.active!=='boolean'||typeof s.statusRevision!=='string'||!/^[1-9]\d{0,18}$/.test(s.statusRevision)||BigInt(s.statusRevision)>9223372036854775807n)throw Error('Statut client indisponible.');
+  return {clientId:s.clientId as string,active:s.active as boolean,statusRevision:s.statusRevision as string};
+ });
+ const clientStatusIds=new Set(clientStatuses.map(s=>s.clientId));if(clientStatusIds.size!==base.clients.length||base.clients.some(c=>!clientStatusIds.has(c.id)))throw Error('Statuts clients incomplets.');
  const dayRows=await db.query(`WITH combined AS (
   SELECT sale_id,client_id,version,payload FROM demo_sale_events
   UNION ALL SELECT sale_id,client_id,version,payload FROM identified_sale_events
@@ -81,7 +87,7 @@ async function readUnprojectedDayInvoiceReference(db:PoolClient,includeInactive=
  const delta=new Map<string,bigint>();
  for(const payment of payments){const before=delta.get(payment.clientId)??0n;delta.set(payment.clientId,before-BigInt(payment.amount)+(payment.preInvoice?.declare?BigInt(payment.preInvoice.total):0n));}
  const projected=base.clients.map(c=>{const balance=BigInt(c.serverBalance)+ (delta.get(c.id)??0n);if(balance>BigInt(Number.MAX_SAFE_INTEGER)||balance<BigInt(Number.MIN_SAFE_INTEGER))throw RangeError('Solde trop élevé.');return {...c,serverBalance:String(balance)};});
- return {...base,version:6 as const,clients:projected,saleDays,saleProofs,settlementDays,settlementProofs,oldDebtMarkers,dayPayments:payments,journalStates:base.journalStates.map(j=>({...j,declaredByDayPayment:declared.has(j.id)}))};
+ return {...base,version:6 as const,clients:projected,clientStatuses,saleDays,saleProofs,settlementDays,settlementProofs,oldDebtMarkers,dayPayments:payments,journalStates:base.journalStates.map(j=>({...j,declaredByDayPayment:declared.has(j.id)}))};
 }
 /** Vérification isolée du premier choix de compensation déjà enregistré.
  * Elle ne débloque aucun ancien écran et ne prouve pas le paiement physique.

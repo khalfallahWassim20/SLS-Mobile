@@ -20,6 +20,9 @@ export async function captureNewDayPreinvoice(tx:Tx,identity:DeviceIdentity,clie
  const d=new Date(`${day}T00:00:00.000Z`);if(!uuid.test(clientId)||!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(d.getTime())||d.toISOString().slice(0,10)!==day||!Number.isSafeInteger(amount)||amount<=0)throw Error('Client, journée ou montant invalide.');
  await assertLegacyMobileCreditSafe(tx,identity);await assertDeviceWritable(tx,identity,[day]);
  const ref=await readDayInvoiceReferenceCache(tx,identity);if(!ref)throw Error('Référence facture du jour indisponible.');
+ const status=ref.clientStatuses.find(s=>s.clientId===clientId);
+ if(!ref.hasClientStatuses||!status)throw Error('Statut client indisponible : actualisez la référence avant une préétablie.');
+ if(!status.active)throw Error('Client désactivé : nouvelle préétablie interdite.');
  if(ref.journalStates?.some(j=>j.clientId===clientId&&j.journalDate===day))throw Error('Une préétablie existe déjà pour ce client et cette journée.');
  if(ref.oldDebtMarkers.some(m=>m.invoiceDay>=day&&ref.settlementStates?.some(s=>s.operationId===m.operationId&&s.clientId===clientId)))throw Error('Règlement de dette existant : rapprochement nécessaire avant ajout de préétablie.');
  for(const entry of await readOldDebtOutbox(tx,identity)){const event=JSON.parse(entry.payload);if(event.event.settlement.clientId===clientId)throw Error('Règlement de dette en attente : synchronisez avant ajout de préétablie.');}
@@ -29,7 +32,7 @@ export async function captureNewDayPreinvoice(tx:Tx,identity:DeviceIdentity,clie
  // Les paiements antérieurs conservent leur propre photographie ; la
  // préétablie ajoutée ensuite ne sera déclarée que par un règlement ultérieur.
  const total=BigInt(invoice.view.total)+BigInt(amount);if(total>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Facture trop élevée.');
- const fingerprint=canonicalJson({clientId,day,amount,clientName:client.name,sector:client.sector,balance:client.balance,invoice:invoice.fingerprint});
+ const fingerprint=canonicalJson({clientId,day,amount,clientStatusRevision:status.statusRevision,clientName:client.name,sector:client.sector,balance:client.balance,invoice:invoice.fingerprint});
  // La préétablie non déclarée n'affecte pas encore le solde global.
  return {clientId,clientName:client.name,sector:client.sector,day,amount,invoiceTotal:Number(total),balance:client.balance,fingerprint};
 }

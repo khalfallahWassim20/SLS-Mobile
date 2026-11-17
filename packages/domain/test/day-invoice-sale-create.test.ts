@@ -17,7 +17,7 @@ import {captureNewDayInvoiceSale,confirmNewDayInvoiceSale} from '../../../apps/m
 const clientId='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',invoiceId='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',saleId='cccccccc-cccc-4ccc-8ccc-cccccccccccc',operationId='11111111-1111-4111-8111-111111111111',paymentId='22222222-2222-4222-8222-222222222222';
 const identity={commercialId:clientId,serverOrigin:'https://example.test'},day='2026-01-01',at='2026-01-01T09:00:00.000Z',digest=async(s:string)=>createHash('sha256').update(s).digest('hex');
 const line={name:'Produit',code:'X',quantity:1,unitPrice:210084,discount:0,vat:1900};
-const reference={version:6,clients:[{id:clientId,name:'Client',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[{id:'33333333-3333-4333-8333-333333333333',code:'X',name:'Produit',barcode:'',saleTtc:'250000',vatRate:1900,unitsPerCarton:1}],saleStates:[],saleDays:[],settlementStates:[],settlementDays:[],settlementProofs:[],oldDebtMarkers:[],journalStates:[{id:invoiceId,clientId,journalDate:day,total:600000,receipts:[],declaredByDayPayment:false}],journalProofs:[{id:invoiceId,version:1,hash:'a'.repeat(64)}],dayPayments:[]};
+const reference={version:6,clientStatuses:[{clientId,active:true,statusRevision:'1'}],clients:[{id:clientId,name:'Client',sector:'',openingBalance:'0',creditLimit:'0',serverBalance:'0'}],articles:[{id:'33333333-3333-4333-8333-333333333333',code:'X',name:'Produit',barcode:'',saleTtc:'250000',vatRate:1900,unitsPerCarton:1}],saleStates:[],saleDays:[],settlementStates:[],settlementDays:[],settlementProofs:[],oldDebtMarkers:[],journalStates:[{id:invoiceId,clientId,journalDate:day,total:600000,receipts:[],declaredByDayPayment:false}],journalProofs:[{id:invoiceId,version:1,hash:'a'.repeat(64)}],dayPayments:[]};
 function wrap(db:DatabaseSync){return {getFirstAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).get(...p) as T||null,getAllAsync:async<T>(sql:string,...p:(string|number|null)[])=>db.prepare(sql).all(...p) as T[],runAsync:async(sql:string,...p:(string|number|null)[])=>{db.prepare(sql).run(...p)}};}
 function setup(path=':memory:'){const db=new DatabaseSync(path);db.exec(`${identifiedDeviceSchema}${tourCloseQueueSchema}${creditReferencePrototypeSchema}${offlineCreditPrototypeSchema}${dayInvoiceReferenceCacheSchema}${dayInvoiceQueueSchema}${saleEventTimeSchema}${dayInvoiceSaleAttemptSchema}${dayInvoicePaymentAttemptSchema}${dayInvoicePreinvoiceAttemptSchema}${tourExpenseSchema}
  CREATE TABLE sale_revisions(id INTEGER PRIMARY KEY,sale_id INTEGER,created_at TEXT,previous_payload TEXT,new_payload TEXT,refund INTEGER);
@@ -420,5 +420,29 @@ test('préétablie et vente ne peuvent pas laisser deux tentatives ou reçus ouv
   db.exec('BEGIN');await confirmDaySaleAttempt(tx,identity,paymentId,digest);db.exec('COMMIT');
   await acknowledgeDaySaleAttempt(tx,identity,paymentId);
   assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.total,850000);
+ }finally{db.close();}
+});
+
+test('statut client v6 : ancien cache, désactivation, progression et confirmation',async()=>{
+ const {db,tx}=setup();try{
+  const {clientStatuses,...oldReference}=reference;
+  await saveDayInvoiceReference(tx,identity,identity,oldReference);
+  await assert.rejects(captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),/Statut client indisponible/);
+  await assert.rejects(captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest),/Statut client indisponible/);
+  await saveDayInvoiceReference(tx,identity,identity,reference);
+  const sale=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);
+  const inactive={...reference,clientStatuses:[{clientId,active:false,statusRevision:'2'}]};
+  await saveDayInvoiceReference(tx,identity,identity,inactive);
+  await assert.rejects(captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),/désactivé/);
+  await assert.rejects(captureNewDayPreinvoice(tx,identity,clientId,day,600000,digest),/désactivé/);
+  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:sale.fingerprint,saleId,operationId,createdAt:at},digest),/désactivé/);
+  // Une facture existante reste consultable et réglable même désactivée.
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.total,600000);
+  await assert.rejects(saveDayInvoiceReference(tx,identity,identity,reference),/Statut client périmé/);
+  await assert.rejects(saveDayInvoiceReference(tx,identity,identity,{...reference,clientStatuses:[{clientId,active:true,statusRevision:'2'}]}),/Statut client périmé/);
+  await assert.rejects(saveDayInvoiceReference(tx,identity,identity,oldReference),/Statuts clients absents/);
+  await assert.rejects(saveDayInvoiceReference(tx,identity,identity,{...reference,clientStatuses:[]}),/Statuts clients incomplets/);
+  await saveDayInvoiceReference(tx,identity,identity,{...reference,clientStatuses:[{clientId,active:true,statusRevision:'3'}]});
+  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,{clientId,day,lines:[line],fingerprint:sale.fingerprint,saleId,operationId,createdAt:at},digest),/modifié/);
  }finally{db.close();}
 });

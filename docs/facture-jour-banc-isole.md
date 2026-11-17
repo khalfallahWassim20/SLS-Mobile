@@ -13,3 +13,20 @@ Un test automatisé raccorde cette connexion à un serveur HTTP fictif authentif
 Après une compensation locale synchronisée et prouvée, l'écran fictif peut lire le journal serveur du commercial pour le jour du choix. La route est réservée au serveur de test, à la session du propriétaire de cette compensation, et recalcule les projections dans un même instantané. Le téléphone vérifie les totaux, les clients et le choix local avant affichage. Il s'agit d'une photographie en lecture seule : les opérations hors ligne manquent, les encaissements globaux peuvent ne pas être ventilés par client, le remboursement n'est pas une preuve de remise physique et la clôture reste bloquée. La lecture n'actualise aucun cache ni solde et n'autorise pas de nouvelle opération.
 
 Avant utilisation commerciale il faut concevoir et tester la migration réelle, l'établissement fiable de la lignée, les projections et lecteurs compatibles après compensation, les conflits et la clôture, puis tester l'ensemble sur téléphone. Un bundle Android exporté n'est pas un test fonctionnel sur appareil.
+
+### Statut des clients dans le banc
+
+La référence v6 inclut les clients désactivés afin de conserver l'accès à leurs
+factures et soldes, ainsi que leur statut et sa révision. Les anciens caches
+v6 restent consultables mais ne permettent pas de créer une vente ou une
+préétablie tant qu'une référence avec statuts complets n'a pas été reçue. Une
+révision de statut ne peut pas régresser ; un changement de statut invalide
+une confirmation non encore enregistrée. Les opérations déjà enregistrées
+conservent leurs mécanismes habituels de reprise.
+
+Cette protection est locale et fondée sur la dernière référence reçue : un
+appareil hors ligne peut ignorer une désactivation ultérieure. Les points
+serveur de création n'appliquent pas encore une vérification v6 de statut à
+la synchronisation. Il faut définir le traitement des opérations hors ligne
+et des doublons avant d'activer ce parcours ; ce banc ne constitue pas une
+protection globale ni une autorisation de production.

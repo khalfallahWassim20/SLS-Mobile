@@ -8,6 +8,15 @@ export function validateDayInvoiceReference(input:unknown) {
  if(!object(input)||input.version!==6||!Array.isArray(input.journalStates)||!Array.isArray(input.dayPayments)||!Array.isArray(input.saleDays)||!Array.isArray(input.settlementDays)||!Array.isArray(input.settlementProofs))throw Error('Référence facture du jour invalide.');
  const base=validateIdentifiedReference({...input,version:4});
  if(!base.journalStates || !base.saleStates || !base.settlementStates)throw Error('Marqueurs de référence manquants.');
+ // Anciens caches consultables, mais sans statut prouvé ils ne permettent
+ // aucune nouvelle vente. Une liste partielle n'est jamais acceptée.
+ if(input.clientStatuses!==undefined&&!Array.isArray(input.clientStatuses))throw Error('Statuts clients invalides.');
+ const statusByClient=new Map<string,{clientId:string;active:boolean;statusRevision:string}>(),knownClients=new Set(base.clients.map(c=>c.id));
+ for(const raw of (input.clientStatuses??[]) as unknown[]){
+  if(!object(raw)||Object.keys(raw).sort().join(',')!=='active,clientId,statusRevision'||typeof raw.clientId!=='string'||!knownClients.has(raw.clientId)||statusByClient.has(raw.clientId)||typeof raw.active!=='boolean'||typeof raw.statusRevision!=='string'||!/^[1-9]\d{0,18}$/.test(raw.statusRevision)||BigInt(raw.statusRevision)>9223372036854775807n)throw Error('Statut client invalide.');
+  statusByClient.set(raw.clientId,{clientId:raw.clientId,active:raw.active,statusRevision:raw.statusRevision});
+ }
+ if(input.clientStatuses!==undefined&&statusByClient.size!==base.clients.length)throw Error('Statuts clients incomplets.');
  const saleStates=new Map(base.saleStates.map(s=>[s.saleId,s]));
  const saleDays=new Map<string,{saleId:string;clientId:string;day:string}>();
  for(const raw of input.saleDays){
@@ -69,7 +78,7 @@ export function validateDayInvoiceReference(input:unknown) {
  });
  for(const invoice of base.journalStates){if(flags.get(invoice.id)!==declared.has(invoice.id))throw Error('Déclaration de facture serveur incohérente.');}
  for(const payment of dayPayments)if(payment.preInvoice&&!payment.preInvoice.declare){const invoice=base.journalStates.find(j=>j.id===payment.preInvoice!.id)!;if(!declared.has(invoice.id)&&!summarizePreInvoice(invoice.total,invoice.receipts).declared)throw Error('Facture serveur non déclarée.');}
- return {...base,version:6 as const,saleDays:[...saleDays.values()],saleProofs:[...saleProofs.values()],hasSaleProofs:input.saleProofs!==undefined,settlementDays:[...settlementDays.values()],settlementProofs:[...settlementProofs.values()],oldDebtMarkers:[...oldDebtMarkers.values()],dayPayments,declaredByDayPayment:[...declared]};
+ return {...base,version:6 as const,clientStatuses:[...statusByClient.values()],hasClientStatuses:input.clientStatuses!==undefined,saleDays:[...saleDays.values()],saleProofs:[...saleProofs.values()],hasSaleProofs:input.saleProofs!==undefined,settlementDays:[...settlementDays.values()],settlementProofs:[...settlementProofs.values()],oldDebtMarkers:[...oldDebtMarkers.values()],dayPayments,declaredByDayPayment:[...declared]};
 }
 
 import {reconcileClientBalance,reconcileJournalBalance} from '@sls/domain';

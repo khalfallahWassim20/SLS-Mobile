@@ -37,6 +37,8 @@ function assertBaseProgress(old:V4|V6,next:V6) {
  for(const client of old.clients)if(!clients.has(client.id))throw Error('Client serveur absent : rapprochement nécessaire.');
 }
 function assertPaymentProgress(old:V6,next:V6) {
+ if(old.hasClientStatuses&&!next.hasClientStatuses)throw Error('Statuts clients absents : régression refusée.');
+ if(old.hasClientStatuses){const statuses=new Map(next.clientStatuses.map(s=>[s.clientId,s]));for(const prior of old.clientStatuses){const current=statuses.get(prior.clientId);if(!current||BigInt(current.statusRevision)<BigInt(prior.statusRevision)||(current.statusRevision===prior.statusRevision&&current.active!==prior.active))throw Error('Statut client périmé ou incohérent.');}}
  if(old.hasSaleProofs&&!next.hasSaleProofs)throw Error('Preuves de vente absentes : régression refusée.');
  if(old.hasSaleProofs){const proofs=new Map(next.saleProofs.map(p=>[p.saleId,p]));for(const prior of old.saleProofs){const current=proofs.get(prior.saleId);if(!current||current.version<prior.version||(current.version===prior.version&&current.hash!==prior.hash))throw Error('Preuve de vente périmée ou incohérente.');}}
  const dates=new Map(next.saleDays.map(s=>[s.saleId,s]));

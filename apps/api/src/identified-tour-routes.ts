@@ -130,7 +130,9 @@ export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enfo
  if(options.dayInvoiceTestOnly===true)r.get('/day-invoice-reference',async(req,res,next)=>{try{
   const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));
   if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
-  res.json(await readDayInvoiceReference(pool));
+  // Garder les clients désactivés dans la référence : leurs soldes et leurs
+  // règlements restent nécessaires ; leur statut interdit les nouvelles ventes.
+  res.json(await readDayInvoiceReference(pool,true));
  }catch(e){errorHandler(e,res,next);}});
  if(options.dayInvoiceTestOnly===true)r.post('/day-invoice-payments',async(req,res,next)=>{try{
   const status=await storeDayInvoicePayment(pool,req.body,{secret,token:bearer(req.get('Authorization'))},readServerDayInvoiceSource);
