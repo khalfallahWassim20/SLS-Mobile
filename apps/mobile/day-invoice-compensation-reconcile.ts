@@ -3,7 +3,7 @@
 import {canonicalJson} from '@sls/domain';
 import type {DeviceIdentity} from './identified-device';
 import {acquireDayInvoiceSync,releaseDayInvoiceSync} from './day-invoice-sync-lock';
-import {readLocalCompensation} from './day-invoice-compensation-local';
+import {readLocalCompensation,readLocalCompensationById} from './day-invoice-compensation-local';
 import {readLocalCompensationView} from './day-invoice-compensation-view';
 import {verifyCompensationReceipt} from './day-invoice-compensation-upload';
 type Bind=string|number|null;
@@ -11,12 +11,12 @@ type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync
 type Response={ok:boolean;status:number;json:()=>Promise<unknown>};
 type IO={transaction:<T>(work:(tx:Tx)=>Promise<T>)=>Promise<T>;check:()=>void;verifyServer:(identity:DeviceIdentity,check:()=>void)=>Promise<void>;read:(operationId:string)=>Promise<Response>};
 const obj=(value:unknown):value is Record<string,any>=>!!value&&typeof value==='object'&&!Array.isArray(value);
-export async function reconcileCompensatedInvoice(identity:DeviceIdentity,verified:DeviceIdentity,io:IO){
+export async function reconcileCompensatedInvoice(identity:DeviceIdentity,verified:DeviceIdentity,io:IO,operationId?:string){
  acquireDayInvoiceSync();
  try{
   const check=()=>{io.check();if(identity.commercialId!==verified.commercialId||identity.serverOrigin!==verified.serverOrigin)throw Error('Session ou serveur différent du téléphone lié.');};
   check();await io.verifyServer(identity,check);check();
-  const readLocal=()=>io.transaction(async tx=>{check();const saved=await readLocalCompensation(tx,identity),view=await readLocalCompensationView(tx,identity);check();if(!saved||!view||saved.receipt===null||view.syncStatus!=='proven')throw Error('Reçu de compensation indisponible : synchronisez d’abord.');return {saved,view};});
+  const readLocal=()=>io.transaction(async tx=>{check();const saved=operationId===undefined?await readLocalCompensation(tx,identity):await readLocalCompensationById(tx,identity,operationId),view=await readLocalCompensationView(tx,identity,operationId);check();if(!saved||!view||saved.receipt===null||view.syncStatus!=='proven')throw Error('Reçu de compensation indisponible : synchronisez d’abord.');return {saved,view};});
   const before=await readLocal();check();const response=await io.read(before.view.operationId);check();
   if(!response.ok)throw Error(`Facture serveur indisponible (${response.status}).`);
   const body=await response.json();check();

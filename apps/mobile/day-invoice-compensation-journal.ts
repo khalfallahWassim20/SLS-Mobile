@@ -3,7 +3,7 @@
 import {canonicalJson} from '@sls/domain';
 import type {DeviceIdentity} from './identified-device';
 import {acquireDayInvoiceSync,releaseDayInvoiceSync} from './day-invoice-sync-lock';
-import {readLocalCompensation} from './day-invoice-compensation-local';
+import {readLocalCompensation,readLocalCompensationById} from './day-invoice-compensation-local';
 import {readLocalCompensationView} from './day-invoice-compensation-view';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
@@ -24,11 +24,11 @@ export function validateCompensatedJournal(value:unknown,expected:{operationId:s
  if(billed!==BigInt(value.totalBilled)||refund!==BigInt(value.refund)||credit!==BigInt(value.credit)||!own||own.refund!==expected.refund||own.credit!==expected.credit)throw Error('Compensation du journal incohérente.');
  return value as CompensatedJournal;
 }
-export async function readVerifiedCompensatedJournal(identity:DeviceIdentity,verified:DeviceIdentity,io:IO){
+export async function readVerifiedCompensatedJournal(identity:DeviceIdentity,verified:DeviceIdentity,io:IO,operationId?:string){
  acquireDayInvoiceSync();try{
   const check=()=>{io.check();if(identity.commercialId!==verified.commercialId||identity.serverOrigin!==verified.serverOrigin)throw Error('Session ou serveur différent du téléphone lié.');};
   check();await io.verifyServer(identity,check);check();
-  const readLocal=()=>io.transaction(async tx=>{check();const saved=await readLocalCompensation(tx,identity),view=await readLocalCompensationView(tx,identity);check();if(!saved||!view||saved.receipt===null||view.syncStatus!=='proven')throw Error('Reçu de compensation indisponible : synchronisez d’abord.');return {saved,view};});
+  const readLocal=()=>io.transaction(async tx=>{check();const saved=operationId===undefined?await readLocalCompensation(tx,identity):await readLocalCompensationById(tx,identity,operationId),view=await readLocalCompensationView(tx,identity,operationId);check();if(!saved||!view||saved.receipt===null||view.syncStatus!=='proven')throw Error('Reçu de compensation indisponible : synchronisez d’abord.');return {saved,view};});
   const before=await readLocal(),response=await io.read(before.view.operationId);check();if(!response.ok)throw Error(`Journal serveur indisponible (${response.status}).`);
   const body=await response.json();check();const view=before.view;
   const result=validateCompensatedJournal(body,{operationId:view.operationId,commercialId:identity.commercialId,clientId:view.clientId,day:view.eventDay,refund:view.refund,credit:view.credit});

@@ -23,8 +23,14 @@ la compare à la photographie de la facture. Les anciennes compensations sans
 copie continuent d'utiliser le cache précédent, qui demeure protégé contre
 l'écrasement. La copie n'atteste ni la fraîcheur du serveur ni un remboursement
 physique. Elle ne lève aucune garde : choix réel, plusieurs compensations,
-actualisation du cache, soldes et reprise complète restent à intégrer. Aucun test
-n'a été effectué sur cette modification.
+actualisation du cache, soldes et reprise complète restent à intégrer. Une
+préparation interne sait inventorier jusqu'à 1 000 compensations locales de
+clients différents, refuser les doublons, vérifier chaque photographie et
+reprendre leurs envois un par un en conservant chaque reçu. La reprise ciblée et
+les adaptateurs associés sont limités au banc isolé ; le parcours actuel ne peut
+toujours créer qu'une compensation locale et ne sait pas rejouer plusieurs
+choix pour le même client. Ces changements ne lèvent aucune garde. Aucun test
+n'a été effectué sur ces modifications.
 
 ## Raccordement du paiement unique (non validé)
 

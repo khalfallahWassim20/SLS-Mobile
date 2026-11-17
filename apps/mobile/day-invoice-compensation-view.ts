@@ -2,13 +2,12 @@
  * anciens soldes ou la clôture et n'atteste pas un versement physique. */
 import {selectDayInvoiceExcessPlan} from '../../packages/domain/src/day-invoice-excess-plan';
 import type {DeviceIdentity} from './identified-device';
-import {readLocalCompensation} from './day-invoice-compensation-local';
+import {readLocalCompensation,readLocalCompensationById,readLocalCompensations} from './day-invoice-compensation-local';
 import {provePreCompensationSnapshot,readFrozenCompensationReference} from './day-invoice-compensation-snapshot';
 import {tunisDay} from './journal';
 type Bind=string|number|null;
 type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
-export async function readLocalCompensationView(tx:Tx,identity:DeviceIdentity){
- const saved=await readLocalCompensation(tx,identity);if(!saved)return null;
+async function projectLocalCompensation(tx:Tx,identity:DeviceIdentity,saved:NonNullable<Awaited<ReturnType<typeof readLocalCompensation>>>){
  try{
   const {input,receipt}=saved,{event,compensation}=JSON.parse(saved.payload),capture=JSON.parse(input.fingerprint),invoice=JSON.parse(capture.invoice),previous=capture.previous;
   const frozen=await readFrozenCompensationReference(tx,identity,input.operationId,input.fingerprint);
@@ -26,6 +25,27 @@ export async function readLocalCompensationView(tx:Tx,identity:DeviceIdentity){
    payments:before.payments.map(({operationId,recordedAt,amount,mode,chequeNumber,chequeBank,chequeDue})=>({operationId,recordedAt,amount,mode,chequeNumber,chequeBank,chequeDue})),
    refund:plan.selected.refundAmount,credit:plan.selected.creditAmount,syncStatus:receipt===null?'pending' as const:'proven' as const};
  }catch{throw Error('Vue de compensation incohérente : rapprochement nécessaire.');}
+}
+export async function readLocalCompensationView(tx:Tx,identity:DeviceIdentity,operationId?:string){
+ const saved=operationId===undefined?await readLocalCompensation(tx,identity):await readLocalCompensationById(tx,identity,operationId);
+ return saved?projectLocalCompensation(tx,identity,saved):null;
+}
+/** Vue exhaustive réservée à la future reprise multi-clients. Ne rend pas les
+ * anciennes lectures ou les écritures compatibles avec ces compensations. */
+export async function readLocalIndependentCompensationViews(tx:Tx,identity:DeviceIdentity){
+ const entries=await readLocalCompensations(tx,identity),views=[];
+ for(const entry of entries)views.push(await projectLocalCompensation(tx,identity,entry));
+ return views;
+}
+/** Agrège seulement les choix enregistrés par ce téléphone, sans prétendre
+ * connaître les autres appareils ni le moyen ou le versement physique. */
+export async function readIndependentCompensationCollectionImpact(tx:Tx,identity:DeviceIdentity,commercialId:string,day:string){
+ const date=new Date(`${day}T00:00:00.000Z`);
+ if(!/^\d{4}-\d{2}-\d{2}$/.test(day)||!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==day||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(commercialId))throw Error('Commercial ou journée invalide.');
+ const views=(await readLocalIndependentCompensationViews(tx,identity)).filter(v=>v.commercialId===commercialId&&v.eventDay===day);
+ const refund=views.reduce((n,v)=>n+BigInt(v.refund),0n),credit=views.reduce((n,v)=>n+BigInt(v.credit),0n);
+ if(refund>BigInt(Number.MAX_SAFE_INTEGER)||credit>BigInt(Number.MAX_SAFE_INTEGER))throw Error('Impact des compensations trop élevé.');
+ return {refund:Number(refund),credit:Number(credit),netCollectedChange:refund===0n?0:-Number(refund),pending:views.filter(v=>v.syncStatus==='pending').length,operations:views.map(v=>({operationId:v.operationId,clientId:v.clientId,syncStatus:v.syncStatus}))};
 }
 /** Impact théorique sur le total encaissé par jour et commercial de saisie,
  * jamais sur les espèces : le moyen et le versement physique ne sont pas prouvés. */

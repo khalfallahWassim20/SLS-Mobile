@@ -24,8 +24,8 @@ import {captureDayInvoiceForm,confirmDayInvoiceForm} from './day-invoice-form';
 import {captureDayInvoiceExportPayments,captureDayInvoiceJournalExport} from './day-invoice-journal-export';
 import {synchronizeDayInvoicePrototype} from './day-invoice-sync';
 import {dayInvoiceCompensationLocalSchema,confirmLocalCompensation,type LocalCompensationInput} from './day-invoice-compensation-local';
-import {readLocalCompensationView} from './day-invoice-compensation-view';
-import {synchronizeLocalCompensation} from './day-invoice-compensation-sync';
+import {readLocalCompensationView,readLocalIndependentCompensationViews} from './day-invoice-compensation-view';
+import {synchronizeLocalCompensation,synchronizeIndependentLocalCompensations} from './day-invoice-compensation-sync';
 import {reconcileCompensatedInvoice} from './day-invoice-compensation-reconcile';
 import {readVerifiedCompensatedJournal} from './day-invoice-compensation-journal';
 import {createDayInvoiceTransportPrototype} from './day-invoice-transport';
@@ -748,6 +748,20 @@ export async function synchronizeCompensationTestPrototype(identity:DeviceIdenti
  const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
  const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
  return synchronizeLocalCompensation(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{transaction,check:transport.check,verifyServer:transport.verifyServer,send:transport.sendCompensation,receipt:transport.readCompensationReceipt});
+}
+
+/** Réservé à la base fictive. Les gardes des parcours ordinaires restent en
+ * place même après acquittement de toutes les opérations indépendantes. */
+export async function readIndependentCompensationViewsTestPrototype(identity:DeviceIdentity,testOnly:string){
+ if(!ISOLATED_DAY_INVOICE_TEST||testOnly!=='DONNEES_FICTIVES_ISOLEES')throw Error('Essai de compensation isolé désactivé.');
+ const database=await db();let result!:Awaited<ReturnType<typeof readLocalIndependentCompensationViews>>;
+ await database.withExclusiveTransactionAsync(async tx=>{result=await readLocalIndependentCompensationViews(tx,identity);});return result;
+}
+export async function synchronizeIndependentCompensationsTestPrototype(identity:DeviceIdentity,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,testOnly:string,allowPrivateHttp=false){
+ if(!ISOLATED_DAY_INVOICE_TEST||testOnly!=='DONNEES_FICTIVES_ISOLEES')throw Error('Essai de compensation isolé désactivé.');
+ const database=await db(),transport=createDayInvoiceTransportPrototype(session,identity,pin,{request:fetch,isCurrentSession,onUnauthorized,allowPrivateHttp});
+ const transaction=async<T>(work:(tx:SQLite.SQLiteDatabase)=>Promise<T>)=>{let result!:T;await database.withExclusiveTransactionAsync(async tx=>{result=await work(tx);});return result;};
+ return synchronizeIndependentLocalCompensations(identity,{commercialId:session.id,serverOrigin:session.serverOrigin},{transaction,check:transport.check,verifyServer:transport.verifyServer,send:transport.sendCompensation,receipt:transport.readCompensationReceipt});
 }
 
 export async function reconcileCompensatedInvoiceTestPrototype(identity:DeviceIdentity,session:CommercialSession,pin:LineagePin|null,isCurrentSession:()=>boolean,onUnauthorized:()=>void,testOnly:string,allowPrivateHttp=false){

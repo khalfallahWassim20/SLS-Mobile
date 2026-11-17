@@ -25,12 +25,10 @@ export const dayInvoiceCompensationLocalSchema=`CREATE TABLE IF NOT EXISTS day_i
  input TEXT NOT NULL, payload TEXT NOT NULL, receipt TEXT
 ); ${dayInvoiceCompensationSnapshotSchema}`;
 async function bound(tx:Tx,identity:DeviceIdentity){const actual=await getDeviceIdentity(tx);if(!actual||actual.commercialId!==identity.commercialId||actual.serverOrigin!==identity.serverOrigin)throw Error('Identité ou serveur incohérent.');}
-/** Relit et vérifie chaque copie avant toute reprise ou acquittement. */
-export async function readLocalCompensation(tx:Tx,identity:DeviceIdentity):Promise<{input:Input;payload:string;receipt:unknown|null}|null>{
- await bound(tx,identity);
- const rows=await tx.getAllAsync<Row>('SELECT operation_id AS operationId,sale_id AS saleId,commercial_id AS commercialId,server_origin AS serverOrigin,input,payload,receipt FROM day_invoice_compensation_local LIMIT 2');
- if(!rows.length)return null;if(rows.length!==1)throw Error('Compensations locales ambiguës.');
- const r=rows[0];let input:Input,stored:any,receipt:unknown|null;
+type SavedCompensation={input:Input;payload:string;receipt:unknown|null};
+/** Vérifie la vente, sa révision et sa trace avant toute reprise. */
+async function verifyLocalCompensationRow(tx:Tx,identity:DeviceIdentity,r:Row):Promise<SavedCompensation>{
+ let input:Input,stored:any,receipt:unknown|null;
  try{input=JSON.parse(r.input);stored=JSON.parse(r.payload);receipt=r.receipt===null?null:JSON.parse(r.receipt);
   if(!input||Object.keys(input).sort().join(',')!=='choice,fingerprint,lines,operationId,recordedAt,saleId'||!Number.isSafeInteger(input.saleId)||input.saleId<1||!uuid.test(input.operationId)||typeof input.recordedAt!=='string'||!Number.isFinite(Date.parse(input.recordedAt))||new Date(input.recordedAt).toISOString()!==input.recordedAt||!['refund','credit'].includes(input.choice)||!Array.isArray(input.lines)||!input.lines.length||input.lines.length>200||r.operationId!==input.operationId||r.saleId!==input.saleId||r.commercialId!==identity.commercialId||r.serverOrigin!==identity.serverOrigin)throw Error();
   const capture=JSON.parse(input.fingerprint),invoice=JSON.parse(capture.invoice),previous=capture.previous;
@@ -48,6 +46,43 @@ export async function readLocalCompensation(tx:Tx,identity:DeviceIdentity):Promi
   if(receipt!==null)verifyCompensationReceipt(stored,receipt,identity.commercialId);
  }catch{throw Error('Preuve de compensation locale incohérente : rapprochement nécessaire.');}
  return {input,payload:r.payload,receipt};
+}
+/** Inventaire complet de compensations indépendantes, sans autoriser de
+ * nouvelles écritures. Deux choix pour un client exigent un rejeu historique
+ * qui n'existe pas encore ; une table trop grande ne peut être lue en partie. */
+export async function readLocalCompensations(tx:Tx,identity:DeviceIdentity):Promise<SavedCompensation[]>{
+ await bound(tx,identity);
+ const rows=await tx.getAllAsync<Row>('SELECT operation_id AS operationId,sale_id AS saleId,commercial_id AS commercialId,server_origin AS serverOrigin,input,payload,receipt FROM day_invoice_compensation_local ORDER BY operation_id LIMIT 1001');
+ if(rows.length>1000)throw Error('Trop de compensations locales : rapprochement nécessaire.');
+ const result:SavedCompensation[]=[],clients=new Set<string>(),operations=new Set<string>(),exactOperations=new Set<string>();
+ for(const row of rows){
+  const saved=await verifyLocalCompensationRow(tx,identity,row),event=JSON.parse(saved.payload).event;
+  if(typeof event.sale.clientId!=='string'||!uuid.test(event.sale.clientId))throw Error('Client de compensation invalide.');
+  const client=event.sale.clientId.toLowerCase(),operation=saved.input.operationId.toLowerCase();
+  if(clients.has(client)||operations.has(operation))throw Error('Compensations locales ambiguës : historique complet requis.');
+  clients.add(client);operations.add(operation);exactOperations.add(saved.input.operationId);result.push(saved);
+ }
+ const snapshots=await tx.getAllAsync<{operationId:string;commercialId:string;serverOrigin:string}>('SELECT operation_id AS operationId,commercial_id AS commercialId,server_origin AS serverOrigin FROM day_invoice_compensation_snapshots LIMIT 1001');
+ if(snapshots.length>1000)throw Error('Trop de photographies de compensation.');
+ const seenSnapshots=new Set<string>();
+ for(const snapshot of snapshots){
+  if(typeof snapshot.operationId!=='string'||!uuid.test(snapshot.operationId)||snapshot.commercialId!==identity.commercialId||snapshot.serverOrigin!==identity.serverOrigin||!exactOperations.has(snapshot.operationId)||seenSnapshots.has(snapshot.operationId.toLowerCase()))throw Error('Photographie de compensation orpheline ou incohérente.');
+  seenSnapshots.add(snapshot.operationId.toLowerCase());
+ }
+ return result;
+}
+/** Ancien appelant : ne jamais choisir silencieusement entre plusieurs lignes. */
+export async function readLocalCompensation(tx:Tx,identity:DeviceIdentity):Promise<SavedCompensation|null>{
+ const rows=await readLocalCompensations(tx,identity);
+ if(rows.length>1)throw Error('Compensations locales ambiguës.');
+ return rows[0]??null;
+}
+/** La reprise ciblée contrôle aussi l'ensemble du registre, pas uniquement la
+ * ligne demandée : un doublon ou une preuve altérée bloque l'acquittement. */
+export async function readLocalCompensationById(tx:Tx,identity:DeviceIdentity,operationId:string):Promise<SavedCompensation|null>{
+ if(typeof operationId!=='string'||!uuid.test(operationId))throw Error('Identifiant de compensation invalide.');
+ const rows=await readLocalCompensations(tx,identity);
+ return rows.find(row=>row.input.operationId===operationId)??null;
 }
 /** Révision et choix sur une seule transaction ; aucune file historique de
  * vente ne doit envoyer séparément cette révision sans sa compensation. */
@@ -91,8 +126,9 @@ export async function confirmLocalCompensation(tx:Tx,identity:DeviceIdentity,inp
  const saved=await readLocalCompensation(tx,identity);if(!saved)throw Error('Preuve locale indisponible.');return {status:'created' as const,...saved};
 }
 /** Garder la preuve, et refuser toute file changée pendant le transfert. */
-export async function acknowledgeLocalCompensation(tx:Tx,identity:DeviceIdentity,payload:string,receipt:unknown){
- const current=await readLocalCompensation(tx,identity);if(!current||current.payload!==payload)throw Error('File de compensation modifiée : accusé refusé.');
+export async function acknowledgeLocalCompensation(tx:Tx,identity:DeviceIdentity,payload:string,receipt:unknown,operationId?:string){
+ const current=operationId===undefined?await readLocalCompensation(tx,identity):await readLocalCompensationById(tx,identity,operationId);
+ if(!current||current.payload!==payload)throw Error('File de compensation modifiée : accusé refusé.');
  verifyCompensationReceipt(JSON.parse(payload),receipt,identity.commercialId);
  if(current.receipt!==null&&canonicalJson(current.receipt)!==canonicalJson(receipt))throw Error('Reçu de compensation différent.');
  if(current.receipt===null)await tx.runAsync('UPDATE day_invoice_compensation_local SET receipt=? WHERE operation_id=?',JSON.stringify(receipt),current.input.operationId);
