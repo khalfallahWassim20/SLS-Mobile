@@ -16,6 +16,7 @@ import {readCompensatedJournalDayInTransaction} from './identified-journal-day.j
 import {compensationSchema,compensationHash,compensationRegistryExists} from './day-invoice-compensation.js';
 import {assessDayInvoiceSaleRevision,type DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
 import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
+import {assertDayPaymentChronology} from './day-invoice-payment-chronology.js';
 
 const uuid=z.string().uuid(), money=z.number().int().safe().nonnegative();
 export const saleSchema=z.object({createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().min(1).max(200),syncSaleId:uuid,syncVersion:z.number().int().min(1).max(1000000),
@@ -95,9 +96,8 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
    if(existing.some(p=>p.clientId===sale.clientId))throw new JournalConflict('Client déjà compensé : historique complet requis.');
    if(existing.length>=1000)throw new JournalConflict('Trop de compensations : rapprochement requis.');
   }
-  let settledDay=false;
   if(session.dayInvoiceAware){
-   settledDay=await assertDayInvoiceAwareSaleSafe(db,sale.clientId,day,event.version,event.recordedAt,!!compensation);
+   await assertDayInvoiceAwareSaleSafe(db,sale.clientId,day,event.version,event.recordedAt,!!compensation);
    // Le remboursement historique n'est pas le choix de trop-perçu v6.
    if(event.version>1&&event.refund!==0)throw new JournalConflict('Remboursement historique incompatible avec une modification v6.');
   } else await assertLegacyClientDaySafe(db,sale.clientId,day);
@@ -118,14 +118,15 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   if(session.dayInvoiceAware&&event.version>1){
    // Vérifier toute la facture, même quand elle n'a pas de paiement unifié :
    // un paiement initial historique peut lui aussi entraîner un trop-perçu.
-   // La compensation reste réservée au protocole préparatoire existant.
-   if(compensation&&!settledDay)throw new JournalConflict('Aucun règlement unifié ne justifie cette compensation.');
+   // Le choix peut aussi concerner un paiement initial de vente ou un reçu
+   // historique prouvé, même sans paiement unifié. Il reste expérimental.
    const source=await (compensation?readSourceForNewIndependentCompensation:readServerDayInvoiceSource)(db,{clientId:sale.clientId,day} as DayInvoicePayment);
-   const paymentTimes=await db.query(`SELECT operation_id,client_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash
-    FROM identified_day_invoice_payments WHERE client_id=$1 OR payload->>'clientId'=$1::text LIMIT 20001`,[sale.clientId]);
-   if(paymentTimes.rows.length>20000)throw new JournalConflict('Historique des paiements incomplet : rapprochement requis.');
-   try{for(const row of paymentTimes.rows){const p=parseStoredDayInvoicePayment(row);if(p.clientId!==sale.clientId||p.day===day&&Date.parse(p.recordedAt)>recordedMs)throw Error();}}
-   catch{throw new JournalConflict('Modification antérieure à un paiement ou preuve incohérente : rapprochement requis.');}
+   // Réutiliser les preuves chronologiques du paiement : aucune source de la
+   // facture ni aucun reçu historique ne peut être postérieur à la révision.
+   // La requête se fait avant insertion et sous les mêmes verrous client/jour.
+   try{await assertDayPaymentChronology(db,{clientId:sale.clientId,day,recordedAt:event.recordedAt,
+    sales:source.sales.map(s=>({id:s.id,version:s.version})),preInvoice:source.preInvoice?{id:source.preInvoice.id,version:source.preInvoice.version,total:source.preInvoice.total,declare:false}:null});}
+   catch{throw new JournalConflict('Modification antérieure à une source ou paiement, ou preuve incohérente : rapprochement requis.');}
    const before=source.sales.find(s=>s.id===event.saleId);
    if(!before||before.version!==event.version-1||before.total!==previous?.payload?.sale?.total||before.paid!==previous?.payload?.sale?.paid)throw new JournalConflict('Vente ou facture du jour modifiée : actualisation nécessaire.');
    try{
@@ -133,7 +134,7 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
     if(compensation){if(!computed.requiresChoice||computed.excess!==compensation.amount||computed.previousTotal!==compensation.previousTotal||computed.paid!==compensation.paid)throw Error('Choix ou facture modifiés.');}
     else if(computed.requiresChoice)throw Error('Paiement supérieur au total modifié.');
    }catch{throw new JournalConflict('Total modifié ou compensation incohérente : choix remboursement ou crédit requis.');}
-  } else if(compensation)throw new JournalConflict('Aucun règlement unifié ne justifie cette compensation.');
+  } else if(compensation)throw new JournalConflict('La compensation exige une révision de vente.');
   await clientExists(db,sale.clientId);
   await db.query('INSERT INTO identified_sale_events(operation_id,sale_id,version,client_id,commercial_id,journal_date,event_date,payload,payload_hash) VALUES($1,$2,$3,$4,$5,$6::date,$7::date,$8::jsonb,$9)',[event.operationId,event.saleId,event.version,sale.clientId,actor.id,day,operationDay,payload,hash]);
   if(compensation){

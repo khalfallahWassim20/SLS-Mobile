@@ -51,7 +51,7 @@ export async function prepareSaleEditAttempt(tx:Tx,identity:DeviceIdentity,input
  if(preview.previous.clientId!==input.clientId||preview.day!==input.day||preview.fingerprint!==input.fingerprint)throw Error('Facture ou solde modifié : vérifiez avant de confirmer.');
  if(preview.assessment.requiresChoice)throw Error('Total inférieur au montant payé : remboursement ou crédit requis.');
  if(Date.parse(input.recordedAt)<=Date.parse(preview.previous.createdAt))throw Error('Date de révision invalide.');
- await assertSaleEditChronology(tx,identity,input.clientId,input.day,input.recordedAt);
+ await assertSaleEditChronology(tx,identity,input.clientId,input.day,input.recordedAt,preview.source);
  const stored:StoredSaleEditAttempt={attempt:input,result:null};await tx.runAsync('INSERT INTO day_invoice_sale_edit_attempt(id,commercial_id,server_origin,payload) VALUES(1,?,?,?)',identity.commercialId,identity.serverOrigin,JSON.stringify(stored));return stored;
 }
 export async function confirmSaleEditAttempt(tx:Tx,identity:DeviceIdentity,operationId:string,digest:(text:string)=>Promise<string>){

@@ -11,7 +11,7 @@ import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readIdentifiedOutbox} from './identified-outbox';
 import {readDayInvoiceOutbox,readDayInvoicePayments} from './day-invoice-queue';
 import {readOldDebtOutbox,validateOldDebtEvent,type OldDebtEvent} from './day-invoice-old-debt-queue';
-import {captureDayInvoiceForm} from './day-invoice-form';
+import {captureDayInvoiceForm,assertLocalPaymentChronology} from './day-invoice-form';
 import {readDayInvoiceClients} from './day-invoice-clients';
 import {readLocalSaleCashLedger} from './credit-sale-refund-journal-prototype';
 import {recordSaleEventTime} from './sale-event-time';
@@ -63,8 +63,9 @@ async function ensureClientIdle(tx:Tx,identity:DeviceIdentity,clientId:string,da
 /** Une révision doit suivre tous les paiements locaux connus de sa facture
  * et les règlements de dette du même jour. Le serveur refait le contrôle avec
  * ses propres événements, notamment ceux d'autres téléphones. */
-export async function assertSaleEditChronology(tx:Tx,identity:DeviceIdentity,clientId:string,day:string,recordedAt:string){
+export async function assertSaleEditChronology(tx:Tx,identity:DeviceIdentity,clientId:string,day:string,recordedAt:string,source:{sales:{id:string}[];preInvoice:{id:string}|null}){
  const at=Date.parse(recordedAt);if(!Number.isFinite(at))throw Error('Date de révision invalide.');
+ await assertLocalPaymentChronology(tx,clientId,recordedAt,source,'modification');
  const reference=await readDayInvoiceReferenceCache(tx,identity);if(!reference)throw Error('Référence facture du jour indisponible.');
  const local=await readDayInvoicePayments(tx,identity,clientId,day);
  for(const payment of [...local,...reference.dayPayments.filter(p=>p.clientId===clientId&&p.day===day)])if(Date.parse(payment.recordedAt)>at)throw Error('Modification antérieure à un paiement : vérifiez l’horloge.');
@@ -129,7 +130,7 @@ export async function captureDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,sa
   const before=await provePreCompensationSnapshot(tx,identity,JSON.parse(fingerprint),previous.clientId,day);
   if(before.total!==assessment.previousTotal||before.paid!==assessment.paid)throw Error();
  }catch{throw Error('Photographie de compensation non vérifiable : synchronisation et rapprochement nécessaires.');}}
- return {previous,lines:clean,day,assessment,balanceAfter:Number(balanceAfter),excessPlan,fingerprint};
+ return {previous,lines:clean,day,source:invoice.source,assessment,balanceAfter:Number(balanceAfter),excessPlan,fingerprint};
 }
 export async function confirmDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,input:{saleId:number;lines:Line[];fingerprint:string;operationId:string;recordedAt:string},digest:(text:string)=>Promise<string>){
  if(!uuid.test(input.operationId)||typeof input.recordedAt!=='string'||!Number.isFinite(Date.parse(input.recordedAt))||new Date(input.recordedAt).toISOString()!==input.recordedAt)throw Error('Identifiant ou date de révision invalide.');
@@ -137,7 +138,7 @@ export async function confirmDayInvoiceSaleEdit(tx:Tx,identity:DeviceIdentity,in
  if(input.fingerprint!==current.fingerprint)throw Error('La facture ou le solde a changé : vérifiez à nouveau.');
  if(current.assessment.requiresChoice)throw Error('Total inférieur au montant payé : remboursement ou crédit requis.');
  if(Date.parse(input.recordedAt)<=Date.parse(previous.createdAt))throw Error('Date de révision invalide.');
- await assertSaleEditChronology(tx,identity,previous.clientId,current.day,input.recordedAt);
+ await assertSaleEditChronology(tx,identity,previous.clientId,current.day,input.recordedAt,current.source);
  const payments=await readDayInvoiceOutbox(tx,identity);
  if(payments.some(p=>{const payment=JSON.parse(p.payload);return payment.clientId===previous.clientId&&Date.parse(payment.recordedAt)>Date.parse(input.recordedAt);}))throw Error('Modification antérieure à un paiement en attente.');
  await assertDeviceWritable(tx,identity,[current.day,tunisDay(new Date(input.recordedAt))]);

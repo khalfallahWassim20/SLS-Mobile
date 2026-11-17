@@ -24,9 +24,15 @@ rapprochement. La date de la modification doit suivre les paiements connus et
 les règlements de dette locaux du même jour ; le serveur vérifie ses propres
 preuves et dates sous verrou, y compris celles reçues d'autres téléphones.
 Le serveur recalcule aussi le trop-perçu même en l'absence de paiement unifié,
-car un paiement initial historique peut exister. Tout choix de remboursement ou
-crédit reste expérimental et les gardes existantes restent actives. Modification
-non testée : ne pas activer le protocole sur des données réelles avant validation.
+car un paiement initial historique peut exister. Le protocole expérimental de
+compensation peut désormais accepter un tel trop-perçu si les sources et les
+preuves sont vérifiables, sans inventer de paiement unifié. Avant une révision,
+le téléphone contrôle les dates de ses sources locales ; le serveur vérifie
+les versions et dates des ventes, de la préétablie et de ses reçus ainsi que
+des paiements connus. Une source plus récente bloque la modification. Tout
+choix de remboursement ou crédit reste expérimental et les gardes existantes
+restent actives. Modification non testée : ne pas activer le protocole sur des
+données réelles avant validation.
 
 ## Photographie du choix de trop-perçu (préparatoire, non validée)
 

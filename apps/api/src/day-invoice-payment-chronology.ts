@@ -10,10 +10,11 @@ import {parseJournalSnapshot,journalSnapshotHash} from './journal-protocol.js';
 import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 
 const hash=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
-export async function assertDayPaymentChronology(db:PoolClient,event:DayInvoicePayment):Promise<void>{
+export async function assertDayPaymentChronology(db:PoolClient,event:Pick<DayInvoicePayment,'clientId'|'day'|'recordedAt'|'sales'|'preInvoice'>):Promise<void>{
  const at=Date.parse(event.recordedAt);
- const prior=await db.query(`SELECT operation_id,client_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash FROM identified_day_invoice_payments WHERE client_id=$1 OR payload->>'clientId'=$1::text`,[event.clientId]);
- for(const row of prior.rows){const p=parseStoredDayInvoicePayment(row);if(p.day===event.day&&Date.parse(p.recordedAt)>at)throw Error('Paiement antérieur à un règlement déjà enregistré.');}
+ const prior=await db.query(`SELECT operation_id,client_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash FROM identified_day_invoice_payments WHERE client_id=$1 OR payload->>'clientId'=$1::text LIMIT 20001`,[event.clientId]);
+ if(prior.rows.length>20000)throw Error('Historique des paiements incomplet.');
+ for(const row of prior.rows){const p=parseStoredDayInvoicePayment(row);if(p.clientId!==event.clientId||p.day===event.day&&Date.parse(p.recordedAt)>at)throw Error('Paiement antérieur à un règlement déjà enregistré ou mal attribué.');}
  const sales=await db.query(`WITH combined AS (
    SELECT operation_id,sale_id,client_id,version,payload,payload_hash,true AS identified FROM identified_sale_events WHERE sale_id=ANY($1::uuid[])
    UNION ALL SELECT operation_id,sale_id,client_id,version,payload,payload_hash,false AS identified FROM demo_sale_events WHERE sale_id=ANY($1::uuid[])
