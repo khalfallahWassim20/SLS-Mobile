@@ -2,11 +2,9 @@
  * fictifs isolés. Aucun chemin n'ouvre ou migre la base mobile normale. */
 import React,{useEffect,useRef,useState} from 'react';
 import {SafeAreaView,ScrollView,StyleSheet,Text,TextInput,TouchableOpacity,View} from 'react-native';
-import {openBoundCommercialSession,type CommercialSession} from './commercial-login';
+import type {CommercialSession} from './commercial-login';
 import {validSession} from './secure-commercial-session';
-import {fetchServerLineage} from './server-lineage-proof';
-import {assertIsolatedDayInvoicePin} from './day-invoice-isolated-setup';
-import {createDayInvoiceTransportPrototype} from './day-invoice-transport';
+import {connectIsolatedDayInvoice} from './day-invoice-isolated-connect';
 import {DAY_INVOICE_TEST_ACK} from './day-invoice-isolated-mode';
 import {DayInvoiceWorkspace} from './day-invoice-workspace';
 import {tunisDay} from './journal';
@@ -14,26 +12,16 @@ import {getBoundIdentity,readIsolatedDayInvoiceSetupStorage,initializeIsolatedDa
 type Setup=NonNullable<Awaited<ReturnType<typeof readIsolatedDayInvoiceSetupStorage>>>;
 export function DayInvoiceIsolatedApp(){
  const [setup,setSetup]=useState<Setup|null>(null),[ready,setReady]=useState(false),[session,setSession]=useState<CommercialSession|null>(null),[address,setAddress]=useState(''),[login,setLogin]=useState(''),[password,setPassword]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false),[day,setDay]=useState(()=>tunisDay(new Date())),[loginOpen,setLoginOpen]=useState(false);
- const mounted=useRef(false),running=useRef(false),generation=useRef(0),live=useRef<CommercialSession|null>(null);live.current=session;
+ const mounted=useRef(false),running=useRef(false),generation=useRef(0),live=useRef<CommercialSession|null>(null);
  useEffect(()=>{mounted.current=true;void readIsolatedDayInvoiceSetupStorage().then(value=>{if(mounted.current){setSetup(value);if(value)setAddress(value.identity.serverOrigin);setReady(true);}}).catch(e=>{if(mounted.current){setError(e instanceof Error?e.message:'Stockage indisponible.');setReady(true);}});return()=>{mounted.current=false;generation.current++;live.current=null;};},[]);
  useEffect(()=>{if(!session)return;const delay=Math.max(0,Date.parse(session.expiresAt)-Date.now());const timer=setTimeout(()=>{if(live.current?.token===session.token){live.current=null;setSession(null);setLoginOpen(true);setError('Session expirée : les données locales restent disponibles hors ligne. Reconnectez-vous pour synchroniser.');}},Math.min(delay,2147483647));return()=>clearTimeout(timer);},[session]);
  const current=(s:CommercialSession)=>!!mounted.current&&live.current?.token===s.token&&live.current.id===s.id&&live.current.serverOrigin===s.serverOrigin&&live.current.expiresAt===s.expiresAt;
  const unauthorized=(s:CommercialSession)=>{if(current(s)){live.current=null;setSession(null);setLoginOpen(true);setError('Session refusée : reconnectez-vous. Les opérations locales sont conservées.');}};
  const connect=async()=>{
   if(running.current||!ready)return;running.current=true;setBusy(true);setError('');const g=++generation.current,secret=password;setPassword('');
-  const check=()=>{if(!mounted.current||generation.current!==g)throw Error('Connexion interrompue.');};
   try{
-   const next=await openBoundCommercialSession(address,login,secret,fetch,getBoundIdentity);check();const identity={commercialId:next.id,serverOrigin:next.serverOrigin};
-   const checkSession=()=>{check();if(!validSession(next,identity))throw Error('Session expirée ou horloge incorrecte.');};checkSession();
-   const pin=await fetchServerLineage(next,fetch,true);checkSession();let local=await readIsolatedDayInvoiceSetupStorage();checkSession();
-   if(local)assertIsolatedDayInvoicePin(local,pin);
-   else{
-    // La route v6 doit exister avant toute liaison ou écriture locale.
-    const transport=createDayInvoiceTransportPrototype(next,identity,pin,{request:fetch,isCurrentSession:()=>mounted.current&&generation.current===g,allowPrivateHttp:true});
-    await transport.verifyServer(identity,checkSession);checkSession();const reference=await transport.fetchReference();checkSession();
-    local=await initializeIsolatedDayInvoiceStorage(identity,pin,next.name,reference,checkSession);checkSession();
-   }
-   live.current=next;setSession(next);setSetup(local);setAddress(identity.serverOrigin);setLoginOpen(false);
+   const result=await connectIsolatedDayInvoice(address,login,secret,{request:fetch,readIdentity:getBoundIdentity,readSetup:readIsolatedDayInvoiceSetupStorage,initialize:initializeIsolatedDayInvoiceStorage,isCurrent:()=>mounted.current&&generation.current===g});
+   live.current=result.session;setSession(result.session);setSetup(result.setup);setAddress(result.session.serverOrigin);setLoginOpen(false);
   }catch(e){if(mounted.current&&generation.current===g)setError(e instanceof Error?e.message:'Connexion impossible.');}
   finally{running.current=false;if(mounted.current)setBusy(false);}
  };

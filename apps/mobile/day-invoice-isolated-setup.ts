@@ -5,8 +5,8 @@ import {bindVerifiedDevice,getDeviceIdentity,type DeviceIdentity} from './identi
 import {saveDayInvoiceReference} from './day-invoice-reference-cache';
 import type {LineagePin} from './server-lineage-proof';
 type Bind=string|number|null;
-type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
-type IsolatedSetup={identity:DeviceIdentity;pin:LineagePin;name:string};
+type Tx={getFirstAsync<T>(sql:string,...args:Bind[]):Promise<T|null>;getAllAsync<T>(sql:string,...args:Bind[]):Promise<T[]>;runAsync(sql:string,...args:Bind[]):Promise<unknown>};
+export type IsolatedSetup={identity:DeviceIdentity;pin:LineagePin;name:string};
 const uuid=(value:unknown):value is string=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 export const isolatedDayInvoiceSetupSchema=`CREATE TABLE IF NOT EXISTS day_invoice_isolated_setup (
  id INTEGER PRIMARY KEY CHECK(id=1), commercial_id TEXT NOT NULL, server_origin TEXT NOT NULL, lineage_id TEXT NOT NULL, commercial_name TEXT NOT NULL
@@ -27,8 +27,17 @@ export function assertIsolatedDayInvoicePin(saved:IsolatedSetup,candidate:Lineag
  * lignée sont enregistrées atomiquement, sans écraser une liaison existante. */
 export async function initializeIsolatedDayInvoice(tx:Tx,setup:IsolatedSetup,reference:unknown,check:()=>void){
  validate(setup);check();const previous=await readIsolatedDayInvoiceSetup(tx);if(previous)throw Error('Liaison de test déjà initialisée.');
- const state=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM sales) OR EXISTS(SELECT 1 FROM sale_revisions) OR EXISTS(SELECT 1 FROM settlements) OR EXISTS(SELECT 1 FROM tour_pre_invoices) OR EXISTS(SELECT 1 FROM tour_journal_receipts) OR EXISTS(SELECT 1 FROM sales_outbox) OR EXISTS(SELECT 1 FROM journal_sync_outbox) OR EXISTS(SELECT 1 FROM identified_local_operations) OR EXISTS(SELECT 1 FROM identified_reference_cache) OR EXISTS(SELECT 1 FROM reference_snapshot) OR EXISTS(SELECT 1 FROM credit_reference_prototype_cache) OR EXISTS(SELECT 1 FROM day_invoice_reference_cache) OR EXISTS(SELECT 1 FROM day_invoice_payments) OR EXISTS(SELECT 1 FROM day_invoice_compensation_local) AS n`);
- if(!state||state.n!==0)throw Error('Stockage de test non vide : aucune liaison effectuée.');
+ // Examiner tous les registres présents, y compris les nouveaux registres futurs
+ // ou orphelins. Une liste figée oublierait les tentatives et files v6.
+ // sqlite_* et android_metadata sont des tables techniques du moteur.
+ const tables=await tx.getAllAsync<{name:string}>("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite\\_%' ESCAPE '\\' AND name<>'android_metadata'");
+ if(!Array.isArray(tables)||!tables.length)throw Error('Inventaire du stockage indisponible.');
+ for(const table of tables){
+  if(typeof table.name!=='string'||!table.name||table.name.includes('\0'))throw Error('Inventaire du stockage invalide.');
+  const quoted='"'+table.name.replace(/"/g,'""')+'"';
+  const state=await tx.getFirstAsync<{n:number}>(`SELECT EXISTS(SELECT 1 FROM ${quoted}) AS n`);
+  if(!state||state.n!==0)throw Error('Stockage de test non vide : aucune liaison effectuée.');
+ }
  await bindVerifiedDevice(tx,setup.identity);check();await saveDayInvoiceReference(tx,setup.identity,setup.identity,reference);check();
  await tx.runAsync('INSERT INTO day_invoice_isolated_setup(id,commercial_id,server_origin,lineage_id,commercial_name) VALUES(1,?,?,?,?)',setup.identity.commercialId,setup.identity.serverOrigin,setup.pin.lineageId,setup.name);
  check();const saved=await readIsolatedDayInvoiceSetup(tx);if(!saved)throw Error('Liaison de test indisponible.');assertIsolatedDayInvoicePin(saved,setup.pin);return saved;
