@@ -15,6 +15,7 @@ import {readIndependentCompensationProjectionsInTransaction,readCompensatedDayIn
 import {readCompensatedJournalDayInTransaction} from './identified-journal-day.js';
 import {compensationSchema,compensationHash,compensationRegistryExists} from './day-invoice-compensation.js';
 import {assessDayInvoiceSaleRevision,type DayInvoicePayment} from '../../../packages/domain/src/day-invoice.js';
+import {parseStoredDayInvoicePayment} from './day-invoice-protocol.js';
 
 const uuid=z.string().uuid(), money=z.number().int().safe().nonnegative();
 export const saleSchema=z.object({createdAt:z.string().datetime(),clientId:uuid,clientName:z.string().min(1).max(200),syncSaleId:uuid,syncVersion:z.number().int().min(1).max(1000000),
@@ -97,6 +98,13 @@ export async function storeIdentifiedSale(pool:Pool,input:unknown,session:Sessio
   let settledDay=false;
   if(session.dayInvoiceAware)settledDay=await assertDayInvoiceAwareSaleSafe(db,sale.clientId,day,event.version,!!compensation);
   else await assertLegacyClientDaySafe(db,sale.clientId,day);
+  if(session.dayInvoiceAware&&event.version===1){
+   // Une vente ajoutée après un règlement doit réellement lui être
+   // postérieure. Sinon le paiement a photographié une facture incomplète.
+   const payments=await db.query(`SELECT operation_id,client_id,invoice_day::text AS invoice_day,event_day::text AS event_day,payload,payload_hash FROM identified_day_invoice_payments WHERE client_id=$1 AND invoice_day=$2::date`,[sale.clientId,day]);
+   try{if(payments.rows.some(row=>Date.parse(parseStoredDayInvoicePayment(row).recordedAt)>recordedMs))throw Error();}
+   catch{throw new JournalConflict('Vente antérieure à un paiement ou preuve incohérente : rapprochement nécessaire.');}
+  }
   const previous=last.rows[0] ?? legacy.rows[0];
   if((previous?.version??0)+1!==event.version) throw new JournalConflict('Version de vente manquante ou déjà utilisée.');
   if(previous) {

@@ -113,10 +113,10 @@ test('PostgreSQL isolé : écriture atomique, conflit, reprise et clôture des r
   const c4=randomUUID(),s4=randomUUID();await pool.query('INSERT INTO clients(id,name,opening_balance) VALUES($1,$2,0)',[c4,'Quatrième client']);
   const sale4={...sale,clientId:c4,clientName:'Quatrième client',syncSaleId:s4};
   await storeIdentifiedSale(pool,{operationId:randomUUID(),saleId:s4,version:1,recordedAt:at,sale:sale4,refund:0},{...session,enforceMode:true});
-  const p4={...make(100000),operationId:randomUUID(),clientId:c4,preInvoice:null,sales:[{id:s4,version:1}]};
+  const p4={...make(100000),operationId:randomUUID(),clientId:c4,recordedAt:'2026-01-01T09:30:00.000Z',preInvoice:null,sales:[{id:s4,version:1}]};
   assert.equal(await storeDayInvoicePayment(pool,p4,session,source),'received');
-  const s5=randomUUID(),sale5={...sale4,syncSaleId:s5};
-  const newEvent={operationId:randomUUID(),saleId:s5,version:1,recordedAt:at,sale:sale5,refund:0};
+  const s5=randomUUID(),sale5={...sale4,syncSaleId:s5,createdAt:'2026-01-01T09:45:00.000Z'};
+  const newEvent={operationId:randomUUID(),saleId:s5,version:1,recordedAt:sale5.createdAt,sale:sale5,refund:0};
   await assert.rejects(storeIdentifiedSale(pool,newEvent,{...session,enforceMode:true}),/Règlement unifié/);
   assert.equal(await storeIdentifiedSale(pool,newEvent,{...session,enforceMode:true,dayInvoiceAware:true}),'received');
   assert.equal(await storeIdentifiedSale(pool,newEvent,{...session,enforceMode:true}),'duplicate');

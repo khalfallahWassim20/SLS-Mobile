@@ -34,9 +34,14 @@ test('vente sur place v6 : facture 600 + 250, règlement unique 200 et solde 650
   const form=await captureDayInvoiceForm(tx,identity,clientId,day,digest);assert.equal(form.view.total,850000);assert.equal(form.view.remaining,850000);
   db.exec('BEGIN');await confirmDayInvoiceForm(tx,identity,{clientId,day,fingerprint:form.fingerprint,operationId:paymentId,recordedAt:'2026-01-01T10:00:00.000Z',amount:200000,mode:'Espèces',chequeNumber:'',chequeBank:'',chequeDue:''},digest);db.exec('COMMIT');
   assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,650000);assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,650000);
-  await assert.rejects(captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest),/Règlement de cette facture en attente/);
+  const next=await captureNewDayInvoiceSale(tx,identity,clientId,day,[line],digest);assert.equal(next.invoiceTotal,1100000);assert.equal(next.balanceAfter,900000);
+  const nextInput={clientId,day,lines:[line],fingerprint:next.fingerprint,saleId:'44444444-4444-4444-8444-444444444444',operationId:'55555555-5555-4555-8555-555555555555',createdAt:'2026-01-01T10:01:00.000Z'};
+  await assert.rejects(confirmNewDayInvoiceSale(tx,identity,{...nextInput,createdAt:'2026-01-01T09:59:00.000Z'},digest),/antérieure à un paiement/);
+  db.exec('BEGIN');await confirmNewDayInvoiceSale(tx,identity,nextInput,digest);db.exec('COMMIT');
+  assert.equal((await captureDayInvoiceForm(tx,identity,clientId,day,digest)).view.remaining,900000);
+  assert.equal((await readDayInvoiceClients(tx,identity,digest)).clients[0].balance,900000);
   assert.equal((await confirmNewDayInvoiceSale(tx,identity,input,digest)).status,'duplicate');
-  assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,1);
+  assert.equal(db.prepare('SELECT count(*) n FROM sales').get()?.n,2);
  }finally{db.close();}
 });
 test('vente sur place v6 : limite, prix, fraîcheur, collisions et atomicité',async()=>{

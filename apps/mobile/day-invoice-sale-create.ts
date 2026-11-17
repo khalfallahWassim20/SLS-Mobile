@@ -6,7 +6,6 @@ import {getDeviceIdentity,assertDeviceWritable,recordDeviceOperation,type Device
 import {assertLegacyMobileCreditSafe} from './credit-note-write-guard-prototype';
 import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readDayInvoiceClients} from './day-invoice-clients';
-import {readDayInvoiceOutbox} from './day-invoice-queue';
 import {readIdentifiedOutbox} from './identified-outbox';
 import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
 import {captureDayInvoiceForm} from './day-invoice-form';
@@ -26,9 +25,8 @@ export async function captureNewDayInvoiceSale(tx:Tx,identity:DeviceIdentity,cli
  const date=new Date(`${day}T00:00:00.000Z`);if(!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==day)throw Error('Journée invalide.');
  await assertLegacyMobileCreditSafe(tx,identity);await assertDeviceWritable(tx,identity,[day]);
  const ref=await readDayInvoiceReferenceCache(tx,identity);if(!ref)throw Error('Référence facture du jour indisponible.');
- // Les sources sont envoyées avant les paiements ; ajouter une vente après
- // un paiement local non envoyé invaliderait sa preuve de sources.
- for(const entry of await readDayInvoiceOutbox(tx,identity)){const p=JSON.parse(entry.payload);if(p.clientId.toLowerCase()===clientId.toLowerCase()&&p.day===day)throw Error('Règlement de cette facture en attente : synchronisez avant d’ajouter une vente.');}
+ // L'ordre de synchronisation conserve la photographie de chaque paiement :
+ // une nouvelle vente peut suivre un règlement local de la même journée.
  for(const entry of await readOldDebtOutbox(tx,identity)){const p=JSON.parse(entry.payload);if(p.event.settlement.clientId.toLowerCase()===clientId.toLowerCase())throw Error('Règlement de dette en attente : synchronisez avant d’ajouter une vente.');}
  if(ref.oldDebtMarkers.some(m=>m.invoiceDay>day&&ref.settlementStates?.some(s=>s.operationId.toLowerCase()===m.operationId.toLowerCase()&&s.clientId.toLowerCase()===clientId.toLowerCase())))throw Error('Règlement de dette ultérieur : rapprochement nécessaire.');
  const clients=await readDayInvoiceClients(tx,identity,digest),client=clients.clients.find(c=>c.id===clientId);
@@ -69,6 +67,8 @@ export async function confirmNewDayInvoiceSale(tx:Tx,identity:DeviceIdentity,inp
  }
  const current=await captureNewDayInvoiceSale(tx,identity,input.clientId,input.day,input.lines,digest);
  if(current.fingerprint!==input.fingerprint)throw Error('Facture ou solde modifié : vérifiez avant de confirmer.');
+ const existingInvoice=await captureDayInvoiceForm(tx,identity,input.clientId,input.day,digest);
+ if(existingInvoice.view.payments.some(p=>Date.parse(p.recordedAt)>Date.parse(input.createdAt)))throw Error('Vente antérieure à un paiement déjà enregistré.');
  const ref=await readDayInvoiceReferenceCache(tx,identity);if(!ref)throw Error('Référence indisponible.');
  if(ref.saleStates?.some(s=>s.saleId.toLowerCase()===input.saleId.toLowerCase())||ref.dayPayments.some(p=>p.operationId.toLowerCase()===input.operationId.toLowerCase())||ref.settlementStates?.some(s=>s.operationId.toLowerCase()===input.operationId.toLowerCase()))throw Error('Identifiant de vente déjà utilisé.');
  const rows=await tx.getAllAsync<{payload:string}>('SELECT payload FROM sales');for(const row of rows){let s:any;try{s=JSON.parse(row.payload);}catch{throw Error('Vente locale illisible.');}if(typeof s.syncSaleId==='string'&&s.syncSaleId.toLowerCase()===input.saleId.toLowerCase())throw Error('Identifiant de vente déjà utilisé.');}
