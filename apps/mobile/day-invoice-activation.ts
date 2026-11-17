@@ -29,8 +29,7 @@ export async function activateDayInvoiceBinding(tx:Tx,identity:DeviceIdentity,pi
  const report=await previewDayInvoiceMigration(tx,identity,identity,reference,digest,check);
  if(report.pendingOperations||report.conflictingClientIds.length)throw Error('Opérations en attente ou clients en conflit : synchronisez et rapprochez avant le passage.');
  if(!report.localInventory.expenses.available||!report.localInventory.closures.available)throw Error('Inventaire des dépenses ou clôtures indisponible.');
- // L'écran v6 ne gère pas encore les dépenses ; ne pas masquer leur historique.
- if(report.localInventory.expenses.originals||report.localInventory.expenses.revisions||report.localInventory.expenses.cancellations)throw Error('Dépenses présentes : raccordement nécessaire avant le passage.');
+ if(report.localInventory.expenses.pendingOperations)throw Error('Dépenses en attente : synchronisez avant le passage.');
  if(report.localInventory.closures.closing)throw Error('Clôture en attente : répondez ou abandonnez avant le passage.');
  await saveDayInvoiceReference(tx,identity,identity,reference);check();
  const cached=await readDayInvoiceReferenceCache(tx,identity);if(!cached?.hasClientStatuses)throw Error('Statuts clients absents : mise à jour du serveur nécessaire.');

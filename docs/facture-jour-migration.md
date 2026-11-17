@@ -19,18 +19,18 @@ Avant toute migration réelle, conserver une sauvegarde vérifiée de la base et
 Un accès « Passer à la facture du jour » est maintenant raccordé au journal
 mobile individuel. Le passage écrit la référence v6 et la lignée serveur dans
 une transaction locale, sans supprimer les données précédentes. Il refuse les
-files en attente, les clients en conflit, les dépenses locales et une clôture
+files en attente, les clients en conflit, les dépenses en attente et une clôture
 sans réponse. L'espace affiche un paiement portant sur le total préétablie et
-ventes sans ventilation ; l'ancienne dette reste séparée. Au redémarrage, la
-liaison conservée ouvre le même espace ; la saisie locale reste possible hors
-ligne et la synchronisation demande une session et la même lignée.
+ventes sans ventilation ; l'ancienne dette reste séparée. Il donne aussi accès
+aux dépenses locales et à leur synchronisation. Au redémarrage, la liaison
+conservée ouvre le même espace ; la saisie locale reste possible hors ligne et
+la synchronisation demande une session et la même lignée.
 
 Le serveur ne monte ces routes que si `SLS_DAY_INVOICE_ENABLED=1` est configuré
 explicitement ; cette option est désactivée par défaut. **Ce raccordement n'a
 pas été testé et ne doit pas être activé sur les données réelles avant les
 vérifications convenues.** La transition suppose une première confiance dans
-l'adresse déjà liée, ne vérifie pas les opérations hors ligne d'autres
-appareils et n'intègre pas les dépenses locales existantes. Le trop-perçu et
-son choix remboursement/crédit, les lectures ordinaires d'administration, la
+l'adresse déjà liée et ne vérifie pas les opérations hors ligne d'autres
+appareils. Le trop-perçu et son choix remboursement/crédit, les lectures ordinaires d'administration, la
 clôture et les exports complets restent à raccorder. Aucun retour automatique à
 l'ancien parcours n'est prévu : conserver les données et une sauvegarde.
