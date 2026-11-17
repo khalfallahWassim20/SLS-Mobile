@@ -12,6 +12,7 @@ import {readDayInvoiceReferenceCache} from './day-invoice-reference-cache';
 import {readOldDebtOutbox} from './day-invoice-old-debt-queue';
 import {assertLocalOldDebtProofs} from './day-invoice-old-debt-proof';
 import {readLocalDayInvoiceCash} from './day-invoice-cash';
+import {readLocalExpenseClosureProof} from './day-invoice-expense-proof';
 import {tunisDay} from './journal';
 import {readLocalSaleCashLedger} from './credit-sale-refund-journal-prototype';
 import type {SavedSale} from './storage';
@@ -76,5 +77,8 @@ export async function captureDayInvoiceClose(tx:Tx,identity:DeviceIdentity,day:s
  const ownerDeclarations=reference.dayPayments.filter(p=>p.day===day&&p.preInvoice?.declare&&invoiceIds.has(p.preInvoice.id));
  const sales={version:5 as const,commercialId:identity.commercialId,day,initialEvents,refundEvents,saleStates},journal={version:5 as const,commercialId:identity.commercialId,day,events};
  const cashProof=await digest(dayInvoiceCashClosureCanonical(sales,journal,dayPayments,identity.commercialId,day,ownerDeclarations));if(!/^[0-9a-f]{64}$/.test(cashProof))throw Error('Empreinte de caisse invalide.');
- return {sales,journal,dayPayments,ownerDeclarations,cashProof};
+ // Photographie distincte préparatoire : elle n'est pas incluse dans le
+ // protocole de clôture actuel, dont le garde serveur reste obligatoire.
+ const expenses=await readLocalExpenseClosureProof(tx,identity,day);
+ return {sales,journal,dayPayments,ownerDeclarations,cashProof,expenses};
 }

@@ -89,3 +89,15 @@ hors ligne, les modes des règlements historiques non détaillés et le mode de
 remboursement ne sont pas certifiés. Cette fonctionnalité n'a pas été testée.
 Elle ne rend pas disponibles les compensations dans le parcours normal et ne
 justifie pas l'activation de v6 sur des données réelles.
+
+## Préparation de preuve des dépenses
+
+Une photographie canonique commune au mobile et au serveur rejoue désormais les
+créations, corrections et annulations de dépenses pour une journée : identifiants,
+ordre, versions, montants et total restant sont contrôlés. La capture mobile
+v6 retourne cette photographie séparément de l'ancienne empreinte de caisse ;
+une lecture serveur transactionnelle prépare la même représentation. La
+comparaison n'est pas encore incluse dans la demande de clôture : **la garde
+serveur reste en place**. La photographie ne démontre ni l'absence d'opérations
+sur d'autres téléphones ni le paiement physique, et le lecteur serveur ne
+recalcule pas les empreintes d'origine des écritures. Aucun test n'a été exécuté.
