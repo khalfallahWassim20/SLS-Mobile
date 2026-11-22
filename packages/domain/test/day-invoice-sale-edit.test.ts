@@ -198,8 +198,14 @@ for(const choice of ['refund','credit'] as const)test(`compensation locale ${cho
   assert.equal(view.preInvoiceTotal,600000);assert.equal(view.salesTotalBefore,250000);assert.equal(view.salesTotalAfter,150000);assert.equal(view.total,750000);assert.equal(view.paidApplied,750000);assert.equal(view.remaining,0);assert.deepEqual(view.payments.map(p=>[p.amount,p.mode]),[[800000,'Espèces']]);
   const originalInput=String(db.prepare('SELECT input FROM day_invoice_compensation_local').get()?.input),changed=JSON.parse(originalInput),snapshot=JSON.parse(changed.fingerprint);snapshot.balance=999999;changed.fingerprint=JSON.stringify(snapshot);db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(JSON.stringify(changed));
   await assert.rejects(readLocalCompensationView(tx,identity),/Vue de compensation incohérente/);db.prepare('UPDATE day_invoice_compensation_local SET input=?').run(originalInput);
-  const originalReference=String(db.prepare('SELECT payload FROM day_invoice_reference_cache').get()?.payload),altered=JSON.parse(originalReference);altered.dayPayments[0].amount=799000;db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(JSON.stringify(altered));
-  await assert.rejects(readLocalCompensationView(tx,identity),/Vue de compensation incohérente/);db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(originalReference);
+  const originalReference=String(db.prepare('SELECT payload FROM day_invoice_reference_cache').get()?.payload),altered=JSON.parse(originalReference);altered.dayPayments[0].amount=799000;
+  // La vue lit la photographie gelée : altérer le cache courant ne la modifie pas.
+  db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(JSON.stringify(altered));
+  assert.equal((await readLocalCompensationView(tx,identity))?.paidApplied,750000);db.prepare('UPDATE day_invoice_reference_cache SET payload=?').run(originalReference);
+  // Altérer la photographie gelée doit en revanche être refusé.
+  const frozenReference=String(db.prepare('SELECT reference_payload FROM day_invoice_compensation_snapshots').get()?.reference_payload),frozenAltered=JSON.parse(frozenReference);frozenAltered.dayPayments[0].amount=799000;
+  db.prepare('UPDATE day_invoice_compensation_snapshots SET reference_payload=?').run(JSON.stringify(frozenAltered));
+  await assert.rejects(readLocalCompensationView(tx,identity),/Vue de compensation incohérente/);db.prepare('UPDATE day_invoice_compensation_snapshots SET reference_payload=?').run(frozenReference);
   await assert.rejects(saveDayInvoiceReference(tx,identity,identity,reference),/Compensation/);
   assert.equal(db.prepare('SELECT payload FROM day_invoice_reference_cache').get()?.payload,originalReference);
   assert.deepEqual(await readLocalCompensationCollectionImpact(tx,identity,identity.commercialId,day),{refund:choice==='refund'?50000:0,credit:choice==='credit'?50000:0,netCollectedChange:choice==='refund'?-50000:0,operationId:editOperation,syncStatus:'pending'});
