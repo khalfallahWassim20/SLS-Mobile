@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express, { type RequestHandler } from 'express';
 import {createServer as createHttpsServer} from 'node:https';
 import {readTransportConfig} from './https-config.js';
+import {parseCreditProtocolConfig} from './credit-pilot-config.js';
 import {mountHttpsAdmin} from './https-admin-static.js';
 import {addressApprovalAdminRoutes,addressApprovalCommercialRoutes} from './mobile-address-approval-routes.js';
 import { rateLimit } from 'express-rate-limit';
@@ -180,7 +181,7 @@ app.post('/api/mobile/journal', rateLimit({windowMs:15*60*1000,limit:500,standar
 // Routes individuelles protégées par session commerciale et garde de mode transactionnelle.
 // Tant que la transition n'est pas autorisée, elles refusent toute écriture.
 // Explicitement réservé à une base fictive isolée : jamais activé par défaut.
-const creditV5TestOnly=process.env.SLS_V5_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
+const creditProtocol=parseCreditProtocolConfig(process.env),creditV5TestOnly=creditProtocol.enabled;
 const addressTestOnly=process.env.SLS_ADDRESS_TEST_ONLY==='DONNEES_FICTIVES_ISOLEES';
 const addressPrivateHttp=process.env.SLS_ADDRESS_PRIVATE_HTTP==='J_ACCEPTE_LES_RISQUES_HTTP';
 if(addressTestOnly||addressPrivateHttp||transport.addressHttps){
@@ -191,7 +192,7 @@ if(addressTestOnly||addressPrivateHttp||transport.addressHttps){
 // Activation explicite : ne pas mélanger les écritures v6 avec les anciennes
 // lectures tant que les téléphones et l'administration n'ont pas été préparés.
 const dayInvoiceEnabled=process.env.SLS_DAY_INVOICE_ENABLED==='1';
-app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly,dayInvoiceTestOnly:dayInvoiceEnabled}));
+app.use('/api/mobile/identified',identifiedCommercialRoutes(pool,secret,{allowCreditProtocol:creditV5TestOnly,dayInvoiceTestOnly:dayInvoiceEnabled,creditPilotCommercialId:creditProtocol.pilotCommercialId}));
 app.use('/api', auth);
 app.use('/api/identified-tour-actions',identifiedAdminRoutes(pool,auth,username,{allowCreditProtocol:creditV5TestOnly}));
 app.get('/api/credit-capabilities',async(_req,res,next)=>{try{res.set('Cache-Control','no-store').json({version:1,creditBridgeTestOnly:creditV5TestOnly&&(await readSyncMode(pool))==='identified'});}catch(error){next(error);}});
