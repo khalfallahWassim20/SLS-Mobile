@@ -45,20 +45,30 @@ function errorHandler(error:unknown,res:import('express').Response,next:import('
  if(error instanceof ZodError || error instanceof RangeError) {res.status(400).json({error:'Données invalides.'});return;}
  next(error);
 }
-export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enforceMode?:boolean;allowCreditProtocol?:boolean;dayInvoiceTestOnly?:boolean}={}) {
+export function identifiedCommercialRoutes(pool:Pool,secret:string,options:{enforceMode?:boolean;allowCreditProtocol?:boolean;dayInvoiceTestOnly?:boolean;creditPilotCommercialId?:string|null}={}) {
  const enforceMode=options.enforceMode!==false;
  if(options.allowCreditProtocol&&!enforceMode)throw Error('Le protocole d’avoirs exige le mode individuel.');
  if(options.dayInvoiceTestOnly&&!enforceMode)throw Error('Le protocole de facture du jour exige le mode individuel.');
  const r=Router();r.use((_req,res,next)=>{res.set('Cache-Control','no-store');next();});
  r.use(rateLimit({windowMs:15*60*1000,limit:500,standardHeaders:'draft-8',legacyHeaders:false}));
  const supportsCredit=(req:import('express').Request)=>options.allowCreditProtocol===true&&req.get('X-SLS-Reference-Version')==='5';
+ // Pilote réel : le protocole v5 n'est accepté que d'un seul commercial nommé.
+ const creditPilot=options.creditPilotCommercialId?.toLowerCase()??null;
+ if(options.allowCreditProtocol===true&&creditPilot!==null)r.use(async(req,res,next)=>{try{
+  if(req.path==='/capabilities'||req.get('X-SLS-Reference-Version')!=='5'){next();return;}
+  const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));
+  if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
+  if(actor.id.toLowerCase()!==creditPilot){res.status(403).json({error:'Avoirs non activés pour ce commercial.'});return;}
+  next();
+ }catch(e){errorHandler(e,res,next);}});
  // La disponibilité est déterminée par le serveur authentifié, jamais par
  // une variable intégrée dans le bundle Android. Cette réponse n'active rien.
  r.get('/capabilities',async(req,res,next)=>{try{
   const actor=await verifyCommercialSession(pool,secret,bearer(req.get('Authorization')));
   if(!actor){res.status(401).json({error:'Session invalide ou expirée.'});return;}
   const mode=await readSyncMode(pool);
-  res.json({version:1,commercialId:actor.id,creditBridgeTestOnly:options.allowCreditProtocol===true&&mode==='identified'});
+  const bridge=options.allowCreditProtocol===true&&mode==='identified'&&(creditPilot===null||actor.id.toLowerCase()===creditPilot);
+  res.json({version:1,commercialId:actor.id,creditBridgeTestOnly:bridge,...(bridge&&creditPilot!==null?{creditMode:'pilot'}:{})});
  }catch(e){errorHandler(e,res,next);}});
  // Lecture uniquement : cet identifiant ne permet pas de changer une liaison.
  // Il n'est exploitable qu'après enregistrement préalable auprès d'un serveur
