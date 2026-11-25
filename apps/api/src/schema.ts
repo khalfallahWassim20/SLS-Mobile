@@ -226,5 +226,22 @@ export const schemaSql = `CREATE SEQUENCE IF NOT EXISTS article_code_seq;
       kind text NOT NULL CHECK(kind IN ('invoice_cancellation','refund')), balance_delta bigint NOT NULL,
       PRIMARY KEY(operation_id,kind)
     );
+    -- Remise effective d'un remboursement d'avoir : une seule fois, jamais modifiée ni supprimée.
+    -- Un choix « remboursement » dans un avoir ne prouve pas que l'argent a été remis.
+    CREATE TABLE IF NOT EXISTS credit_refund_handover (
+      note_operation_id uuid PRIMARY KEY REFERENCES credit_note_prototype_operation_ids(operation_id),
+      request_id uuid NOT NULL UNIQUE, beneficiary_client_id uuid NOT NULL REFERENCES clients(id),
+      amount bigint NOT NULL CHECK(amount>0), handed_at timestamptz NOT NULL,
+      proof_kind text NOT NULL CHECK(proof_kind IN ('signature','recu_papier','virement','autre')),
+      proof_reference text NOT NULL CHECK(length(trim(proof_reference)) BETWEEN 1 AND 200),
+      recorded_by_kind text NOT NULL CHECK(recorded_by_kind IN ('commercial','admin')),
+      recorded_by_id text NOT NULL CHECK(length(trim(recorded_by_id)) BETWEEN 1 AND 200),
+      recorded_at timestamptz NOT NULL DEFAULT now()
+    );
+    CREATE OR REPLACE FUNCTION sls_credit_refund_handover_immutable() RETURNS trigger LANGUAGE plpgsql AS $$
+    BEGIN RAISE EXCEPTION 'La remise d''un remboursement ne peut ni être modifiée ni supprimée.'; END $$;
+    DROP TRIGGER IF EXISTS sls_credit_refund_handover_immutable_trigger ON credit_refund_handover;
+    CREATE TRIGGER sls_credit_refund_handover_immutable_trigger BEFORE UPDATE OR DELETE ON credit_refund_handover
+      FOR EACH ROW EXECUTE FUNCTION sls_credit_refund_handover_immutable();
     -- Préparation uniquement : ne rend pas le protocole accessible.
     ${dayInvoiceServerSchema}`;
