@@ -98,3 +98,23 @@ export function auditCreditJournal(j:CreditJournalView):CreditNoteAuditIssue[]{
  if(BigInt(j.totalCollected)-BigInt(j.creditRefundTotal)-BigInt(j.saleRefundTotal)!==BigInt(j.collectedAfterRefunds))bad('COLLECTED_AFTER_MISMATCH','Encaissé après remboursements ≠ encaissé − remboursements d’avoirs − remboursements de ventes.');
  return issues;
 }
+
+/** Rapprochement des remises de remboursement avec les avoirs. Une remise manquante
+ * n'est pas une anomalie : le remboursement est simplement « à confirmer ». */
+export type RefundNoteRecord={operationId:string;clientId:string;recordedAt:string;refund:number};
+export type RefundHandoverRecord={noteOperationId:string;beneficiaryClientId:string;amount:string|number|bigint;handedAt:string};
+export function auditRefundHandovers(notes:RefundNoteRecord[],handovers:RefundHandoverRecord[]):{checked:number;pending:RefundNoteRecord[];pendingTotal:number;issues:CreditNoteAuditIssue[]}{
+ const issues:CreditNoteAuditIssue[]=[],byNote=new Map(notes.map(n=>[n.operationId,n])),seen=new Set<string>();
+ const bad=(operationId:string,code:string,detail:string)=>issues.push({operationId,invoiceId:null,code,detail});
+ for(const h of handovers){
+  if(seen.has(h.noteOperationId))bad(h.noteOperationId,'HANDOVER_DUPLICATED','Plusieurs remises pour le même avoir.');seen.add(h.noteOperationId);
+  const note=byNote.get(h.noteOperationId);
+  if(!note){bad(h.noteOperationId,'HANDOVER_WITHOUT_NOTE','Remise enregistrée pour un avoir inconnu.');continue;}
+  if(!(note.refund>0))bad(h.noteOperationId,'HANDOVER_WITHOUT_REFUND','Remise enregistrée pour un avoir sans remboursement.');
+  if(big(h.amount)!==BigInt(note.refund))bad(h.noteOperationId,'HANDOVER_AMOUNT_MISMATCH','Montant remis ≠ remboursement de l’avoir.');
+  if(h.beneficiaryClientId!==note.clientId)bad(h.noteOperationId,'HANDOVER_BENEFICIARY_MISMATCH','Bénéficiaire ≠ client de l’avoir.');
+  if(Date.parse(h.handedAt)<Date.parse(note.recordedAt))bad(h.noteOperationId,'HANDOVER_BEFORE_NOTE','Remise datée avant l’avoir.');
+ }
+ const pending=notes.filter(n=>n.refund>0&&!seen.has(n.operationId));
+ return {checked:handovers.length,pending,pendingTotal:Number(pending.reduce((a,n)=>a+BigInt(n.refund),0n)),issues};
+}
